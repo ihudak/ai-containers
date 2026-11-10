@@ -851,5 +851,120 @@ m144=""; for x144 in objects refs config hooks index; do has_mount "$PROJ/.git/m
   || fail "G144 module directories (rc=$LAUNCH_RC; not protected:$m144; in plain: $(ls "$PROJ/.git/modules/mconfig/plain" | tr '\n' ' '))"
 rm -rf "$PROJ/.git/modules"
 
+# ── G158: what the SANDBOX_GIT_MAX refusal names, exactly ────────────────────
+# Each scan stays within the limit, so the protection loop is what refuses,
+# counting every place a mount exposes a repository: here one repository in
+# three views, and one deeper that only the outer scan finds. Named: the rest
+# at the depth it stopped at and every deeper one, whichever scan found it;
+# not the one already protected. A name a second time says where it lands, the
+# first time it is bare; and a listing shorter than five ends.
+C158="$TMP/c158"
+for r158 in "$C158/o/a/b/c" "$C158/o/node_modules/x/s"; do
+  mkdir -p "$r158" && "${G[@]}" init -q "$r158" || { printf 'SCAFFOLD-FAILED: G158\n'; exit 1; }
+done
+SANDBOX_GIT_MAX=1 EXTRA_MOUNTS="$C158/o $C158/o/node_modules" launch_timed 60 "$C158/o/node_modules/x"
+l158="$(awk '/Among those past the limit:/ {p = 1; next} p && /^         / {print} p && !/^         / {p = 0}' "$ERR")"
+w158="$(printf '         %s\n' "$C158/o/node_modules/x/s/.git" "$C158/o/a/b/c/.git" \
+          "$C158/o/node_modules/x/s/.git (at /workspace/o/node_modules/x/s/.git)")"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 && ! -s "$CAPTURE" && "$l158" == "$w158" ]] \
+  && pass "G158 past SANDBOX_GIT_MAX the refusal names exactly the places past the limit (${LAUNCH_S}s)" \
+  || fail "G158 cap listing (rc=$LAUNCH_RC; named: $(tr '\n' '|' <<<"$l158"))"
+rm -rf "$C158"
+
+# ── G159: a git directory's file of the wrong type: what to do about it ──────
+# A HEAD, config or hooks of the wrong type (here a directory, or a file for
+# hooks) refuses the launch, saying what to do: a HEAD is replaced with a ref,
+# anything else removed.
+for v159 in HEAD config hooks; do
+  mkdir -p "$PROJ/r159" && "${G[@]}" init -q "$PROJ/r159" || { printf 'SCAFFOLD-FAILED: G159\n'; exit 1; }
+  rm -rf "${PROJ:?}/r159/.git/$v159"
+  if [[ "$v159" == hooks ]]; then : > "$PROJ/r159/.git/hooks"; else mkdir "$PROJ/r159/.git/$v159"; fi
+  launch ..
+  case "$v159" in
+    HEAD) h159="Replace it on the host with a regular file, e.g. printf 'ref: refs/heads/main\\n' > $PROJ/r159/.git/HEAD"; t159="regular file" ;;
+    config) h159="would read what it writes. Remove it on the host (rm $PROJ/r159/.git/config)."; t159="regular file" ;;
+    hooks) h159="would read what it writes. Remove it on the host (rm $PROJ/r159/.git/hooks)."; t159="directory" ;;
+  esac
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $PROJ/r159/.git/$v159 is not a $t159; refusing the launch." "$ERR" \
+    && grep -qF -- "$h159" "$ERR" \
+    && pass "G159 a $v159 that is not a $t159 refuses the launch, saying what to do" \
+    || fail "G159 $v159 (rc=$LAUNCH_RC; $(grep -A2 -F 'r159' "$ERR" | head -3 | tr '\n' ' '))"
+  rm -rf "$PROJ/r159"
+done
+
+# ── G160: which git directories get placeholders, and which commondir refuses ─
+# A git directory under .git/modules counts as a repository's own whatever it
+# holds, its objects/ moved aside too, so a commondir other than ./ there
+# refuses the launch.
+mkdir -p "$PROJ/r160" && "${G[@]}" init -q "$PROJ/r160" && mkdir -p "$PROJ/r160/.git/modules/m/refs" \
+  && printf 'ref: refs/heads/main\n' > "$PROJ/r160/.git/modules/m/HEAD" && : > "$PROJ/r160/.git/modules/m/config" \
+  && printf '../..\n' > "$PROJ/r160/.git/modules/m/commondir" || { printf 'SCAFFOLD-FAILED: G160 module\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $PROJ/r160/.git/modules/m/commondir sends git to" "$ERR" \
+  && pass "G160 a module's git directory with no objects/ and a commondir of its own refuses the launch" \
+  || fail "G160 module commondir (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/r160"
+# A linked worktree's directory whose commondir is our ./ is a repository's
+# own: what it lacks is made again, and bound.
+mkdir -p "$PROJ/r160" && "${G[@]}" init -q "$PROJ/r160" && mkdir -p "$PROJ/r160/.git/worktrees/w" \
+  && printf 'ref: refs/heads/main\n' > "$PROJ/r160/.git/worktrees/w/HEAD" && printf './\n' > "$PROJ/r160/.git/worktrees/w/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G160 worktree\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 && -f "$PROJ/r160/.git/worktrees/w/config" && -d "$PROJ/r160/.git/worktrees/w/hooks" ]] \
+  && has_mount "$PROJ/r160/.git/worktrees/w/config:/workspace/proj/r160/.git/worktrees/w/config:ro" \
+  && pass "G160 a worktree's directory with our ./ commondir gets its config and hooks/ made and bound" \
+  || fail "G160 ./ worktree (rc=$LAUNCH_RC; $(ls -A "$PROJ/r160/.git/worktrees/w" | tr '\n' ' '))"
+rm -rf "$PROJ/r160"
+# A .git with no config whose commondir names another repository's git
+# directory is read as a linked worktree's: git takes config and hooks from
+# there, which is protected; it is not refused.
+mkdir -p "$PROJ/c160" "$PROJ/r160" && "${G[@]}" init -q "$PROJ/c160" && mkdir -p "$PROJ/r160/.git/refs" \
+  && printf 'ref: refs/heads/main\n' > "$PROJ/r160/.git/HEAD" && printf '%s\n' "$PROJ/c160/.git" > "$PROJ/r160/.git/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G160 common\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/c160/.git/config:/workspace/proj/c160/.git/config:ro" \
+  && has_mount "$PROJ/r160/.git/commondir:/workspace/proj/r160/.git/commondir:ro" \
+  && ! grep -qF "r160/.git/commondir sends git to" "$ERR" \
+  && pass "G160 a .git with no config and a commondir naming a repository is not refused; the commondir is read-only, what it names protected" \
+  || fail "G160 foreign commondir (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/c160" "$PROJ/r160"
+
+# ── G161: under a launcher's read-only overlay, a second name still counts ───
+# A repository inside a launcher another mount exposes gets no binds of its
+# own, but a .git file, or a hook, with a second hard link in a writable mount
+# refuses the launch, as anywhere else.
+for v161 in gitfile hook; do
+  H161="$TMP/h161"; mkdir -p "$H161/p/.ai-containers/sub" && : > "$H161/p/.ai-containers/sandbox.sh" \
+    && : > "$H161/p/.ai-containers/sandbox-common.sh" || { printf 'SCAFFOLD-FAILED: G161\n'; exit 1; }
+  if [[ "$v161" == gitfile ]]; then
+    mkdir -p "$H161/gd" && "${G[@]}" init -q --bare "$H161/gd" && printf 'gitdir: %s\n' "$H161/gd" > "$H161/p/.ai-containers/sub/.git"
+    n161="$H161/p/.ai-containers/sub/.git"
+  else
+    "${G[@]}" init -q "$H161/p/.ai-containers/sub" && printf '#!/bin/sh\n' > "$H161/p/.ai-containers/sub/.git/hooks/pre-commit"
+    chmod +x "$H161/p/.ai-containers/sub/.git/hooks/pre-commit"; n161="$H161/p/.ai-containers/sub/.git/hooks/pre-commit"
+  fi
+  ln "$n161" "$H161/second" || { printf 'SCAFFOLD-FAILED: G161 link\n'; exit 1; }
+  EXTRA_MOUNTS="$H161" launch "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF -- "-xdev -samefile $n161" "$ERR" \
+    && pass "G161 a hard-linked $v161 in a repository under a launcher's overlay refuses the launch" \
+    || fail "G161 $v161 (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  rm -rf "$H161"
+done
+
+# ── G163: a group directory that links out of the group ─────────────────────
+# Left by an older copy, or made by hand: the launch warns and mounts where it
+# leads, and that is a directory of the host's like any other, so the git
+# directories in it are protected in the group's view. Only the group's own
+# directory is left unscanned.
+X163="$TMP/x163"; mkdir -p "$X163" && "${G[@]}" init -q "$X163/r" && gs163="$HOME/.ai-containers/default/.ssh" \
+  && mkdir -p "$gs163" && mv "$gs163" "$TMP/ssh163" && ln -s "$X163" "$gs163" || { printf 'SCAFFOLD-FAILED: G163\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: $gs163 is a link out of the group" "$ERR" \
+  && has_mount "$X163/r/.git/config:/home/tester/.ssh/r/.git/config:ro" \
+  && has_mount "$X163/r/.git/hooks:/home/tester/.ssh/r/.git/hooks:ro" \
+  && pass "G163 a repository in a group directory that links out of the group is protected there" \
+  || fail "G163 group link out (rc=$LAUNCH_RC; $(git_mounts | grep -F x163 | tr '\n' ' '))"
+rm -f "$gs163"; mv "$TMP/ssh163" "$gs163"; rm -rf "$X163"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

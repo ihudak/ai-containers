@@ -328,7 +328,8 @@ want="$(printf '%s\n' "$od:/workspace/odd/$oname:rw" "$od/.ai-containers:/worksp
 LINKS="$TMP/links"; mkdir -p "$LINKS"; ln -s "$PROJ" "$LINKS/proj"
 EXTRA_MOUNTS="$LINKS" launch "$LINKS/proj/.ai-containers" ..
 grep -qF "WARNING: $LINKS/proj is a symlink inside a writable mount" "$ERR" \
-  && pass "T22 a symlink on the launch path inside a writable mount is warned about" \
+  && grep -qxF "         Launch through the real path instead: $LAUNCHER" "$ERR" \
+  && pass "T22 a symlink on the launch path inside a writable mount is warned about, naming the real path" \
   || fail "T22 symlink warning (stderr: $(tr '\n' ' ' <"$ERR"))"
 [[ "$(ro_overlays)" == "$LAUNCHER:/workspace/proj/.ai-containers:ro" ]] \
   && pass "T22 ... and the real launcher is still overlaid" \
@@ -591,7 +592,7 @@ if [[ "$(id -u)" -eq 0 ]]; then
     && pass "T26 (as root) a 0311 mount root can be listed, so the launch goes ahead, protected" \
     || fail "T26 as root (got: $(mounts | grep -F rootl | tr '\n' ' '))"
 else
-  [[ ! -s "$CAPTURE" ]] && grep -qF "ERROR: $ROOTL cannot be listed by you" "$ERR" \
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $ROOTL cannot be listed by you" "$ERR" \
     && pass "T26 a writable mount root you cannot list refuses the launch, naming it" \
     || fail "T26 unlistable mount root (docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep -E 'ERROR|WARNING' "$ERR" | tr '\n' ' '))"
 fi
@@ -1912,6 +1913,84 @@ m75="$(mounts)"
   && pass "T75 nothing is bound in the read-only mount's own view" \
   || fail "T75 binds in the read-only view ($(grep -F ':/workspace/docs/' <<<"$m75" | tr '\n' ' '))"
 rm -rf "$O75"
+
+# ── T76: this launcher itself, where a mount's scan cannot reach it ──────────
+# The scan finds a launcher to six levels and not under a pruned name; this
+# launcher is added by where it was reached from, so one deeper than that is
+# overlaid all the same. And it is one launcher, found once however many routes
+# find it: one walk of its links, one warning that it cannot be protected.
+mk_engine() {
+  mkdir -p "$1" || return 1
+  for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do cp -p "$ENGINE/$f" "$1/$f" || return 1; done
+  cp -R "$ENGINE/tools.d" "$1/" || return 1
+  [[ ! -d "$ENGINE/services.d" ]] || cp -R "$ENGINE/services.d" "$1/"
+}
+D76="$TMP/d76"; L76="$D76/a/b/c/d/e/f/.ai-containers"
+mk_engine "$L76" && mkdir -p "$D76/w76" && : > "$D76/w76/t" && ln -s "$D76/w76/t" "$L76/lnk76" \
+  || { printf 'SCAFFOLD-FAILED: T76 deep\n'; exit 1; }
+launch "$L76" "$D76"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$L76:/workspace/d76/a/b/c/d/e/f/.ai-containers:ro" <<<"$(mounts)" \
+  && pass "T76 this launcher, seven levels below a writable mount root, is read-only there" \
+  || fail "T76 deep own launcher (rc=$LAUNCH_RC; got: $(mounts | grep -F /d76/ | tr '\n' ' '))"
+[[ "$(grep -cF "WARNING: launcher link $L76/lnk76 leads somewhere the agent can change" "$ERR")" == 1 ]] \
+  && pass "T76 a link in this launcher is warned about once" \
+  || fail "T76 own link warned $(grep -cF "launcher link $L76/lnk76" "$ERR") times"
+rm -rf "$D76"
+# Launched from a launcher nested in another: the outer one is read-only, and
+# nothing in it is pinned writable.
+N76="$TMP/n76"; mk_launcher "$N76" && mk_engine "$N76/.ai-containers/sub/.ai-containers" \
+  || { printf 'SCAFFOLD-FAILED: T76 nested\n'; exit 1; }
+launch "$N76/.ai-containers/sub/.ai-containers" "$N76"
+m76="$(mounts)"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$N76/.ai-containers:/workspace/n76/.ai-containers:ro" <<<"$m76" \
+  && [[ -z "$(grep -F ':/workspace/n76/.ai-containers' <<<"$m76" | grep -v ':ro$')" ]] \
+  && pass "T76 launched from a launcher nested in another, the outer one is read-only, with no writable pin in it" \
+  || fail "T76 nested own launcher (rc=$LAUNCH_RC; got: $(grep -F /n76/ <<<"$m76" | tr '\n' ' '))"
+rm -rf "$N76"
+# One docker cannot be handed: named once. Launched from a directory of its
+# own, so the output directories, which sit in the launch directory, can be
+# handed over, and nothing is left where later tests launch.
+U76="$TMP/u76"; u76="x"$'\xff'
+mk_engine "$U76/$u76/.ai-containers" 2>/dev/null || { rm -rf "$U76"; u76="x:"$'\r'"y"; mk_engine "$U76/$u76/.ai-containers"; } \
+  || { printf 'SCAFFOLD-FAILED: T76 unrepresentable\n'; exit 1; }
+: > "$CAPTURE"
+mkdir -p "$TMP/run76" && ( cd "$TMP/run76" && bash "$U76/$u76/.ai-containers/sandbox.sh" restricted "$U76" ) >/dev/null 2>"$ERR" </dev/null; LAUNCH_RC=$?
+[[ "$LAUNCH_RC" == 0 && "$(grep -c 'WARNING: cannot protect' "$ERR")" == 1 ]] \
+  && pass "T76 this launcher under a name docker cannot be handed is warned about once" \
+  || fail "T76 unrepresentable own launcher (rc=$LAUNCH_RC; warned $(grep -c 'WARNING: cannot protect' "$ERR") times)"
+rm -rf "$U76" "$TMP/run76"
+# One whose script is not named sandbox.sh (a renamed copy) is no launcher to
+# the scan, which matches by name; as a mount root it is this launcher still.
+R76="$TMP/r76/.ai-containers"; mk_engine "$R76" && mv "$R76/sandbox.sh" "$R76/launch76.sh" \
+  || { printf 'SCAFFOLD-FAILED: T76 renamed\n'; exit 1; }
+: > "$CAPTURE"
+( cd "$R76" && bash ./launch76.sh restricted . ) >/dev/null 2>"$ERR" </dev/null; LAUNCH_RC=$?
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "NOTE: $R76 holds a launcher and stays writable at /workspace/.ai-containers;" "$ERR" \
+  && pass "T76 this launcher as a mount root stays writable and says so, its script renamed too" \
+  || fail "T76 renamed own launcher as mount root (rc=$LAUNCH_RC; $(grep -E 'NOTE|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/r76"
+# A .git link inside a launcher another mount exposes lies under that
+# launcher's read-only overlay: the agent cannot repoint it, so it is not named.
+G76="$TMP/g76"; mk_launcher "$G76/p" && mkdir -p "$G76/p/.ai-containers/sub" "$G76/r" \
+  && ln -s "$G76/r" "$G76/p/.ai-containers/sub/.git" || { printf 'SCAFFOLD-FAILED: T76 .git link\n'; exit 1; }
+EXTRA_MOUNTS="$G76" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$G76/p/.ai-containers:/workspace/g76/p/.ai-containers:ro" <<<"$(mounts)" \
+  && ! grep -qF "$G76/p/.ai-containers/sub/.git is a symlink" "$ERR" \
+  && pass "T76 a .git link under a launcher's read-only overlay is not named" \
+  || fail "T76 .git link under an overlay (rc=$LAUNCH_RC; $(grep -F 'sub/.git' "$ERR" | head -1))"
+rm -rf "$G76"
+
+# ── T77: what the SANDBOX_LAUNCHER_MAX refusal names ────────────────────────
+# A launcher two mounts expose is named once per place, not once per scan that
+# found it: the outer mount's scan and the inner one's both find y/p.
+X77="$TMP/x77"; mk_launcher "$X77/a" && mk_launcher "$X77/y/p" || { printf 'SCAFFOLD-FAILED: T77\n'; exit 1; }
+SANDBOX_LAUNCHER_MAX=1 EXTRA_MOUNTS="$X77 $X77/y" launch "$LAUNCHER" "$TMP/app"
+l77="$(awk '/Among them:/ {p = 1; next} p && /^         / {print} p && !/^         / {p = 0}' "$ERR" | sort)"
+w77="$(printf '         %s\n' "$X77/a/.ai-containers" "$X77/y/p/.ai-containers" "$X77/y/p/.ai-containers" | sort)"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" && "$l77" == "$w77" ]] \
+  && pass "T77 past SANDBOX_LAUNCHER_MAX the refusal names each place a launcher is exposed once" \
+  || fail "T77 launcher cap listing (rc=$LAUNCH_RC; named: $(tr '\n' '|' <<<"$l77"))"
+rm -rf "$X77"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

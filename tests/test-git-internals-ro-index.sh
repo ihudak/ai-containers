@@ -1558,5 +1558,51 @@ EXTRA_MOUNTS="$GR151" launch ..
   || fail "G151 ./ followed (rc=$LAUNCH_RC; $(grep -F r151 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$GR151"
 
+# ── G162: a commondir followed into another writable mount ───────────────────
+# A checkout in the primary whose worktree lives in an EXTRA_MOUNTS directory,
+# under its pruned node_modules: the worktree's commondir is followed, and the
+# repository it names protected in the mounts that expose it, only there. One
+# naming a directory that is no git directory is named where the agent could
+# have made it (a writable mount), once, and not where it could not.
+B162="$TMP/b162"; mkdir -p "$B162/node_modules/ng" "$TMP/out162/ng" && "${G[@]}" init -q "$B162/node_modules/r" \
+  && "${G[@]}" -C "$B162/node_modules/r" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$B162/node_modules/r" worktree add -q "$PROJ/wt162" -b wt162 \
+  || { printf 'SCAFFOLD-FAILED: G162\n'; exit 1; }
+w162="$B162/node_modules/r/.git/worktrees"
+for n162 in 2 3 4; do
+  mkdir -p "$w162/wt162x$n162" "$PROJ/wt162x$n162" && cp "$w162/wt162/HEAD" "$w162/wt162x$n162/HEAD" \
+    && printf '%s\n' "$PROJ/wt162x$n162/.git" > "$w162/wt162x$n162/gitdir" \
+    && printf 'gitdir: %s\n' "$w162/wt162x$n162" > "$PROJ/wt162x$n162/.git" || { printf 'SCAFFOLD-FAILED: G162 x\n'; exit 1; }
+done
+printf '%s\n' "$B162/node_modules/ng" > "$w162/wt162x2/commondir"
+printf '%s\n' "$TMP/out162/ng" > "$w162/wt162x3/commondir"
+# Our ./ placeholder, in a worktree's directory with no objects/: no redirect,
+# so nothing to name.
+printf './\n' > "$w162/wt162x4/commondir"
+EXTRA_MOUNTS="$B162" launch ..
+m162="$(mounts)"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$B162/node_modules/r/.git/config:/workspace/b162/node_modules/r/.git/config:ro" <<<"$m162" \
+  && [[ -z "$(awk -F: -v t="$TMP" 'index($2, t)' <<<"$m162")" ]] \
+  && pass "G162 a commondir in another writable mount is protected there, and nowhere it does not lie" \
+  || fail "G162 commondir across mounts (rc=$LAUNCH_RC; $(grep -F 'b162/node_modules/r/.git/config' <<<"$m162" | tr '\n' ' '))"
+[[ "$(grep -c 'which is not a git directory; nothing there is protected' "$ERR")" == 1 ]] \
+  && grep -qF "WARNING: $w162/wt162x2/commondir names $B162/node_modules/ng, which is not a git directory" "$ERR" \
+  && pass "G162 a commondir naming no git directory is named once, where the agent could have made it" \
+  || fail "G162 not a git directory ($(grep -F 'not a git directory' "$ERR" | tr '\n' ' '))"
+# A git directory there whose commondir is no regular file (a FIFO) refuses the
+# launch as one, unread: it is not followed first, which would block on it.
+"${G[@]}" init -q "$B162/node_modules/g" && rm -f "$B162/node_modules/g/.git/commondir" && mkfifo "$B162/node_modules/g/.git/commondir" \
+  && mkdir -p "$PROJ/gf162" && printf 'gitdir: %s\n' "$B162/node_modules/g/.git" > "$PROJ/gf162/.git" \
+  || { printf 'SCAFFOLD-FAILED: G162 FIFO\n'; exit 1; }
+EXTRA_MOUNTS="$B162" launch_timed 60 ..
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $B162/node_modules/g/.git/commondir is not a regular file; refusing the launch." "$ERR" \
+  && ! grep -qF 'could not be read within' "$ERR" \
+  && pass "G162 a FIFO commondir there refuses the launch, unread (${LAUNCH_S}s)" \
+  || fail "G162 FIFO commondir (rc=$LAUNCH_RC; $(grep -E 'ERROR' "$ERR" | head -1))"
+rm -rf "$PROJ/gf162"
+"${G[@]}" -C "$B162/node_modules/r" worktree remove --force "$PROJ/wt162" 2>/dev/null
+rm -rf "$B162" "$TMP/out162" "$PROJ/wt162" "$PROJ/wt162x2" "$PROJ/wt162x3" "$PROJ/wt162x4"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

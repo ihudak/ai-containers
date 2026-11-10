@@ -1049,10 +1049,12 @@ launch "$R132"
   || fail "G132 unrepresentable (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F '/r/.git/config' | tr '\n' ' '); $(grep -aE 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
 # Hooks already there are named, once: at the first protection, and where an
 # earlier engine protected the repository and left the directory writable.
-mk132 .husky/_; mkdir -p "$R132/r/.git/.husky/_" && printf '#!/bin/sh\n' > "$R132/r/.git/.husky/_/pre-receive" && chmod +x "$R132/r/.git/.husky/_/pre-receive"
+# Only those git runs: one that is not executable is not.
+mk132 .husky/_; mkdir -p "$R132/r/.git/.husky/_" && printf '#!/bin/sh\n' > "$R132/r/.git/.husky/_/pre-receive" && chmod +x "$R132/r/.git/.husky/_/pre-receive" \
+  && printf '#!/bin/sh\n' > "$R132/r/.git/.husky/_/post-receive" && chmod -x "$R132/r/.git/.husky/_/post-receive"
 launch "$R132"
-[[ "$LAUNCH_RC" == 0 ]] && grep -qF "holds hooks your host's git runs: pre-receive" "$ERR" && grep -qF "$R132/r/.git/.husky/_" "$ERR" \
-  && pass "G132 hooks already in that directory are named" \
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "holds hooks your host's git runs: pre-receive." "$ERR" && grep -qF "$R132/r/.git/.husky/_" "$ERR" \
+  && pass "G132 hooks already in that directory are named, only those git runs" \
   || fail "G132 hooks named (rc=$LAUNCH_RC; stderr: $(grep -F 'NOTE' "$ERR" | tr '\n' ' '))"
 launch "$R132"
 [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "holds hooks your host's git runs: pre-receive" "$ERR" \
