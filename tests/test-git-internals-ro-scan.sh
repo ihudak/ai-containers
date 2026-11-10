@@ -650,5 +650,51 @@ else
 fi
 rmdir "$TMP/Probe125"
 
+# ── G142: what one mount's scan finds is protected in every writable mount ────
+# that exposes it (GIT-51). An outer EXTRA_MOUNTS directory whose scan does not
+# reach the inner primary (node_modules is pruned, or it lies too deep) left the
+# primary's .git config and hooks writable in the outer mount's view, while the
+# launch said they were read-only.
+O142="$TMP/o142"; mkdir -p "$O142/node_modules/x" && "${G[@]}" init -q "$O142/node_modules/x" \
+  || { printf 'SCAFFOLD-FAILED: G142\n'; exit 1; }
+EXTRA_MOUNTS="$O142" launch "$O142/node_modules/x"
+v142=/workspace/o142/node_modules/x/.git
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$O142/node_modules/x/.git/config:/workspace/x/.git/config:ro" \
+  && has_mount "$O142/node_modules/x/.git/config:$v142/config:ro" && has_mount "$O142/node_modules/x/.git/hooks:$v142/hooks:ro" \
+  && has_mount "$O142/node_modules/x/.git/commondir:$v142/commondir:ro" && has_mount "$O142/node_modules/x/.git:$v142:rw" \
+  && pass "G142 a repository only the inner mount's scan reaches is read-only, and pinned, in the outer mount's view too" \
+  || fail "G142 pruned (rc=$LAUNCH_RC; git mounts: $(git_mounts | sed "s#$TMP#T#g" | tr '\n' ' '))"
+# Too deep for the outer scan: eight levels down.
+D142="$TMP/d142"; mkdir -p "$D142/1/2/3/4/5/6/7/p" && "${G[@]}" init -q "$D142/1/2/3/4/5/6/7/p" \
+  || { printf 'SCAFFOLD-FAILED: G142 deep\n'; exit 1; }
+EXTRA_MOUNTS="$D142" launch "$D142/1/2/3/4/5/6/7/p"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$D142/1/2/3/4/5/6/7/p/.git/config:/workspace/d142/1/2/3/4/5/6/7/p/.git/config:ro" \
+  && has_mount "$D142/1/2/3/4/5/6/7/p/.git/hooks:/workspace/d142/1/2/3/4/5/6/7/p/.git/hooks:ro" \
+  && pass "G142 one past the outer scan's depth is read-only in the outer mount's view too" \
+  || fail "G142 deep (rc=$LAUNCH_RC; git mounts: $(git_mounts | sed "s#$TMP#T#g" | tr '\n' ' '))"
+rm -rf "$D142"
+# A linked worktree's .git file, its git directory outside every mount.
+"${G[@]}" -C "$O142/node_modules/x" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$O142/node_modules/x" worktree add -q "$O142/node_modules/x/wt" -b w142 \
+  || { printf 'SCAFFOLD-FAILED: G142 worktree\n'; exit 1; }
+EXTRA_MOUNTS="$O142" launch "$O142/node_modules/x"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$O142/node_modules/x/wt/.git:/workspace/x/wt/.git:ro" \
+  && has_mount "$O142/node_modules/x/wt/.git:/workspace/o142/node_modules/x/wt/.git:ro" \
+  && pass "G142 a .git file only the inner mount's scan reaches is read-only in the outer mount's view too" \
+  || fail "G142 .git file (rc=$LAUNCH_RC; mounts: $(mounts | grep -F 'wt/.git' | sed "s#$TMP#T#g" | tr '\n' ' '))"
+"${G[@]}" -C "$O142/node_modules/x" worktree remove --force "$O142/node_modules/x/wt"
+# One you cannot list is read-only whole in both views.
+mkdir -p "$O142/node_modules/x/u" && "${G[@]}" init -q "$O142/node_modules/x/u" && chmod 000 "$O142/node_modules/x/u/.git"
+if [[ -r "$O142/node_modules/x/u/.git" ]]; then
+  printf 'SKIP: G142 unlistable — chmod does not constrain root\n'
+else
+  EXTRA_MOUNTS="$O142" launch "$O142/node_modules/x"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$O142/node_modules/x/u/.git:/workspace/x/u/.git:ro" \
+    && has_mount "$O142/node_modules/x/u/.git:/workspace/o142/node_modules/x/u/.git:ro" \
+    && pass "G142 a .git you cannot list, only the inner mount's scan reaches, is read-only whole in the outer mount's view too" \
+    || fail "G142 unlistable (rc=$LAUNCH_RC; mounts: $(mounts | grep -F 'u/.git' | sed "s#$TMP#T#g" | tr '\n' ' '))"
+fi
+chmod 755 "$O142/node_modules/x/u/.git"; rm -rf "$O142"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

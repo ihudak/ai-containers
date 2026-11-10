@@ -141,6 +141,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A repository or launcher that two writable mounts expose is read-only
+  through both.** Each mount's scan protected what it found in that mount's
+  view alone. With an outer `EXTRA_MOUNTS` directory holding the primary under
+  a `node_modules`, or deeper than the outer scan reaches, the primary's
+  `.git/config` and `hooks/` stayed writable at the outer mount's path, while
+  the launch said they were read-only. So did a `.git` file there and another
+  project's launcher. Whatever one mount's scan finds is now protected in
+  every other writable mount that exposes it (bugs review GIT-51).
+
 - **A GitHub outage of a few minutes no longer fails graphify's install or the
   wkhtmltopdf layer.** While a dependency has no wheel for the image's Python,
   graphify installs on the previous minor, which uv downloads from GitHub, and

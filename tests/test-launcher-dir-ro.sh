@@ -736,12 +736,22 @@ rm -f "$LAUNCHER/CLAUDE-like.md"
 
 # ── T34: a link is judged by EVERY writable mount that exposes its target. A
 # peer launcher too deep for mount A's search (seven levels) but near the root
-# of mount B is read-only through B and writable through A: still warned.
+# of mount B is read-only through both: what B's scan finds is carried into A's
+# view (GIT-51), so the link into it is not warned about. Through a mount rooted
+# at the peer launcher itself, which cannot be overlaid, it stays writable:
+# warned, naming that view.
 MA="$TMP/ma"; PD="$MA/a/b/c/d/e/f/g"; mk_launcher "$PD/peer"
 ln -s "$PD/peer/.ai-containers/sandbox-common.sh" "$LAUNCHER/deep-peer.sh"
 EXTRA_MOUNTS="$PD $MA" launch "$LAUNCHER" ..   # the protecting mount first
+m34="$(mounts)"
+grep -qxF -- "$PD/peer/.ai-containers:/workspace/ma/a/b/c/d/e/f/g/peer/.ai-containers:ro" <<<"$m34" \
+  && grep -qxF -- "$PD/peer/.ai-containers:/workspace/g/peer/.ai-containers:ro" <<<"$m34" \
+  && ! grep -qF "launcher link $LAUNCHER/deep-peer.sh leads" "$ERR" \
+  && pass "T34 a peer read-only through every mount that exposes it: the link into it is not warned about" \
+  || fail "T34 deep peer (got: $(grep -F 'peer/.ai-containers' <<<"$m34" | tr '\n' ' '); stderr: $(grep -A1 -F 'deep-peer' "$ERR" | tr '\n' ' '))"
+EXTRA_MOUNTS="$PD $PD/peer/.ai-containers" launch "$LAUNCHER" ..
 rm -f "$LAUNCHER/deep-peer.sh"
-grep -qF "it can change $PD/peer/.ai-containers/sandbox-common.sh (at /workspace/ma/a/b/c/d/e/f/g/peer/.ai-containers/sandbox-common.sh)" \
+grep -qF "it can change $PD/peer/.ai-containers/sandbox-common.sh (at /workspace/.ai-containers/sandbox-common.sh)" \
      <<<"$(grep -A1 -F "launcher link $LAUNCHER/deep-peer.sh leads" "$ERR")" \
   && pass "T34 a target read-only through one mount but writable through another is warned about" \
   || fail "T34 two mounts, one unprotected (stderr: $(grep -A1 -F 'deep-peer' "$ERR" | tr '\n' ' '))"
@@ -1848,6 +1858,32 @@ o73="$(t73 "o=(); u=(); launcher_dirs_in o u '$TMP/t73' \$(id -u) \$(id -g) \$(i
 [[ "$o73" == "a " ]] && pass "T73 a launcher holds both its files; a sandbox.sh alone, or one that leads nowhere, is none" \
   || fail "T73 launcher_dirs_in (got: $o73)"
 rm -rf "$TMP/t73" "$TMP/t73.log" "$fns73"
+
+# ── T74: what one mount's scan finds is protected in every writable mount that
+# exposes it (GIT-51). An outer EXTRA_MOUNTS directory whose scan does not reach
+# the inner primary (node_modules is pruned) left another project's launcher
+# there writable in the outer mount's view.
+O74="$TMP/o74"; mk_launcher "$O74/node_modules/x"
+EXTRA_MOUNTS="$O74" launch "$LAUNCHER" "$O74/node_modules/x"
+m74="$(mounts)"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O74/node_modules/x/.ai-containers:/workspace/x/.ai-containers:ro" <<<"$m74" \
+  && grep -qxF -- "$O74/node_modules/x/.ai-containers:/workspace/o74/node_modules/x/.ai-containers:ro" <<<"$m74" \
+  && grep -qxF -- "$O74/node_modules/x:/workspace/o74/node_modules/x:rw" <<<"$m74" \
+  && pass "T74 a launcher only the inner mount's scan finds is read-only, its parents pinned, in the outer mount's view too" \
+  || fail "T74 nested mounts (rc=$LAUNCH_RC; got: $(grep -F /o74/ <<<"$m74" | tr '\n' ' '))"
+# A directory there you cannot list, which could hide one, likewise.
+mkdir -p "$O74/node_modules/x/hid" && chmod 0200 "$O74/node_modules/x/hid"
+if [[ -r "$O74/node_modules/x/hid" ]]; then
+  printf 'SKIP: T74 unlistable — chmod does not constrain root\n'
+else
+  EXTRA_MOUNTS="$O74" launch "$LAUNCHER" "$O74/node_modules/x"
+  m74="$(mounts)"
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O74/node_modules/x/hid:/workspace/x/hid:ro" <<<"$m74" \
+    && grep -qxF -- "$O74/node_modules/x/hid:/workspace/o74/node_modules/x/hid:ro" <<<"$m74" \
+    && pass "T74 a directory you cannot list, only the inner mount's scan finds, is read-only in the outer mount's view too" \
+    || fail "T74 unlistable (rc=$LAUNCH_RC; got: $(grep -F hid <<<"$m74" | tr '\n' ' '); stderr: $(grep -F hid "$ERR" | head -2 | tr '\n' ' '))"
+fi
+chmod 0755 "$O74/node_modules/x/hid"; rm -rf "$O74"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

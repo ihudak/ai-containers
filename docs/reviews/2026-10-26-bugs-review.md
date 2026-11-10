@@ -30,6 +30,7 @@
 - **Updated 2026-11-08:** section 26, found while doing GAP-2's slice 3 and in its CI run: LNCH-22 (open, LOW) and TST-29 (a falsify flake in CI, cause open; the diagnostic that names it next time is FIXED). GIT-47 (open, LOW), from the final review of that slice, is there too. LNCH-22 is FIXED; LNCH-23, found while fixing it, is there too, and FIXED, and so is REPO-18, found while testing that fix. GIT-43 and GIT-45 are FIXED; GIT-48 (LOW), from the final review of GIT-45, is in section 25, and FIXED.
 - **Updated 2026-11-08:** section 27, found while running PLAT-9 on macOS: TST-31 (test only), FIXED.
 - **Updated 2026-11-10:** TST-29's cause is found and FIXED (section 26): `wait "$!"` on a finished process substitution reports failure at random in bash 5.1 to 5.3, so `repo.sh reset` could refuse a sound repository. GIT-50 (open, LOW), the same fault in `version.sh`, found by the review of that fix, is there too.
+- **Updated 2026-11-10:** GAP-2's slice 6 found GIT-51 (MEDIUM, now FIXED): what one writable mount's scan finds is protected in that mount's view alone, so a repository or launcher that a second, outer mount exposes past its own scan stays writable there. GIT-52 (open, LOW) is in the same section 28.
 - **Updated 2026-11-08:** GIT-43's macOS half measured: `mount` names mount points by the physical path, so the fix holds there; G131 now runs on macOS with an attached disk image (section 25).
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
@@ -2289,6 +2290,31 @@ Found 2026-11-08, at `7d959f8`, while killing the slice's survivors, and in its 
 - Severity: LOW (test only). Confidence: CONFIRMED, reproduced with `tests/run-all.sh` under a symlinked `TMPDIR`.
 - What's wrong: `tests/test-host-binds.sh`, `tests/test-rvm-volume.sh` and `tests/test-selinux-label.sh` expected docker's bind source as the test spelled it, through `TMPDIR`. `repo.sh` hands docker the resolved source, and since LNCH-23 so does the rvm migration (`resolve_path`), so under a symlinked `TMPDIR` the source is the physical path and the five assertions failed. The product is right.
 - The fix: each expectation is the physical path, taken with `cd` and `pwd -P` (not the `readlink -f` the code uses), as `tests/test-selinux-label.sh` already did for `repo.sh`. Green in both arms.
+
+## 28. Found while doing GAP-2's slice 6
+
+Found 2026-11-10, at `7a740ef`, while classifying the survivors of `git_dirs_in()`. One survivor follows the `./` commondir placeholder, and that put a git directory into a second mount's view. That raised the question of what reaches a second mount's view otherwise.
+
+### GIT-51: what one mount's scan finds is protected only in that mount's view
+- **Status: FIXED** (2026-11-10). After the scans, `launcher_ro_overlay()` carries every launcher and unreadable directory, and every git directory, `.git` file and unlistable git directory, that one mount's scan found into every other writable mount that exposes it. Each is keyed by where it lands, so one that two scans find is taken once, and each place counts toward `SANDBOX_LAUNCHER_MAX` and `SANDBOX_GIT_MAX`. T74 in `tests/test-launcher-dir-ro.sh` (a launcher, an unlistable directory) and G142 in `tests/test-git-internals-ro-scan.sh` (a repository under a pruned `node_modules` and one eight levels down, a linked worktree's `.git` file, an unlistable `.git`) were red, each in the outer mount's view. T34's deep peer launcher is now read-only through both mounts, so its link is no longer warned about; T34 keeps its warning check through a mount rooted at the peer launcher itself, which cannot be overlaid.
+- **Was: OPEN** (2026-11-10).
+- **Severity: MEDIUM.** It needs two writable mounts, one inside the other, with the inner one's contents past the outer one's scan. That means under a `node_modules`, `vendor`, `.venv` or `target` the scan prunes, or deeper than it goes (six levels for a launcher or a checkout's `.git`, seven for another git directory). Confidence: CONFIRMED by launches with the fake docker of `tests/lib-git-internals-ro.sh`.
+- **Location:** `sandbox.sh: launcher_ro_overlay()`, its loops over `launcher_dirs_in` and `git_dirs_in`, one per writable mount.
+- **What's wrong:** each mount's scan protects what it finds in that mount's view alone. A directory that two writable mounts expose is found only by the inner mount's scan when the outer one's does not reach it, and nothing adds it to the outer mount's view. This launcher's own directory is checked against every mount. A git directory a `.git` file or a commondir names, and the repository a mount lies in, are carried into another mount's view (`_xm_t`). Nothing else is.
+- **Effect, measured:**
+  - **A repository:** with `EXTRA_MOUNTS=$T/b` and the primary `$T/b/node_modules/x`, a repository, `x/.git`'s `config`, `commondir` and `hooks` are read-only at `/workspace/x/.git` and writable at `/workspace/b/node_modules/x/.git`. The launch still prints `READ-ONLY: /workspace/x/.git: config, commondir, hooks`. The same happens with the primary eight levels below `$T/b2`.
+  - **A linked worktree:** its `.git` file in `x` is read-only only at `/workspace/x/wt/.git`.
+  - **Another project's launcher:** one in `x` is read-only only at `/workspace/x/.ai-containers`.
+  - **So:** the agent can set `core.fsmonitor` in the repository you work in, or point a `.git` file at a git directory of its own. It can also edit a launcher that the host runs at that project's next launch.
+- **Fix direction:** after the scans, carry each launcher and unreadable directory, git directory, `.git` file and unlistable git directory that one mount's scan found into every other writable mount that exposes it. Key each by where it lands, as `_xm_t` does for a followed git directory. Each place counts toward `SANDBOX_LAUNCHER_MAX` and `SANDBOX_GIT_MAX`, as a directory two scans find counts now.
+
+### GIT-52: the walk up from a mount passes over a `.git` that is a link to a file
+- **Status: OPEN** (2026-11-10).
+- **Severity: LOW.** The link must lie outside every writable mount (one inside a mount is the scan's, which names it), so it is a layout of your own, and an unusual one: the agent cannot make it. Confidence: CONFIRMED. `git rev-parse --git-dir`, run below such a link, names the git directory that the linked file's `gitdir:` line names.
+- **Location:** `sandbox.sh: git_dirs_in()`, the walk up from a mount to the repository it lies in.
+- **What's wrong:** the walk takes a `.git` that is a regular file or a directory, neither a link, or a link to a directory. Git reads a link to a regular file as a `.git` file.
+- **Effect:** for a mount in such a checkout, the walk does not reach the git directory git uses. Its index is not read, so a submodule it records where the scan does not look is not protected. Its `core.hooksPath` and hooks are not judged. The walk goes on to whatever repository lies above, if any.
+- **Fix direction:** read a `.git` link that leads to a regular file as the `.git` file branch reads a file, outside every writable mount only. A link to a FIFO stays passed over, as a FIFO is (G64).
 ## LNCH
 
 - `-v` parsing in `launcher_ro_overlay`:

@@ -481,6 +481,27 @@ launcher_ro_overlay() {
       if (( ${#d} > max )); then max=${#d}; fi
     done
   done
+  # And in every other writable mount that exposes it, where it lands there: an
+  # outer mount's scan does not reach what lies past six levels or under a
+  # pruned node_modules, and a launcher only the inner mount's scan found stayed
+  # writable in the outer mount's view (GIT-51; T74).
+  local -A chave=()
+  local nc=${#cl[@]}
+  for (( k = 0; k < nc; k++ )); do chave[${cat[k]}]=1; done
+  for (( k = 0; k < nc; k++ )); do
+    for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+      src="${bsrc[i]}"; dst="${bdst[i]}"
+      [[ "$src" != "${csrc[k]}" ]] || continue
+      if [[ "${cl[k]}" == "$src" ]]; then at="$dst"
+      elif [[ "${cl[k]}" == "$src"/* ]]; then at="$dst/${cl[k]#"$src"/}"
+      else continue; fi
+      [[ -z "${chave[$at]:-}" ]] || continue
+      chave[$at]=1
+      d="${at//[!\/]/}"
+      cl+=("${cl[k]}"); cat+=("$at"); csrc+=("$src"); cdst+=("$dst"); cdep+=("${#d}"); ckind+=("${ckind[k]}")
+      if (( ${#d} > max )); then max=${#d}; fi
+    done
+  done
 
   # Two empty files make a launcher, and the agent can make unlistable
   # directories, so how many there are is the agent's to decide; each costs bind
@@ -730,6 +751,21 @@ launcher_ro_overlay() {
   local -A uhave=()
   local j jj xq=0 xt xv2 cdt _gdi_warned=0
   for k in ${ug[@]+"${!ug[@]}"}; do uhave[${udst[k]}${ug[k]#"${usrc[k]}"}]=1; done
+  # What one mount's scan found, in every other writable mount that exposes it:
+  # an outer mount's scan does not reach a repository under a pruned
+  # node_modules or past its depth, and one only the inner mount's scan found
+  # stayed writable in the outer mount's view (GIT-51; G142).
+  local nu=${#ug[@]}
+  for (( k = 0; k < nu; k++ )); do
+    for j in ${bsrc[@]+"${!bsrc[@]}"}; do
+      [[ "${bsrc[j]}" != "${usrc[k]}" ]] || continue
+      [[ "${ug[k]}" == "${bsrc[j]}" || "${ug[k]}" == "${bsrc[j]}"/* ]] || continue
+      xv2="${bdst[j]}${ug[k]#"${bsrc[j]}"}"
+      [[ -z "${uhave[$xv2]:-}" ]] || continue
+      uhave[$xv2]=1
+      ug+=("${ug[k]}"); ukind+=("${ukind[k]}"); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
+    done
+  done
   while (( xq < ${#_xm_t[@]} )); do
     xt="${_xm_t[xq]}"; j="${_xm_j[xq]}"; xq=$((xq + 1))
     xv2="${bdst[j]}${xt#"${bsrc[j]}"}"
