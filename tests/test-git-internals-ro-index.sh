@@ -1190,6 +1190,18 @@ launch ..
   && pass "G146 a worktree whose checkout was deleted is not read against it, so not warned about" \
   || fail "G146 prunable (rc=$LAUNCH_RC; $(grep -F gone146 "$ERR" | head -2 | tr '\n' ' '))"
 "${G[@]}" -C "$PROJ" worktree prune; "${G[@]}" -C "$PROJ" branch -q -D gone146
+# A common config whose core.worktree is set and empty gives a linked worktree
+# no checkout either: the git directory itself is not read against, its index
+# unread, so nothing is said of it.
+R146="$PROJ/r146"; "${G[@]}" init -q "$R146" && "${G[@]}" -C "$R146" commit -q --allow-empty -m r \
+  && "${G[@]}" -C "$R146" worktree add -q "$PROJ/w146" -b w146 && rm -rf "$PROJ/w146" \
+  && printf 'garbage' > "$R146/.git/worktrees/w146/index" && "${G[@]}" config --file "$R146/.git/config" core.worktree "" \
+  || { printf 'SCAFFOLD-FAILED: G146 empty core.worktree\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$R146/.git/worktrees/w146" "$ERR" \
+  && pass "G146 an empty core.worktree in the common config gives a linked worktree no checkout" \
+  || fail "G146 empty core.worktree (rc=$LAUNCH_RC; $(grep -F w146 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$R146"
 # A gitdir naming a checkout outside every mount whose .git does not name it
 # back (rewritten, or a decoy) does not make the worktree quiet.
 "${G[@]}" -C "$PROJ" worktree add -q "$TMP/wt146" -b wt146 && "${G[@]}" clone -q "$U14x" "$TMP/wt146/sub" \
@@ -1269,6 +1281,18 @@ has_mount "$O149/m/vendor/x/sub/.git/config:/workspace/m/vendor/x/sub/.git/confi
   && pass "G149 a git directory found before the .git file naming it is read once that file turns up" \
   || fail "G149 retry (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$O149" "$U148"
+# ── G151: a ./ commondir is not followed ───────────────────────────────────
+# The placeholder names the git directory itself. Followed, it was named as a
+# git directory a commondir names in another writable mount: for one in the
+# group's own directories mounted into /workspace, a NOTE that a .git file
+# there is not yours (GAP-2 slice 6: those conditions, turned, survived).
+GR151="$HOME/.ai-containers/default/.agents/r151"; mkdir -p "$GR151" && "${G[@]}" init -q "$GR151" \
+  && printf './\n' > "$GR151/.git/commondir" || { printf 'SCAFFOLD-FAILED: G151\n'; exit 1; }
+EXTRA_MOUNTS="$GR151" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "inside the container group's own directories" "$ERR" \
+  && pass "G151 a ./ commondir is the git directory itself, not one it names" \
+  || fail "G151 ./ followed (rc=$LAUNCH_RC; $(grep -F r151 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$GR151"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

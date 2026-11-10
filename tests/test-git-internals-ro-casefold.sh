@@ -471,5 +471,24 @@ FAKE_DOCKER_RC=3 FAKE_SESSION=":" launch ..
   && pass "G127 a session that changes nothing puts nothing back, and keeps its exit status" \
   || fail "G127 no change (rc=$LAUNCH_RC; asides: $(asides | tr '\n' ' '); stderr: $(grep -F 'container ran' "$ERR" | head -1))"
 
+# ── G150: only the checkouts inside the mount are spelled ──────────────────
+# The submodules the index of the repository a mount lies in records are
+# resolved in one subshell, and those that exist and stay put are spelled from
+# disk, each counting toward AI_CONTAINERS_SPELL_MAX. Only those inside the
+# mount: twenty recorded outside it, taken too, used up the budget this launch
+# needs six of (GAP-2 slice 6: that condition, turned, survived every test).
+U150="$TMP/up150"; "${G[@]}" init -q "$U150" && "${G[@]}" -C "$U150" commit -q --allow-empty -m u \
+  && h150="$("${G[@]}" -C "$U150" rev-parse HEAD)" && "${G[@]}" init -q "$TMP/r150" && mkdir -p "$TMP/r150/m" \
+  || { printf 'SCAFFOLD-FAILED: G150\n'; exit 1; }
+for i150 in $(seq 1 20); do
+  mkdir -p "$TMP/r150/out/s$i150" && "${G[@]}" -C "$TMP/r150" update-index --add --cacheinfo "160000,$h150,out/s$i150" \
+    || { printf 'SCAFFOLD-FAILED: G150 gitlinks\n'; exit 1; }
+done
+AI_CONTAINERS_SPELL_MAX=10 launch "$TMP/r150/m"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'had to be read as' "$ERR" \
+  && pass "G150 submodules recorded outside the mount are not spelled" \
+  || fail "G150 spelled outside the mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$TMP/r150" "$U150"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
