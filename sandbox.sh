@@ -798,8 +798,8 @@ launcher_ro_overlay() {
     gdirs=(); gfiles=(); glinks=(); gunr=()
     git_dirs_in gdirs gfiles glinks gunr "$src"
     for f in ${gdirs[@]+"${gdirs[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${gunr[@]+"${gunr[@]}"}; do
-      k2=dir
-      if [[ -f "$f" ]]; then k2=file; elif [[ ! -r "$f" || ! -x "$f" ]]; then k2=unr; fi
+      k2="dir"
+      if [[ -f "$f" ]]; then k2="file"; elif [[ ! -r "$f" || ! -x "$f" ]]; then k2="unr"; fi
       for j in ${bsrc[@]+"${!bsrc[@]}"}; do
         [[ "$f" == "${bsrc[j]}"/* ]] || continue
         _xm_t+=("$f"); _xm_by+=("$src"); _xm_j+=("$j"); _xm_k[${#_xm_t[@]}-1]="$k2"
@@ -4150,9 +4150,9 @@ git_dirs_in() {
         if [[ -L "$tgt/.git" ]]; then
           _gdi_name_link "$tgt/.git"
         elif [[ -f "$tgt/.git" || -d "$tgt/.git" ]]; then
-          wxk=file
+          wxk="file"
           if [[ -d "$tgt/.git" ]]; then
-            wxk=dir; if [[ ! -r "$tgt/.git" || ! -x "$tgt/.git" ]]; then wxk=unr; fi
+            wxk="dir"; if [[ ! -r "$tgt/.git" || ! -x "$tgt/.git" ]]; then wxk="unr"; fi
           fi
           for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
             [[ "${bsrc[_j]}" != "$5" && "$tgt/.git" == "${bsrc[_j]}"/* ]] || continue
