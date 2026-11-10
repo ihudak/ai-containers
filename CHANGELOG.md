@@ -162,7 +162,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   read-only, and the repository it names protected, whatever it names; a link
   named; a directory protected as a repository. A `gitdir`
   whose checkout does not name the worktree back no longer silences "no
-  worktree is known" (bugs review GIT-55, GIT-57, GIT-58).
+  worktree is known" (bugs review GIT-55, GIT-57, GIT-58; GIT-59, GIT-60 and
+  GIT-61, the cases left, are still open).
 
 - **A linked worktree made with `git worktree add --relative-paths` is
   followed to its checkout.** Git 2.48 and later can write a worktree's
