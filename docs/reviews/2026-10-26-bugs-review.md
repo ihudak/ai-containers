@@ -30,7 +30,7 @@
 - **Updated 2026-11-08:** section 26, found while doing GAP-2's slice 3 and in its CI run: LNCH-22 (open, LOW) and TST-29 (a falsify flake in CI, cause open; the diagnostic that names it next time is FIXED). GIT-47 (open, LOW), from the final review of that slice, is there too. LNCH-22 is FIXED; LNCH-23, found while fixing it, is there too, and FIXED, and so is REPO-18, found while testing that fix. GIT-43 and GIT-45 are FIXED; GIT-48 (LOW), from the final review of GIT-45, is in section 25, and FIXED.
 - **Updated 2026-11-08:** section 27, found while running PLAT-9 on macOS: TST-31 (test only), FIXED.
 - **Updated 2026-11-10:** TST-29's cause is found and FIXED (section 26): `wait "$!"` on a finished process substitution reports failure at random in bash 5.1 to 5.3, so `repo.sh reset` could refuse a sound repository. GIT-50 (open, LOW), the same fault in `version.sh`, found by the review of that fix, is there too.
-- **Updated 2026-11-10:** GAP-2's slice 6 found GIT-51 (MEDIUM, now FIXED): what one writable mount's scan finds is protected in that mount's view alone, so a repository or launcher that a second, outer mount exposes past its own scan stays writable there. GIT-52 (open, LOW) is in the same section 28.
+- **Updated 2026-11-10:** GAP-2's slice 6 found GIT-51 (MEDIUM, now FIXED): what one writable mount's scan finds is protected in that mount's view alone, so a repository or launcher that a second, outer mount exposes past its own scan stays writable there. GIT-52 and GIT-54 (open, LOW) and GIT-53 (LOW, now FIXED) are in the same section 28.
 - **Updated 2026-11-08:** GIT-43's macOS half measured: `mount` names mount points by the physical path, so the fix holds there; G131 now runs on macOS with an attached disk image (section 25).
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
@@ -2315,6 +2315,22 @@ Found 2026-11-10, at `7a740ef`, while classifying the survivors of `git_dirs_in(
 - **What's wrong:** the walk takes a `.git` that is a regular file or a directory, neither a link, or a link to a directory. Git reads a link to a regular file as a `.git` file.
 - **Effect:** for a mount in such a checkout, the walk does not reach the git directory git uses. Its index is not read, so a submodule it records where the scan does not look is not protected. Its `core.hooksPath` and hooks are not judged. The walk goes on to whatever repository lies above, if any.
 - **Fix direction:** read a `.git` link that leads to a regular file as the `.git` file branch reads a file, outside every writable mount only. A link to a FIFO stays passed over, as a FIFO is (G64).
+
+### GIT-53: a linked worktree whose `gitdir` is relative is not followed to its checkout
+- **Status: FIXED** (2026-11-10). Both places resolve a relative `gitdir` from the git directory, physically: the first as a candidate checkout, the second before its checks that the `.git` file lies outside every writable mount with no link on the way. G143 in `tests/test-git-internals-ro-index.sh` writes both pointers relative by hand, so an older git makes the same layout. It checks the checkout under `node_modules`, whose submodule is now read-only with no warning, and a checkout outside every mount, now quiet. Both checks were red.
+- **Was: OPEN** (2026-11-10).
+- **Severity: LOW.** What is not followed is named: the launch warns `no worktree is known for …, so the submodules its index records are not followed`. Confidence: CONFIRMED. A worktree made with `git worktree add --relative-paths` (git 2.48 and later, or `worktree.useRelativePaths`), its checkout under the mount's `node_modules` and holding a submodule with its own `.git`, left that submodule's `config` writable with that warning. The same worktree with absolute paths had it read-only.
+- **Location:** `sandbox.sh: git_dirs_in()`, where a linked worktree's git directory takes its checkout from `gitdir`, and the end of the function, where a waiting git directory whose checkout points back from outside every writable mount is quiet.
+- **What's wrong:** both take only an absolute `gitdir`. Git 2.48 and later write it relative to the git directory when asked to. `launcher_ro_overlay()` already reads it so for `core.hooksPath` ("Relative too, as git 2.48 and later can write it").
+- **Effect:** such a worktree's checkout is found only when the scan sees its `.git` file. Under a pruned directory or past the scan's depth, the submodules its index records are not protected, and the launch says so. With its checkout outside every writable mount, the launch warns where it should be quiet.
+- **Fix direction:** resolve a relative `gitdir` physically from the git directory, as the overlay does (`_cd_phys x "$g" "$y"`), in both places.
+
+### GIT-54: "no worktree is known" for a linked worktree whose checkout another mount reads
+- **Status: OPEN** (2026-11-10).
+- **Severity: LOW** (a false warning). Confidence: CONFIRMED with G55's layout (main repository in `EXTRA_MOUNTS`, the linked worktree's checkout in the primary): the checkout's submodule is protected, and the launch also warns `no worktree is known for <main>/.git/worktrees/<name>, so the submodules its index records are not followed`.
+- **Location:** `sandbox.sh: git_dirs_in()`, the warning at its end.
+- **What's wrong:** each mount is scanned alone. The main repository's mount sees the worktree's git directory, but its checkout lies in another writable mount, so the git directory waits for a worktree, and the warning fires. Only a checkout outside every writable mount that points back is quiet. Here the other mount's scan follows the checkout's `.git` file and reads the index against it.
+- **Fix direction:** decide the warning after every mount is scanned, in `launcher_ro_overlay()`, and drop it for a git directory another mount's scan read.
 ## LNCH
 
 - `-v` parsing in `launcher_ro_overlay`:

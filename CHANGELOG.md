@@ -150,6 +150,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   project's launcher. Whatever one mount's scan finds is now protected in
   every other writable mount that exposes it (bugs review GIT-51).
 
+- **A linked worktree made with `git worktree add --relative-paths` is
+  followed to its checkout.** Git 2.48 and later can write a worktree's
+  pointers relative. The launcher took the `gitdir` only absolute, so a
+  submodule in such a checkout under `node_modules` stayed writable, with a
+  "no worktree is known" warning (bugs review GIT-53).
+
 - **A GitHub outage of a few minutes no longer fails graphify's install or the
   wkhtmltopdf layer.** While a dependency has no wheel for the image's Python,
   graphify installs on the previous minor, which uv downloads from GitHub, and

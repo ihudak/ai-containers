@@ -1052,5 +1052,37 @@ else
   printf 'SKIP: G96 this git (%s) cannot make a sha256 repository\n' "$(git --version)"
 fi
 
+# ── G143: a linked worktree whose gitdir is relative is followed (GIT-53) ────
+# Git 2.48 and later write a linked worktree's pointers relative when asked
+# (`git worktree add --relative-paths`, worktree.useRelativePaths): gitdir from
+# the worktree's git directory, the checkout's .git file from the checkout.
+# Written by hand here, so an older git makes the same layout. The checkout
+# under a pruned node_modules was reached only through an absolute gitdir: its
+# submodule stayed writable, with "no worktree is known".
+U143="$TMP/up143"; "${G[@]}" init -q "$U143" && "${G[@]}" -C "$U143" commit -q --allow-empty -m u \
+  && "${G[@]}" -C "$PROJ" worktree add -q "$PROJ/node_modules/rw143" -b rw143 \
+  && "${G[@]}" clone -q "$U143" "$PROJ/node_modules/rw143/sub" && "${G[@]}" -C "$PROJ/node_modules/rw143" add sub 2>/dev/null \
+  && "${G[@]}" -C "$PROJ/node_modules/rw143" commit -q -m n \
+  && printf '../../../node_modules/rw143/.git\n' > "$PROJ/.git/worktrees/rw143/gitdir" \
+  && printf 'gitdir: ../../.git/worktrees/rw143\n' > "$PROJ/node_modules/rw143/.git" \
+  || { printf 'SCAFFOLD-FAILED: G143\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/node_modules/rw143/sub/.git/config:/workspace/proj/node_modules/rw143/sub/.git/config:ro" \
+  && ! grep -qF "no worktree is known for $PROJ/.git/worktrees/rw143" "$ERR" \
+  && pass "G143 a linked worktree's relative gitdir leads to its checkout, whose submodule is protected" \
+  || fail "G143 relative gitdir (rc=$LAUNCH_RC; stderr: $(grep -F rw143 "$ERR" | head -2 | tr '\n' ' '))"
+# Its checkout outside every writable mount, pointing back: quiet, as with
+# absolute pointers.
+mv "$PROJ/node_modules/rw143" "$TMP/rw143" \
+  && printf '../../../../rw143/.git\n' > "$PROJ/.git/worktrees/rw143/gitdir" \
+  && printf 'gitdir: %s\n' "$(cd "$PROJ/.git/worktrees/rw143" && pwd -P)" > "$TMP/rw143/.git" \
+  || { printf 'SCAFFOLD-FAILED: G143 outside\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "no worktree is known for $PROJ/.git/worktrees/rw143" "$ERR" \
+  && pass "G143 one whose relative gitdir names a checkout outside every mount that points back is quiet" \
+  || fail "G143 relative gitdir, outside (rc=$LAUNCH_RC; stderr: $(grep -F rw143 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/rw143" "$U143" "$PROJ/.git/worktrees/rw143"
+"${G[@]}" -C "$PROJ" branch -q -D rw143
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

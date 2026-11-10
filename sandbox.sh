@@ -3826,6 +3826,11 @@ git_dirs_in() {
     if [[ -f "$g/gitdir" ]]; then
       tgt=""; _git_ptr_read "$g/gitdir" tgt gitdir || true
       if [[ "${tgt,,}" == */.git ]]; then tgt="${tgt%/*}"; fi
+      # Relative too, as git 2.48 and later can write it (worktree.useRelativePaths):
+      # from this git directory, as the overlay reads it for core.hooksPath. Taken
+      # only absolute, the checkout of such a worktree under a pruned directory
+      # was never reached (bugs review GIT-53; G143).
+      if [[ -n "$tgt" && "$tgt" != /* ]]; then tgt="$g/$tgt"; fi
       if [[ "$tgt" == /* && -d "$tgt" ]] && _cd_phys tgt "$tgt" \
          && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]] && [[ -z "${tseen[$tgt]:-}" ]]; then tseen[$tgt]=1; tops+=("$tgt"); fi
     fi
@@ -3985,6 +3990,11 @@ git_dirs_in() {
       # bash's spelling for "no link on the way", the one on disk for "outside
       # every mount": in another case on a filesystem that ignores case it is the
       # same .git file (third review of the GIT-38 fix).
+      # A relative one from this git directory, resolved physically first, so
+      # the checks below see where it leads (bugs review GIT-53; G143).
+      if [[ -n "$tgt" && "$tgt" != /* && "$tgt" == */* ]]; then
+        if _cd_bash back "$g" "${tgt%/*}"; then tgt="$back/${tgt##*/}"; else tgt=""; fi
+      fi
       if [[ "$tgt" == /* && "${tgt,,}" == */.git && -f "$tgt" && ! -L "$tgt" ]] \
          && _cd_bash back "${tgt%/*}" && [[ "$back/${tgt##*/}" == "$tgt" ]] \
          && _canon_lex back "$tgt" && ! _in_writable "$back"; then
