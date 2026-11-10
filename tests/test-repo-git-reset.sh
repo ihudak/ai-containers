@@ -1622,6 +1622,32 @@ if [[ "$(id -u)" != 0 ]]; then
   if [[ "$RC" != 0 && "$OUT" == *"cannot check"* ]]; then pass "a directory the checks cannot search refuses the volume"
   else fail "unsearchable directory accepted (rc=$RC; out: $OUT)"; fi
 fi
+# nested_in() reads find's status from its output, never from `wait "$!"`. In
+# bash 5.1 to 5.3 a wait on a process substitution that a builtin read from,
+# finished by then, reported failure at random under load (measured with the
+# CPU throttled: 3 to 25 of 36,000 waits, by version), so inspect and reset
+# refused a sound volume (bugs review TST-29). A wait that always fails stands
+# in for that, through BASH_ENV, which the helper's bash reads before its first line.
+printf 'wait() { return 255; }\n' > "$TMP/wait-fails.bash"
+W="$(mk_repo waitless)"
+OUT="$(BASH_ENV="$TMP/wait-fails.bash" AI_REPO_URL="$W.git" "$SCRIPT" inspect "$W" 2>&1)"; RC=$?
+if [[ "$RC" == 0 && "$OUT" == *"PRIMARY|main"* ]]; then pass "inspect takes find's status from its output, not from wait"
+else fail "inspect relies on wait (rc=$RC; out: $OUT)"; fi
+OUT="$(BASH_ENV="$TMP/wait-fails.bash" AI_REPO_URL="$W.git" "$SCRIPT" reset "$W" main 2>&1)"; RC=$?
+if [[ "$RC" == 0 && "$OUT" == *"ON|main"* ]]; then pass "  … and so does reset"
+else fail "reset relies on wait (rc=$RC; out: $OUT)"; fi
+# A find that fails, or a process substitution killed before it says how find
+# ended (before find ran, or after it printed a nested repository), still
+# refuses the volume: the walk was not complete.
+printf '%s\n' 'find() { local rc; command find "$@"; rc=$?; [[ " $* " != *" -name .git -prune -print0 "* ]] || return 1; return "$rc"; }' > "$TMP/find-fails.bash"
+printf '%s\n' 'find() { [[ " $* " != *" -name .git -prune -print0 "* ]] || kill -KILL "$BASHPID"; command find "$@"; }' > "$TMP/find-killed.bash"
+printf '%s\n' 'find() { local rc; command find "$@"; rc=$?; [[ " $* " != *" -name .git -prune -print0 "* ]] || kill -KILL "$BASHPID"; return "$rc"; }' > "$TMP/find-cut.bash"
+for f in fails killed cut; do
+  W="$(mk_repo "find-$f")"; mkdir -p "$W/sub/.git"
+  OUT="$(BASH_ENV="$TMP/find-$f.bash" AI_REPO_URL="$W.git" "$SCRIPT" inspect "$W" 2>&1)"; RC=$?
+  if [[ "$RC" != 0 && "$OUT" == *"find could not search all of it"* ]]; then pass "a nested-repository search whose find $f refuses the volume"
+  else fail "a nested-repository search whose find $f (rc=$RC; out: $OUT)"; fi
+done
 grep -qE -- '--memory[ =]' "$REPO_DIR/repo.sh" 2>/dev/null || grep -qE -- '--memory[ =]' "$(dirname "$SCRIPT")/repo.sh" \
   && pass "the seed containers that run git are given a memory limit" || fail "no --memory on the git helper's container"
 

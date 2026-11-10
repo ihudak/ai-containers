@@ -150,6 +150,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.deb` for 256 s with exponential backoff. The wkhtmltopdf change makes the next
   `./build.sh` rebuild from that layer on.
 
+- **`repo.sh reset` no longer refuses a sound repository at random.** The git
+  helper read the status of its search for nested repositories with
+  `wait "$!"` on a process substitution, which in bash 5.1 to 5.3 reports
+  failure now and then under load once the search is done, though it went
+  fine: `cannot check …: find could not search all of it`. The failing
+  `wait` was measured in the seed image's bash, today's and the alpine 3.20
+  one an older seed image still has; a second run would normally succeed. The
+  status now travels in the search's own output. It showed first in CI's
+  falsify runs (bugs review TST-29).
+
 - **`kiro=ON` builds again with Kiro CLI 3.x.** Since 3.1.0 (2026-11-05) the
   Linux packages ship `kiro-cli` alone, without `kiro-cli-chat` and
   `kiro-cli-term`. The layer copied the three in a loop whose `[ -f ] && cp`

@@ -188,13 +188,21 @@ check_volume() {
 
 # nested_in <dir> <array>: every .git below <dir>'s top level, link or not, into
 # <array>. find follows no link, so a path through a linked directory is never
-# one; the find's status is waited for, since a process substitution's is not
-# seen (review of REPO-5).
+# one. A process substitution's status is not seen (review of REPO-5), so the
+# find's comes last in its output, as a record no path it prints can be (each
+# ends in .git); none there means the substitution was cut short. Not from
+# `wait "$!"`: in bash 5.1 to 5.3 that reported failure at random under load once
+# the substitution had finished, the find done and fine, and inspect and reset
+# refused a sound volume (bugs review TST-29).
 nested_in() {
   local -n _ni_out="$2"
-  local _ni_gq; glob_quoted "$1/.git" _ni_gq
-  mapfile -d '' _ni_out < <(find "$1" -path "$_ni_gq" -prune -o -name .git -prune -print0 2>/dev/null)
-  wait "$!" || die "cannot check $(shown "$1"): find could not search all of it (an unreadable directory, or a path too long); refusing this repository"
+  local _ni_gq _ni_n
+  glob_quoted "$1/.git" _ni_gq
+  mapfile -d '' _ni_out < <(find "$1" -path "$_ni_gq" -prune -o -name .git -prune -print0 2>/dev/null; printf 'status %s\0' "$?")
+  _ni_n=${#_ni_out[@]}
+  (( _ni_n > 0 )) && [[ "${_ni_out[_ni_n - 1]}" == "status 0" ]] \
+    || die "cannot check $(shown "$1"): find could not search all of it (an unreadable directory, or a path too long); refusing this repository"
+  unset "_ni_out[_ni_n - 1]"
 }
 
 # remove_nested <dir>: reset's removal of the git repositories inside the
