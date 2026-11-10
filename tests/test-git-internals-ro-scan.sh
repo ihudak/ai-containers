@@ -725,6 +725,34 @@ EXTRA_MOUNTS="$N142" launch "$N142/node_modules/x"
   || fail "G142 overlay and protected (rc=$LAUNCH_RC; hooksPath NOTEs: $(grep -c '(core.hooksPath), which the agent' "$ERR"); $(grep -F 'under a read-only overlay' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/h142"
 rm -rf "$N142"
+# The walk up from the primary, past the outer mount's scan (GIT-55): a .git
+# file there is read-only in the outer mount's view, where the agent could
+# otherwise point it at a repository of its own; a .git link there is named, and
+# the repository it leads to is protected there.
+W142="$TMP/w142"; "${G[@]}" init -q "$TMP/m142" && "${G[@]}" -C "$TMP/m142" commit -q --allow-empty -m m \
+  && mkdir -p "$W142/node_modules" && "${G[@]}" -C "$TMP/m142" worktree add -q "$W142/node_modules/x" -b w142 \
+  && mkdir -p "$W142/node_modules/x/sub" || { printf 'SCAFFOLD-FAILED: G142 walk up\n'; exit 1; }
+EXTRA_MOUNTS="$W142" launch "$W142/node_modules/x/sub"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$W142/node_modules/x/.git:/workspace/w142/node_modules/x/.git:ro" \
+  && pass "G142 a .git file above the primary, past the outer scan, is read-only in the outer mount's view" \
+  || fail "G142 .git file above (rc=$LAUNCH_RC; $(mounts | grep -F 'x/.git' | tr '\n' ' '))"
+"${G[@]}" -C "$TMP/m142" worktree remove --force "$W142/node_modules/x"; rm -rf "$TMP/m142" "$W142"
+mkdir -p "$W142/node_modules/q/sub" && "${G[@]}" init -q --bare "$W142/node_modules/.evil" \
+  && ln -s ../.evil "$W142/node_modules/q/.git" || { printf 'SCAFFOLD-FAILED: G142 link above\n'; exit 1; }
+EXTRA_MOUNTS="$W142" launch "$W142/node_modules/q/sub"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: $W142/node_modules/q/.git is a symlink inside a writable mount" "$ERR" \
+  && [[ "$(grep -cF "$W142/node_modules/q/.git is a symlink" "$ERR")" == 1 ]] \
+  && has_mount "$W142/node_modules/.evil/config:/workspace/w142/node_modules/.evil/config:ro" \
+  && pass "G142 a .git link above the primary, past the outer scan, is named once and what it leads to protected" \
+  || fail "G142 .git link above (rc=$LAUNCH_RC; $(grep -F 'q/.git' "$ERR" | head -2 | tr '\n' ' '); $(mounts | grep -F '.evil' | tr '\n' ' '))"
+# Reached by the outer mount's scan too, it is named once.
+rm -rf "$W142"; mkdir -p "$W142/q/sub" && "${G[@]}" init -q --bare "$W142/.evil" && ln -s ../.evil "$W142/q/.git" \
+  || { printf 'SCAFFOLD-FAILED: G142 link reached\n'; exit 1; }
+EXTRA_MOUNTS="$W142" launch "$W142/q/sub"
+[[ "$LAUNCH_RC" == 0 && "$(grep -cF "$W142/q/.git is a symlink" "$ERR")" == 1 ]] \
+  && pass "G142 a .git link above the primary that the outer scan reaches is named once" \
+  || fail "G142 .git link named twice (rc=$LAUNCH_RC; $(grep -cF "$W142/q/.git is a symlink" "$ERR") times)"
+rm -rf "$W142"
 # Past SANDBOX_GIT_MAX, where every place counts, a repository the listing names
 # twice is named the second time with where it lands.
 C142="$TMP/c142"; for r142 in "$C142/a1" "$C142/a2" "$C142/node_modules/x/r1" "$C142/node_modules/x/r2" "$C142/node_modules/x/r3" "$C142/node_modules/x/r4"; do

@@ -371,7 +371,7 @@ launcher_ro_overlay() {
   local x f e q w c inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
-  local -a _xm_t=() _xm_by=() _xm_j=() ro_srcs=()
+  local -a _xm_t=() _xm_by=() _xm_j=() _xm_k=() ro_srcs=()
   local -A gpv=() gfprot=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
   local g base what gmax gn gitmax cfg cdir gown gmade gp ocfg ocd k2 first ik ip ib rep al rk rh hk
@@ -737,7 +737,8 @@ launcher_ro_overlay() {
       for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
         if [[ "$at" == "$r" || "$at" == "$r"/* ]]; then skip=1; break; fi
       done
-      if [[ -n "$skip" ]]; then continue; fi
+      if [[ -n "$skip" || -n "${_git_lnk_named[$f]:-}" ]]; then continue; fi
+      _git_lnk_named[$f]=1
       printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$(_term "$f")" "$(_term "$dst")" >&2
       printf '         replace it with a git directory of its own, and your host'\''s git would\n' >&2
       printf '         run that one'\''s hooks there. Replace the link with what it names.\n' >&2
@@ -756,7 +757,7 @@ launcher_ro_overlay() {
   # not scanned because tools re-clone what they hold, is protected all the same
   # — left writable, the host's git would read it — and named.
   local -A uhave=()
-  local j jj xq=0 xt xv2 cdt _gdi_warned=0
+  local j jj xq=0 xt xk xv2 cdt _gdi_warned=0
   for k in ${ug[@]+"${!ug[@]}"}; do uhave[${udst[k]}${ug[k]#"${usrc[k]}"}]=1; done
   # What one mount's scan found, in every other writable mount that exposes it:
   # an outer mount's scan does not reach a repository under a pruned
@@ -774,12 +775,12 @@ launcher_ro_overlay() {
     done
   done
   while (( xq < ${#_xm_t[@]} )); do
-    xt="${_xm_t[xq]}"; j="${_xm_j[xq]}"; xq=$((xq + 1))
+    xt="${_xm_t[xq]}"; j="${_xm_j[xq]}"; xk="${_xm_k[xq]:-dir}"; xq=$((xq + 1))
     xv2="${bdst[j]}${xt#"${bsrc[j]}"}"
     [[ -z "${uhave[$xv2]:-}" ]] || continue
     uhave[$xv2]=1
-    ug+=("$xt"); ukind+=(dir); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
-    if [[ -f "$xt/commondir" ]]; then
+    ug+=("$xt"); ukind+=("$xk"); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
+    if [[ "$xk" == dir && -f "$xt/commondir" ]]; then
       cdt=""; _git_ptr_read "$xt/commondir" cdt || true
       if [[ -n "$cdt" && "$cdt" != ./ && "$cdt" != . ]] && _gd_resolve "$xt" "$cdt" "$xt/commondir" cdt; then
         if _is_common_dir "$cdt"; then
@@ -1173,6 +1174,9 @@ launcher_ro_overlay() {
   local -A xm_done=()
   local xv xr xs xn=0 xgw=0
   for k in ${_xm_t[@]+"${!_xm_t[@]}"}; do
+    # A .git file the walk up carried here (GIT-55) is no git directory to name;
+    # one that could not be bound is named where its bind was refused.
+    [[ "${_xm_k[k]:-dir}" == dir ]] || continue
     xv="${bdst[${_xm_j[k]}]}${_xm_t[k]#"${bsrc[${_xm_j[k]}]}"}"
     [[ -z "${xm_done[$xv]:-}" ]] || continue
     xs="${gpv[$xv]:-}"
@@ -3562,6 +3566,40 @@ _gdi_add_top() {
   tops+=("$1")
 }
 
+# _gdi_points_back <.git file> <git directory>: whether the .git file's gitdir:
+# names <git directory>, resolved physically from the file's own directory, as
+# git resolves it; a link is read through, as git reads it (bugs review GIT-57).
+_gdi_points_back() {
+  local _pb_v="" _pb_d=""
+  [[ -f "$1" ]] || return 1
+  _git_ptr_read "$1" _pb_v || return 1
+  [[ "$_pb_v" == "gitdir: "* ]] || return 1
+  _cd_phys _pb_d "${1%/*}" "${_pb_v#gitdir: }" || return 1
+  [[ "$_pb_d" == "$2" ]]
+}
+
+# _gdi_name_link <.git link>: names a .git link inside a writable mount, as
+# launcher_ro_overlay names one a scan finds, once a launch however many find
+# it, in the view of the first mount that exposes it outside a read-only
+# overlay (bugs review GIT-55).
+_gdi_name_link() {
+  local _nl_j _nl_at _nl_r _nl_skip
+  [[ -z "${_git_lnk_named[$1]:-}" ]] || return 0
+  for _nl_j in ${bsrc[@]+"${!bsrc[@]}"}; do
+    [[ "$1" == "${bsrc[_nl_j]}"/* ]] || continue
+    _nl_at="${bdst[_nl_j]:-}${1#"${bsrc[_nl_j]}"}"; _nl_skip=""
+    for _nl_r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+      if [[ "$_nl_at" == "$_nl_r" || "$_nl_at" == "$_nl_r"/* ]]; then _nl_skip=1; break; fi
+    done
+    [[ -z "$_nl_skip" ]] || continue
+    _git_lnk_named[$1]=1
+    printf 'WARNING: %s is a symlink inside a writable mount (%s); the agent can\n' "$(_term "$1")" "$(_term "${bdst[_nl_j]:-}")" >&2
+    printf '         replace it with a git directory of its own, and your host'\''s git would\n' >&2
+    printf '         run that one'\''s hooks there. Replace the link with what it names.\n' >&2
+    return 0
+  done
+}
+
 # _lex_norm <absolute path>: the path with . and .. resolved by name alone, no link
 # followed — what it says, to compare with where it physically leads.
 _lex_norm() {
@@ -3754,6 +3792,16 @@ git_dirs_in() {
           fi
         fi
       else
+        # The file itself, in another writable mount past that mount's scan, is
+        # bound read-only in that mount's view, as the scan binds one it finds:
+        # the agent could otherwise point it at a git directory of its own, and
+        # the host's git would use that one here (bugs review GIT-55; G142).
+        for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
+          [[ "${bsrc[_j]}" != "$5" ]] || continue
+          if [[ "$up/.git" == "${bsrc[_j]}"/* ]]; then
+            _xm_t+=("$up/.git"); _xm_by+=("$5"); _xm_j+=("$_j"); _xm_k[${#_xm_t[@]}-1]="file"
+          fi
+        done
         tgt=""; _git_ptr_read "$up/.git" tgt || true
         if [[ "$tgt" == "gitdir: "* ]]; then
           _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
@@ -3766,11 +3814,15 @@ git_dirs_in() {
         fi
       fi
       _in_writable "$up" || break
-    elif [[ -L "$up/.git" && -d "$up/.git" ]] && ! _in_writable "$up/.git"; then
+    elif [[ -L "$up/.git" ]] && { [[ -d "$up/.git" ]] || _in_writable "$up/.git"; }; then
       # A link out of every writable bind is the user's: git follows it, as
       # `repo` checkouts have it, and so does this; skipped, the next repository
       # up was judged instead (re-review of the GIT-44 fix).
-      if _cd_phys tgt "$up/.git" && _is_git_dir "$tgt" && [[ -z "${ionly_had[$tgt]:-}" ]]; then
+      # One in a writable mount past that mount's scan is the agent's to repoint:
+      # named, as the scan names one, and followed as one outside them (bugs
+      # review GIT-55; G142).
+      if _in_writable "$up/.git"; then _gdi_name_link "$up/.git"; fi
+      if [[ -d "$up/.git" ]] && _cd_phys tgt "$up/.git" && _is_git_dir "$tgt" && [[ -z "${ionly_had[$tgt]:-}" ]]; then
         ionly_had[$tgt]=1; _gdi_ionly+=("$tgt")
         # Its checkout is where the link lies: the worktree its index is read
         # against, as a .git file's directory is; and a target in ANOTHER
@@ -3877,8 +3929,22 @@ git_dirs_in() {
       # only absolute, the checkout of such a worktree under a pruned directory
       # was never reached (bugs review GIT-53; G143).
       if [[ -n "$tgt" && "$tgt" != /* ]]; then tgt="$g/$tgt"; fi
+      # Only a checkout whose .git names this git directory back: the agent can
+      # write gitdir before the first protection, and one naming any directory
+      # in the mount silenced "no worktree is known" while the real checkout,
+      # under a pruned directory, went unread (bugs review GIT-57).
       if [[ "$tgt" == /* && -d "$tgt" ]] && _cd_phys tgt "$tgt" \
-         && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]] && [[ -z "${tseen[$tgt]:-}" ]]; then tseen[$tgt]=1; tops+=("$tgt"); fi
+         && [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]] && [[ -z "${tseen[$tgt]:-}" ]] \
+         && _gdi_points_back "$tgt/.git" "$g"; then
+        tseen[$tgt]=1; tops+=("$tgt")
+        # Its .git file is bound read-only like one the scan finds, which under a
+        # pruned directory it does not: writable, the agent could point it at a
+        # repository of its own (bugs review GIT-58; G146). A known referrer, so
+        # following it does not read this git directory again.
+        if [[ -f "$tgt/.git" && ! -L "$tgt/.git" && -z "${had[$tgt/.git]:-}" ]]; then
+          _gdi_files+=("$tgt/.git"); had[$tgt/.git]=1; gref[$g|$tgt]=1
+        fi
+      fi
     fi
     for (( q = 0; q < ${#gtop_g[@]}; q++ )); do
       [[ "${gtop_g[q]}" == "$g" && -z "${tseen[${gtop_d[q]}]:-}" ]] || continue
@@ -5100,6 +5166,8 @@ _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan s
 # What the launch scan found (git_dirs_in), by path, and the writable sources it
 # scanned: _git_after_session scans them again when the container exits.
 declare -A _git_launch_seen=()
+# The .git links named this launch, by path: the scans and the walk up name each once.
+declare -A _git_lnk_named=()
 _git_scan_srcs=()
 # Each .git a scan follows, a file or the directory a mount lies in: the git
 # directory, and the checkout git runs hooks in for it (GIT-44), with the

@@ -1166,6 +1166,19 @@ has_mount "$PROJ/node_modules/aw146/sub/.git/config:/workspace/proj/node_modules
   && ! grep -qF "no worktree is known for $PROJ/.git/worktrees/aw146" "$ERR" \
   && pass "G146 a linked worktree's checkout under a pruned directory is reached through gitdir" \
   || fail "G146 checkout through gitdir (rc=$LAUNCH_RC; $(grep -F aw146 "$ERR" | head -2 | tr '\n' ' '))"
+# ... and its .git file, which the scan does not reach either, is read-only:
+# writable, the agent could point it at a repository of its own (GIT-58).
+has_mount "$PROJ/node_modules/aw146/.git:/workspace/proj/node_modules/aw146/.git:ro" \
+  && pass "G146 that checkout's .git file is read-only" \
+  || fail "G146 checkout .git file left writable (rc=$LAUNCH_RC; $(mounts | grep -F 'aw146/.git:' | tr '\n' ' '))"
+# A gitdir rewritten to name a directory in the mount whose .git does not point
+# back is no checkout: the real one is not reached, and that is said (GIT-57).
+cp "$PROJ/.git/worktrees/aw146/gitdir" "$TMP/gitdir146" && printf '%s/.git/worktrees/.git\n' "$PROJ" > "$PROJ/.git/worktrees/aw146/gitdir"
+launch ..
+grep -qF "no worktree is known for $PROJ/.git/worktrees/aw146" "$ERR" \
+  && pass "G146 a gitdir naming a directory that does not point back silences nothing" \
+  || fail "G146 decoy gitdir in the mount (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
+cp "$TMP/gitdir146" "$PROJ/.git/worktrees/aw146/gitdir"; rm -f "$TMP/gitdir146"
 "${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/node_modules/aw146"; "${G[@]}" -C "$PROJ" branch -q -D aw146
 # A checkout deleted and never pruned, inside the mount, is no worktree to read
 # against: its index is not read there, so no "cannot read the index". (Its index
