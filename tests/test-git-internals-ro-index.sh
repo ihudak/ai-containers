@@ -1187,6 +1187,16 @@ grep -qF "no worktree is known for $PROJ/.git/worktrees/wt146" "$ERR" \
   && pass "G146 a checkout outside every mount that does not point back leaves the worktree named" \
   || fail "G146 decoy outside (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/wt146" "$PROJ/.git/worktrees/wt146"; "${G[@]}" -C "$PROJ" branch -q -D wt146
+# Nor does one whose .git is a link to a file naming it back: quiet only for a
+# regular .git file, since where a link leads is not judged here.
+"${G[@]}" -C "$PROJ" worktree add -q "$TMP/wl146" -b wl146 && "${G[@]}" clone -q "$U14x" "$TMP/wl146/sub" \
+  && "${G[@]}" -C "$TMP/wl146" add sub 2>/dev/null && "${G[@]}" -C "$TMP/wl146" commit -q -m n \
+  && mv "$TMP/wl146/.git" "$TMP/gf146" && ln -s "$TMP/gf146" "$TMP/wl146/.git" || { printf 'SCAFFOLD-FAILED: G146 link\n'; exit 1; }
+launch ..
+grep -qF "no worktree is known for $PROJ/.git/worktrees/wl146" "$ERR" \
+  && pass "G146 a checkout outside every mount whose .git is a link back leaves the worktree named" \
+  || fail "G146 linked .git outside (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/wl146" "$TMP/gf146" "$PROJ/.git/worktrees/wl146"; "${G[@]}" -C "$PROJ" branch -q -D wl146
 
 # ── G147: an absorbed submodule's checkout, found through its core.worktree ──
 # Its .git file, under a pruned vendor/ and recorded in no index, is read-only.

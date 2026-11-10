@@ -711,13 +711,19 @@ EXTRA_MOUNTS="$N142" launch "$N142/a"
 rm -rf "$N142/a"
 # ... and once when one view puts it under a read-only overlay and the other
 # protects it: the primary a launcher, overlaid only in the outer view.
-mkdir -p "$N142/node_modules/x/r/.husky" && : > "$N142/node_modules/x/sandbox.sh" && : > "$N142/node_modules/x/sandbox-common.sh" \
+# Its hooks a link out of every mount: named once, at the view where it is under
+# the overlay, though the view kept for judging is the protected one.
+mkdir -p "$N142/node_modules/x/r/.husky" "$TMP/h142" && : > "$N142/node_modules/x/sandbox.sh" && : > "$N142/node_modules/x/sandbox-common.sh" \
   && "${G[@]}" init -q "$N142/node_modules/x/r" && "${G[@]}" -C "$N142/node_modules/x/r" config core.hooksPath .husky \
+  && rm -rf "$N142/node_modules/x/r/.git/hooks" && ln -s "$TMP/h142" "$N142/node_modules/x/r/.git/hooks" \
   || { printf 'SCAFFOLD-FAILED: G142 overlay\n'; exit 1; }
 EXTRA_MOUNTS="$N142" launch "$N142/node_modules/x"
 [[ "$LAUNCH_RC" == 0 && "$(grep -c '(core.hooksPath), which the agent' "$ERR")" == 1 ]] \
-  && pass "G142 one protected in one view and under a read-only overlay in another is judged once" \
-  || fail "G142 overlay and protected (rc=$LAUNCH_RC; hooksPath NOTEs: $(grep -c '(core.hooksPath), which the agent' "$ERR"))"
+  && [[ "$(grep -c 'under a read-only overlay, is a symlink' "$ERR")" == 1 ]] \
+  && grep -qF "WARNING: /workspace/n142/node_modules/x/r/.git/hooks, under a read-only overlay, is a symlink" "$ERR" \
+  && pass "G142 one protected in one view and under a read-only overlay in another is judged once, its links as the overlaid view's" \
+  || fail "G142 overlay and protected (rc=$LAUNCH_RC; hooksPath NOTEs: $(grep -c '(core.hooksPath), which the agent' "$ERR"); $(grep -F 'under a read-only overlay' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/h142"
 rm -rf "$N142"
 # Past SANDBOX_GIT_MAX, where every place counts, a repository the listing names
 # twice is named the second time with where it lands.
