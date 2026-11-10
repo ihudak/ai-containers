@@ -371,7 +371,12 @@ launcher_ro_overlay() {
   local x f e q w c inner how
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
-  local -a _xm_t=() _xm_by=() _xm_j=() _xm_k=() ro_srcs=()
+  local -a _xm_t=() _xm_by=() _xm_j=() _xm_k=() ro_srcs=() _gdi_nowt=() rosrc=()
+  local rs
+  # The git directories whose index a mount's scan read against a worktree, and
+  # those a scan found none for: "no worktree is known" is said once every mount
+  # is scanned (bugs review GIT-54).
+  local -A _gdi_wt_read=() _gdi_nowt_gone=()
   local -A gpv=() gfprot=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
   local g base what gmax gn gitmax cfg cdir gown gmade gp ocfg ocd k2 first ik ip ib rep al rk rh hk
@@ -415,7 +420,11 @@ launcher_ro_overlay() {
     if [[ ( "$1" != -v && "$1" != --mount ) || $# -lt 2 ]]; then shift; continue; fi
     _bind_read "$1" "$2"; shift 2
     src="$_br_src"; dst="$_br_dst"; opts="$_br_opts"
-    if [[ ",$opts," == *,ro,* ]]; then continue; fi
+    if [[ ",$opts," == *,ro,* ]]; then
+      # Kept to be scanned where it lies inside a writable mount (GIT-56).
+      if [[ "$src" == /* && -d "$src" ]] && _cd_phys rs "$src"; then rosrc+=("$rs"); fi
+      continue
+    fi
     if [[ "$src" != /* || ! -d "$src" ]]; then continue; fi
     # A mount root this launch cannot list cannot be searched for launchers,
     # and cannot be overlaid either (it IS the mount). -r/-x ask the kernel, so
@@ -500,6 +509,37 @@ launcher_ro_overlay() {
       d="${at//[!\/]/}"
       cl+=("${cl[k]}"); cat+=("$at"); csrc+=("$src"); cdst+=("$dst"); cdep+=("${#d}"); ckind+=("${ckind[k]}")
       if (( ${#d} > max )); then max=${#d}; fi
+    done
+  done
+
+  # A read-only mount inside a writable one, past what that mount's scan reaches
+  # (under its pruned node_modules, say), is writable through it: scanned for
+  # launchers too, and what it finds overlaid in the writable mounts' views only.
+  # Never in its own: it is read-only whole, and the :rw pins above a launcher
+  # would make writable there what was mounted read-only (bugs review LNCH-24;
+  # T75; GIT-56 is its twin for git directories).
+  local rl rin
+  for rl in ${rosrc[@]+"${rosrc[@]}"}; do
+    rin=""
+    for i in ${bsrc[@]+"${!bsrc[@]}"}; do if [[ "$rl" == "${bsrc[i]}"/* ]]; then rin=1; fi; done
+    [[ -n "$rin" && -r "$rl" && -x "$rl" ]] || continue
+    found=(); unreadable=()
+    launcher_dirs_in found unreadable "$rl" "$uid" "$gid" "$you"
+    cand=(${found[@]+"${found[@]}"} ${unreadable[@]+"${unreadable[@]}"})
+    for k in ${cand[@]+"${!cand[@]}"}; do
+      l="${cand[k]}"
+      kind=launcher
+      if (( k >= ${#found[@]} )); then kind=unreadable; fi
+      for i in ${bsrc[@]+"${!bsrc[@]}"}; do
+        src="${bsrc[i]}"; dst="${bdst[i]}"
+        [[ "$l" == "$src"/* ]] || continue
+        at="$dst/${l#"$src"/}"
+        [[ -z "${chave[$at]:-}" ]] || continue
+        chave[$at]=1
+        d="${at//[!\/]/}"
+        cl+=("$l"); cat+=("$at"); csrc+=("$src"); cdst+=("$dst"); cdep+=("${#d}"); ckind+=("$kind")
+        if (( ${#d} > max )); then max=${#d}; fi
+      done
     done
   done
 
@@ -746,6 +786,40 @@ launcher_ro_overlay() {
     for g in ${gdirs[@]+"${gdirs[@]}"}; do ug+=("$g"); ukind+=(dir); usrc+=("$src"); udst+=("$dst"); done
     for g in ${gfiles[@]+"${gfiles[@]}"}; do ug+=("$g"); ukind+=(file); usrc+=("$src"); udst+=("$dst"); done
     for g in ${gunr[@]+"${gunr[@]}"}; do ug+=("$g"); ukind+=(unr); usrc+=("$src"); udst+=("$dst"); done
+  done
+  # A read-only mount inside a writable one, past what that mount's scan reaches
+  # (under its pruned node_modules, say), is writable through it: scanned too,
+  # and what it finds protected in the writable mount's view only, its own being
+  # read-only whole. Not scanned, its .git config and hooks stayed writable there
+  # (bugs review GIT-56; G157).
+  for src in ${rosrc[@]+"${rosrc[@]}"}; do
+    for j in ${bsrc[@]+"${!bsrc[@]}"}; do [[ "$src" == "${bsrc[j]}"/* ]] && break; j=""; done
+    [[ -n "${j:-}" && -r "$src" && -x "$src" ]] || continue
+    gdirs=(); gfiles=(); glinks=(); gunr=()
+    git_dirs_in gdirs gfiles glinks gunr "$src"
+    for f in ${gdirs[@]+"${gdirs[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${gunr[@]+"${gunr[@]}"}; do
+      k2=dir
+      if [[ -f "$f" ]]; then k2=file; elif [[ ! -r "$f" || ! -x "$f" ]]; then k2=unr; fi
+      for j in ${bsrc[@]+"${!bsrc[@]}"}; do
+        [[ "$f" == "${bsrc[j]}"/* ]] || continue
+        _xm_t+=("$f"); _xm_by+=("$src"); _xm_j+=("$j"); _xm_k[${#_xm_t[@]}-1]="$k2"
+      done
+    done
+    for f in ${glinks[@]+"${glinks[@]}"}; do _gdi_name_link "$f"; done
+  done
+  # Decided now that every mount is scanned: a linked worktree's git directory in
+  # one mount, its checkout in another, waited for a worktree in the first while
+  # the second's scan read its index against that checkout, and the warning was
+  # false (bugs review GIT-54; G156).
+  local -A nowt_said=()
+  for g in ${_gdi_nowt[@]+"${_gdi_nowt[@]}"}; do
+    [[ -z "${_gdi_wt_read[$g]:-}" && -z "${nowt_said[$g]:-}" ]] || continue
+    nowt_said[$g]=1
+    printf 'WARNING: no worktree is known for %s, so the submodules its index records are not followed.\n' "$(_term "$g")" >&2
+    if [[ -n "${_gdi_nowt_gone[$g]:-}" ]]; then
+      printf '         Its gitdir names %s, which is not there. If you removed that checkout,\n' "$(_term "${_gdi_nowt_gone[$g]}")" >&2
+      printf '         git --git-dir=%s worktree prune stops this; if not, the gitdir was rewritten.\n' "$(_q "${g%/worktrees/*}")" >&2
+    fi
   done
   # A git directory a .git file or commondir in one mount names inside ANOTHER
   # writable bind is protected in that bind's view, as if its scan had found it;
@@ -3578,6 +3652,76 @@ _gdi_points_back() {
   [[ "$_pb_d" == "$2" ]]
 }
 
+# _path_gone <path>: <path> names nothing, and is not merely hidden: walked as
+# written (`..` stepping back where it is written), every directory on the way
+# to the first name that is not there can be searched. A file or a link on the
+# way, or a path that is there, is not gone.
+_path_gone() {
+  local _pg_p="" _pg_rest="${1#/}" _pg_c
+  while [[ -n "$_pg_rest" ]]; do
+    _pg_c="${_pg_rest%%/*}"
+    if [[ "$_pg_rest" == */* ]]; then _pg_rest="${_pg_rest#*/}"; else _pg_rest=""; fi
+    case "$_pg_c" in
+      ''|.) continue ;;
+      ..) _pg_p="${_pg_p%/*}"; continue ;;
+    esac
+    if [[ ! -e "$_pg_p/$_pg_c" && ! -L "$_pg_p/$_pg_c" ]]; then [[ -x "${_pg_p:-/}" ]]; return; fi
+    _pg_p="$_pg_p/$_pg_c"
+    [[ -d "$_pg_p" && ! -L "$_pg_p" ]] || return 1
+  done
+  return 1
+}
+
+# _gdi_blocked <path> <this mount>: a path a pointer names (a worktree's
+# gitdir, an index's gitlink, a submodule's core.worktree) that cannot be
+# reached because a directory on the way cannot be searched, by you: that
+# directory, the first on the way, is protected read-only whole (kind unr, the
+# chmod that restores it named) in each writable mount that holds it below its
+# root, in <this mount>'s view or carried into the other's, as an unlistable
+# directory the scan finds is. The agent owns the directories it can write and
+# can chmod 000 one; where the scan does not look for unlistable directories
+# (under a pruned name, deeper than six levels), the checkout behind it was
+# neither bound nor named, and the agent could restore the mode in the next
+# session and point its .git at a repository of its own (bugs review GIT-60;
+# G153). Succeeds when it protected one. Walked from / as written, a `..` stepping back where it is written
+# (_lex_link_dir's walk); a link in a writable mount, which the agent could have
+# planted, and a name that is not there end it, judging nothing.
+_gdi_blocked() {
+  local _gb_p="" _gb_rest="${1#/}" _gb_c _gb_b="" _gb_j _gb_did=""
+  while [[ -n "$_gb_rest" ]]; do
+    _gb_c="${_gb_rest%%/*}"
+    if [[ "$_gb_rest" == */* ]]; then _gb_rest="${_gb_rest#*/}"; else _gb_rest=""; fi
+    case "$_gb_c" in
+      ''|.) continue ;;
+      ..) _gb_p="${_gb_p%/*}"; continue ;;
+    esac
+    _gb_p="$_gb_p/$_gb_c"
+    if [[ -L "$_gb_p" ]] && _in_writable "$_gb_p"; then return 1; fi
+    [[ -d "$_gb_p" ]] || return 1
+    if [[ ! -x "$_gb_p" ]]; then _gb_b="$_gb_p"; break; fi
+  done
+  [[ -n "$_gb_b" ]] || return 1
+  # Only one the agent could reach into, by launcher_dirs_in's rule: one it owns,
+  # which it can chmod back, or one whose mode lets it search. A directory nobody
+  # but its owner can enter (a database's data directory) hides nothing the agent
+  # can touch. With no agent identity at hand (the rescan after the session),
+  # every one counts.
+  if [[ -n "${uid:-}" && -n "${gid:-}" ]] && [[ -z "$(find "$_gb_b" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0010 \) \
+       -o \( ! -group "$gid" -perm -0001 \) \) -print 2>/dev/null)" ]]; then
+    return 1
+  fi
+  for _gb_j in ${bsrc[@]+"${!bsrc[@]}"}; do
+    [[ "$_gb_b" == "${bsrc[_gb_j]}"/* ]] || continue
+    _gb_did=1
+    if [[ "${bsrc[_gb_j]}" == "$2" ]]; then
+      if [[ -z "${had[$_gb_b]:-}" ]]; then had[$_gb_b]=1; _gdi_unr+=("$_gb_b"); fi
+    else
+      _xm_t+=("$_gb_b"); _xm_by+=("$1"); _xm_j+=("$_gb_j"); _xm_k[${#_xm_t[@]}-1]=unr
+    fi
+  done
+  [[ -n "$_gb_did" ]]
+}
+
 # _gdi_name_link <.git link>: names a .git link inside a writable mount, as
 # launcher_ro_overlay names one a scan finds, once a launch however many find
 # it, in the view of the first mount that exposes it outside a read-only
@@ -3654,6 +3798,11 @@ _gdi_follow() {
   fi
   local _ok=""
   if [[ "$4" == */commondir ]]; then _is_common_dir "$t" && _ok=1; else _is_git_dir "$t" && _ok=1; fi
+  # A .git directory is one whatever it holds, as the scan takes it (GIT-7,
+  # GIT-48): one a decoy .git file or a planted commondir named first, while its
+  # HEAD or objects/ were moved aside, was marked seen and only warned about, and
+  # the gitdir that names its checkout then skipped it (bugs review GIT-61; G154).
+  if [[ -z "$_ok" && "${t,,}" == */.git && -d "$t" && ! -L "$t" ]]; then _ok=1; fi
   # Inside ANOTHER writable bind: recorded, and protected in that bind's view by
   # launcher_ro_overlay once every mount is scanned (reviews of dcf7dab, 4e7da47).
   local _j
@@ -3773,6 +3922,15 @@ git_dirs_in() {
     # A directory or a regular file only: a FIFO planted as .git blocked the read
     # for ever (automated security review of 4a800a9; G64). Quiet only where the
     # .git itself is out of every writable bind.
+    # One that is no git directory, a link to one too, git passes over, and goes
+    # on up: so does this walk, which stopped there and judged no repository
+    # (bugs review GIT-52; G155). _is_git_dir takes more than git does, so it
+    # never passes over one git would use. A link the agent could repoint is
+    # still named.
+    if [[ -d "$up/.git" ]] && ! { _cd_phys tgt "$up/.git" && _is_git_dir "$tgt"; }; then
+      if [[ -L "$up/.git" ]] && _in_writable "$up/.git"; then _gdi_name_link "$up/.git"; fi
+      up="${up%/*}"; continue
+    fi
     if [[ ( -d "$up/.git" || -f "$up/.git" ) && ! -L "$up/.git" ]]; then
       if [[ -d "$up/.git" ]]; then
         if _is_git_dir "$up/.git" && [[ -z "${ionly_had[$up/.git]:-}" ]]; then
@@ -3814,7 +3972,7 @@ git_dirs_in() {
         fi
       fi
       _in_writable "$up" || break
-    elif [[ -L "$up/.git" ]] && { [[ -d "$up/.git" ]] || _in_writable "$up/.git"; }; then
+    elif [[ -L "$up/.git" ]] && { [[ -d "$up/.git" || -f "$up/.git" ]] || _in_writable "$up/.git"; }; then
       # A link out of every writable bind is the user's: git follows it, as
       # `repo` checkouts have it, and so does this; skipped, the next repository
       # up was judged instead (re-review of the GIT-44 fix).
@@ -3844,18 +4002,25 @@ git_dirs_in() {
             if [[ "$tgt" == "${bsrc[_j]}"/* ]]; then _xm_t+=("$tgt"); _xm_by+=("$up/.git"); _xm_j+=("$_j"); fi
           done
         fi
-      elif [[ -f "$up/.git" ]] && _in_writable "$up/.git"; then
-        # One in a writable mount that leads to a file, which git reads as a .git
-        # file: followed as one (review of the GIT-55 fix; G142).
+      elif [[ -f "$up/.git" ]]; then
+        # One that leads to a file, which git reads as a .git file: followed as
+        # one (review of the GIT-55 fix; G142), out of every writable mount too,
+        # quiet there as a .git file is (bugs review GIT-52; G155).
         tgt=""; _git_ptr_read "$up/.git" tgt || true
-        if [[ "$tgt" == "gitdir: "* ]]; then _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"; fi
+        if [[ "$tgt" == "gitdir: "* ]]; then
+          _gdi_follow "$up" "${tgt#gitdir: }" "$5" "$up/.git"
+          if ! _in_writable "$up/.git"; then
+            tgt="${tgt#gitdir: }"; [[ "$tgt" == /* ]] || tgt="$up/$tgt"
+            if _cd_phys tgt "$tgt" && ! _in_writable "$tgt"; then gquiet[$tgt]=1; fi
+          fi
+        fi
       fi
       _in_writable "$up" || break
     fi
     up="${up%/*}"
   done
   local -A tseen=()
-  local q
+  local q wxk wptr gone
   local -a links=()
   local gover=""
   while :; do
@@ -3902,7 +4067,12 @@ git_dirs_in() {
     # through ./, or cd takes `-` for its previous directory (GIT-32, GIT-33; G113).
     for wcf in "$g/config" "$g/config.worktree"; do
       _git_config_get wt "$wcf" core.worktree || continue
-      if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"; fi
+      if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"
+      elif [[ -n "$wt" ]]; then
+        # Not reached for a directory on the way you cannot search (GIT-60).
+        [[ "$wt" == /* ]] || wt="$g/$wt"
+        _gdi_blocked "$wt" "$5" || true
+      fi
     done
     # A linked worktree, with extensions.worktreeConfig on, takes the common
     # config's core.worktree too, resolved from its own git directory (review of
@@ -3934,6 +4104,9 @@ git_dirs_in() {
       # only absolute, the checkout of such a worktree under a pruned directory
       # was never reached (bugs review GIT-53; G143).
       if [[ -n "$tgt" && "$tgt" != /* ]]; then tgt="$g/$tgt"; fi
+      # One behind a directory you cannot search, made so by the agent, is not
+      # reached: that directory is protected whole (_gdi_blocked; GIT-60).
+      if [[ "$tgt" == /* ]] && { [[ ! -d "$tgt" ]] || [[ ! -x "$tgt" ]]; }; then _gdi_blocked "$tgt" "$5" || true; fi
       # Only a checkout whose .git names this git directory back: the agent can
       # write gitdir before the first protection, and one naming any directory
       # in the mount silenced "no worktree is known" while the real checkout,
@@ -3961,6 +4134,34 @@ git_dirs_in() {
         elif [[ -d "$tgt/.git" && -z "${had[$tgt/.git]:-}" ]]; then
           if [[ ! -r "$tgt/.git" || ! -x "$tgt/.git" ]]; then _gdi_unr+=("$tgt/.git"); else _gdi_dirs+=("$tgt/.git"); fi
           had[$tgt/.git]=1
+        fi
+      fi
+      # One in ANOTHER writable mount, past that mount's scan (under its pruned
+      # node_modules, say), which only this gitdir reaches: its .git is taken in
+      # that mount's view, as the walk up takes one there (GIT-55). A file is
+      # bound read-only, and followed when it names another git directory, so
+      # one an earlier session pointed at a repository of the agent's protects
+      # that repository too; a link is named; a directory is protected as a
+      # repository. Left writable, the agent could point it at a repository of
+      # its own, whose hooks the host's git would run there (bugs review GIT-59;
+      # G152). One that points back names this git directory, protected here.
+      if [[ "$tgt" == /* && -d "$tgt" ]] && _cd_phys tgt "$tgt" \
+         && [[ "$tgt" != "$5" && "$tgt" != "$5"/* ]] && _in_writable "$tgt/.git"; then
+        if [[ -L "$tgt/.git" ]]; then
+          _gdi_name_link "$tgt/.git"
+        elif [[ -f "$tgt/.git" || -d "$tgt/.git" ]]; then
+          wxk=file
+          if [[ -d "$tgt/.git" ]]; then
+            wxk=dir; if [[ ! -r "$tgt/.git" || ! -x "$tgt/.git" ]]; then wxk=unr; fi
+          fi
+          for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
+            [[ "${bsrc[_j]}" != "$5" && "$tgt/.git" == "${bsrc[_j]}"/* ]] || continue
+            _xm_t+=("$tgt/.git"); _xm_by+=("$g/gitdir"); _xm_j+=("$_j"); _xm_k[${#_xm_t[@]}-1]="$wxk"
+          done
+          if [[ "$wxk" == file ]] && ! _gdi_points_back "$tgt/.git" "$g"; then
+            wptr=""; _git_ptr_read "$tgt/.git" wptr || true
+            if [[ "$wptr" == "gitdir: "* ]]; then _gdi_follow "$tgt" "${wptr#gitdir: }" "$5" "$tgt/.git"; fi
+          fi
         fi
       fi
     fi
@@ -3998,7 +4199,7 @@ git_dirs_in() {
     # Read once: what ls-files lists does not depend on the worktree, and a read
     # per referrer let each planted .git file cost another (review of 8b3e0c5).
     links=()
-    gread[$g]=1
+    gread[$g]=1; _gdi_wt_read[$g]=1
     if ! _git_index_read links "$g" "${tops[0]}"; then
       [[ -z "${greftop[$g]:-}" || -z "${gwarned[$g]:-}" ]] || continue
       links=()
@@ -4068,18 +4269,28 @@ git_dirs_in() {
         [[ "$co" == "$5"/* ]] || continue
         if [[ -e "$co" || -L "$co" ]]; then
           if [[ "${gres[$co]:-}" != "$co" ]]; then
+            # A checkout you cannot search, made so by the agent, is protected
+            # whole, and so is the first such directory on the way to one that
+            # cannot be reached at all (below): gone silent, the agent could
+            # point its .git elsewhere in the next session (GIT-60; G153).
+            if [[ -d "$co" && ! -L "$co" && ! -x "$co" ]] && _gdi_blocked "$co" "$5"; then continue; fi
             if (( ++gskip <= 5 )); then
               printf 'WARNING: submodule %s of %s is not where its index says (a link on the way, a case or\n' "$(_q "$co")" "$(_q "$g")" >&2
               printf '         Unicode difference, or a directory you cannot search); its checkout is not protected.\n' >&2
             fi
             continue
           fi
+        else
+          _gdi_blocked "$co" "$5" || true
+          continue
         fi
         if [[ -L "$f" ]]; then
           [[ -n "${had[$f]:-}" ]] || { _gdi_links+=("$f"); had[$f]=1; }
         elif [[ -f "$f" ]]; then
           [[ -n "${had[$f]:-}" ]] || { _gdi_files+=("$f"); had[$f]=1; }
-        elif [[ -d "$f" && -z "${had[$f]:-}" ]] && _is_git_dir "$f"; then
+        elif [[ -d "$f" && -z "${had[$f]:-}" ]]; then
+          # An embedded .git directory, whatever it holds, as the scan takes one
+          # (GIT-61; G154).
           _gdi_dirs+=("$f"); had[$f]=1
         fi
       done
@@ -4107,6 +4318,7 @@ git_dirs_in() {
   for g in ${gpend[@]+"${!gpend[@]}"}; do
     [[ -z "$gover" ]] || break
     [[ -f "$g/index" ]] || continue
+    gone=""
     # A linked worktree checked out where the agent cannot write is not its to steer.
     if [[ -f "$g/gitdir" ]]; then
       tgt=""; _git_ptr_read "$g/gitdir" tgt gitdir || true
@@ -4126,6 +4338,12 @@ git_dirs_in() {
       if [[ -n "$tgt" && "$tgt" != /* && "$tgt" == */* ]]; then
         if _cd_bash back "$g" "${tgt%/*}"; then tgt="$back/${tgt##*/}"; else tgt=""; fi
       fi
+      # A checkout that is gone, every directory on the way to the name that is
+      # not there searchable (_path_gone), so not hidden: deleted and never
+      # pruned, or a gitdir the agent rewrote to hide the real checkout (GIT-6;
+      # G80). Nothing here tells them apart, so it is still said, with the prune
+      # that stops it for one you deleted (GIT-54; G156).
+      if [[ "$tgt" == /* && "${tgt,,}" == */.git ]] && _path_gone "${tgt%/*}"; then gone="${tgt%/*}"; fi
       if [[ "$tgt" == /* && "${tgt,,}" == */.git && -f "$tgt" && ! -L "$tgt" ]] \
          && _cd_bash back "${tgt%/*}" && [[ "$back/${tgt##*/}" == "$tgt" ]] \
          && _canon_lex back "$tgt" && ! _in_writable "$back"; then
@@ -4139,7 +4357,10 @@ git_dirs_in() {
     _git_index_read links "$g" "$g" || continue
     for rec in ${links[@]+"${links[@]}"}; do
       [[ "${rec%% *}" == 160000 ]] || continue
-      printf 'WARNING: no worktree is known for %s, so the submodules its index records are not followed.\n' "$(_term "$g")" >&2
+      # Said by launcher_ro_overlay once every mount is scanned, unless another
+      # mount's scan read this index against a worktree (GIT-54).
+      _gdi_nowt+=("$g")
+      if [[ -n "$gone" ]]; then _gdi_nowt_gone[$g]="$gone"; fi
       break
     done
   done
@@ -4799,7 +5020,8 @@ _git_after_session() {
       [[ -d "$src" ]] || continue
       (
         _gir_cache=(); _gir_tmp=""; trap 'rm -rf "${_gir_tmp:-}"' EXIT
-        gdirs=(); gfiles=(); glinks=(); gunr=(); _gdi_over=()
+        gdirs=(); gfiles=(); glinks=(); gunr=(); _gdi_over=(); _gdi_nowt=()
+        declare -A _gdi_wt_read=() _gdi_nowt_gone=()
         git_dirs_in gdirs gfiles glinks gunr "$src" || true
         if (( ${#_gdi_over[@]} )); then printf 'C\0\0\0'; fi
         for f in ${gdirs[@]+"${gdirs[@]}"} ${gunr[@]+"${gunr[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${glinks[@]+"${glinks[@]}"}; do
