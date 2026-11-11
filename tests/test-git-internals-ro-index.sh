@@ -1604,5 +1604,35 @@ rm -rf "$PROJ/gf162"
 "${G[@]}" -C "$B162/node_modules/r" worktree remove --force "$PROJ/wt162" 2>/dev/null
 rm -rf "$B162" "$TMP/out162" "$PROJ/wt162" "$PROJ/wt162x2" "$PROJ/wt162x3" "$PROJ/wt162x4"
 
+# ── G164: a git directory a .git file names in another writable mount ────────
+# It is named unless that mount's view of it is read-only now: one inside a
+# launcher the other mount exposes lies under that launcher's read-only overlay
+# and is not named; one whose name docker cannot be handed cannot be protected
+# there and is named, whatever other read-only binds the launch makes (the
+# project's own .git has some).
+mkdir -p "$TMP/o164a/.ai-containers" "$PROJ/xm164a" && : > "$TMP/o164a/.ai-containers/sandbox.sh" \
+  && : > "$TMP/o164a/.ai-containers/sandbox-common.sh" && "${G[@]}" init -q --bare "$TMP/o164a/.ai-containers/g" \
+  && printf 'gitdir: %s\n' "$TMP/o164a/.ai-containers/g" > "$PROJ/xm164a/.git" || { printf 'SCAFFOLD-FAILED: G164 launcher\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/o164a" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$TMP/o164a/.ai-containers:/workspace/o164a/.ai-containers:ro" \
+  && ! grep -qF "a git directory in another writable mount" "$ERR" \
+  && [[ -z "$(mounts | grep -F "/o164a/.ai-containers/g")" ]] \
+  && pass "G164 a target under the other mount's launcher overlay is read-only there, and not named" \
+  || fail "G164 target under an overlay (rc=$LAUNCH_RC; $(grep -F 'another writable mount' "$ERR" | head -1))"
+rm -rf "$TMP/o164a" "$PROJ/xm164a"
+# A name that is not UTF-8 where the filesystem takes one; a ':' with a CR
+# where it does not (APFS): docker can be handed neither.
+n164="bad"$'\xff'; mkdir -p "$TMP/o164b/node_modules" "$PROJ/xm164b" || { printf 'SCAFFOLD-FAILED: G164 dirs\n'; exit 1; }
+mkdir "$TMP/o164b/node_modules/$n164" 2>/dev/null || { n164="bad:"$'\r'"y"; mkdir "$TMP/o164b/node_modules/$n164"; } \
+  && "${G[@]}" init -q --bare "$TMP/o164b/node_modules/$n164" \
+  && printf 'gitdir: %s\n' "$TMP/o164b/node_modules/$n164" > "$PROJ/xm164b/.git" || { printf 'SCAFFOLD-FAILED: G164 name\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/o164b" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/.git/config:/workspace/proj/.git/config:ro" \
+  && grep -aqF "WARNING: $PROJ/xm164b/.git names $TMP/o164b/node_modules/bad" "$ERR" \
+  && grep -aqF "a git directory in another writable mount (/workspace/o164b)," "$ERR" \
+  && pass "G164 a target the other mount cannot protect is named" \
+  || fail "G164 unprotectable target not named (rc=$LAUNCH_RC; $(grep -aE 'WARNING' "$ERR" | head -2 | tr '\n' ' ' | LC_ALL=C tr -c '[:print:]' '?'))"
+rm -rf "$TMP/o164b" "$PROJ/xm164b"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

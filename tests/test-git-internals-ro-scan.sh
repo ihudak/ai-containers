@@ -38,6 +38,11 @@ has_mount "$PROJ/.git/config:/workspace/proj/.git/config:ro" && has_mount "$PROJ
 grep -qF 'READ-ONLY: /workspace/proj/.git: config, commondir, hooks' "$ERR" \
   && pass "G1 the launch says what it made read-only" \
   || fail "G1 READ-ONLY line (stderr: $(grep -E 'READ-ONLY|WARNING' "$ERR" | tr '\n' ' '))"
+# In a .git the launch makes placeholders in, the absence of config.worktree
+# (the extension off) and gitdir, which it does not make, draws no warning.
+! grep -qF 'could not be made' "$ERR" \
+  && pass "G1 a plain repository draws no 'could not be made' warning" \
+  || fail "G1 false 'could not be made' warning ($(grep -F 'could not be made' "$ERR" | head -2 | tr '\n' ' '))"
 has_mount "$LAUNCHER:/workspace/proj/.ai-containers:ro" \
   && pass "G1 the launcher overlay is still there beside them" || fail "G1 launcher overlay"
 
@@ -928,6 +933,20 @@ launch ..
   && pass "G160 a .git with no config and a commondir naming a repository is not refused; the commondir is read-only, what it names protected" \
   || fail "G160 foreign commondir (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/c160" "$PROJ/r160"
+
+# ── G165: a commondir that leads back to its own git directory (GIT-64) ──────
+# git takes such a directory as its own common directory, hooks/ and config
+# included. With no config there the launch makes nothing and refuses nothing
+# (bugs review GIT-64, open); while objects/ is there, what names the directory
+# is the warning that hooks/ is missing (with it moved aside, no warning does).
+# GIT-64's fix turns this into a check for the refusal or the binds.
+mkdir -p "$PROJ/r165" && "${G[@]}" init -q "$PROJ/r165" && rm -rf "$PROJ/r165/.git/config" "$PROJ/r165/.git/hooks" \
+  && printf '.\n' > "$PROJ/r165/.git/commondir" || { printf 'SCAFFOLD-FAILED: G165\n'; exit 1; }
+launch ..
+grep -qF "WARNING: $PROJ/r165/.git has no hooks and one could not be made" "$ERR" \
+  && pass "G165 a .git with no config whose commondir reads '.' is named (GIT-64: not refused yet)" \
+  || fail "G165 a commondir back to its own .git is not named (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/r165"
 
 # ── G161: under a launcher's read-only overlay, a second name still counts ───
 # A repository inside a launcher another mount exposes gets no binds of its
