@@ -1693,7 +1693,9 @@ for f69 in _term _q _timeout_prefix _ro_fifo_search; do
 done > "$fns69"
 sh69="$TMP/sh69"; mkdir -p "$sh69" "$TMP/src69"
 # timeout -k 2 <seconds> <command…>: records the seconds, runs the command.
-printf '#!/bin/bash\nprintf "%%s\\n" "$3" >> %q\nshift 3\nexec "$@"\n' "$TMP/to69.log" > "$sh69/timeout"
+# Its one probe by the launcher (an argument holding byte 0xff, last;
+# _timeout_prefix, GIT-66) runs and is not logged.
+printf '#!/bin/bash\n[[ "${!#}" == $'"'"'\\xff'"'"' ]] || printf "%%s\\n" "$3" >> %q\nshift 3\nexec "$@"\n' "$TMP/to69.log" > "$sh69/timeout"
 cp "$sh69/timeout" "$sh69/gtimeout"; chmod +x "$sh69/timeout" "$sh69/gtimeout"
 for case69 in fresh:30 spent:10; do
   : > "$TMP/to69.log"
@@ -1728,7 +1730,9 @@ for f70 in _term _q _timeout_prefix _ro_fifo_search _fs_other_names _fs_reachabl
 done > "$fns70"
 M70="$TMP/m70"; mkdir -p "$M70/g" && : > "$M70/g/config" && ln "$M70/g/config" "$M70/x70"
 sh70="$TMP/sh70"; mkdir -p "$sh70"
-printf '#!/bin/bash\nprintf "%%s\\n" "$3" >> %q\nshift 3\nexec "$@"\n' "$TMP/to70.log" > "$sh70/timeout"
+# Its one probe by the launcher (an argument holding byte 0xff, last;
+# _timeout_prefix, GIT-66) runs and is not logged.
+printf '#!/bin/bash\n[[ "${!#}" == $'"'"'\\xff'"'"' ]] || printf "%%s\\n" "$3" >> %q\nshift 3\nexec "$@"\n' "$TMP/to70.log" > "$sh70/timeout"
 cp "$sh70/timeout" "$sh70/gtimeout"; chmod +x "$sh70/timeout" "$sh70/gtimeout"
 # run70 <spent|fresh>: the check over $M70/g/config alone, $M70 writable and,
 # beside it, $TMP/o6, whose name is shorter.

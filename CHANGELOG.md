@@ -152,6 +152,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   session. All of these now refuse the launch, naming the file to fix (bugs
   review GIT-62, GIT-64).
 
+- **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
+  `timeout`, uutils', refuses such an argument and runs nothing, so every read
+  the launcher bounds came back empty for a directory named with such a byte,
+  and a launch could be refused, or a pointer not followed. The launcher now
+  uses GNU's `gnutimeout`, which Ubuntu ships beside it, or no bound, and a
+  bound that runs nothing refuses the launch (bugs review GIT-66).
+
 - **A repository or launcher that two writable mounts expose is read-only
   through both.** Each mount's scan protected what it found in that mount's
   view alone. With an outer `EXTRA_MOUNTS` directory holding the primary under
