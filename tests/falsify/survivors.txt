@@ -1015,3 +1015,87 @@ entrypoint.sh:logic-flip:6454fff6f7154f6f4a4f8953b77697a25a762208
     where `X || true` does. Neither list is the last command of its function
     (run_services goes on to the start phase; the other is followed by
     `return "$rc"`), so the list's status is never read either.
+
+# ── 27 ────────────────────────────────────────────────────────────────────────
+# project-files.sh (feature-gaps review GAP-2, 2026-11-10): 269 mutants, 242
+# killed by tests/test-project-files.sh alone. The four tests that reach it
+# through syncs and inits killed 196; this file calls the helpers directly and
+# kills what they missed, at about 4 s a mutant against their 150. The 27 left
+# are below: branches only macOS or BSD takes, names swapped between two calls,
+# and one EQUIVALENT.
+
+GROUP: project-files.sh — _proj_fd_is's inode comparison, macOS's fdescfs only
+project-files.sh:cond-negate:f80f7e4628d862f6bd0167175948122bb62ce0ff
+project-files.sh:logic-flip:f80f7e4628d862f6bd0167175948122bb62ce0ff
+project-files.sh:logic-flip:40c49b4aac8f3a903ef0ba1220f7cb54bad25dbe
+project-files.sh:return-flip:40c49b4aac8f3a903ef0ba1220f7cb54bad25dbe
+project-files.sh:logic-flip:a6436f567b5c3f17b436b02352cc43b3c9dafbee
+project-files.sh:return-flip:a6436f567b5c3f17b436b02352cc43b3c9dafbee
+project-files.sh:cmp-flip:e8351464d6cc7dfbcc15dcf1eb9417aa1e80573b
+project-files.sh:cond-negate:e8351464d6cc7dfbcc15dcf1eb9417aa1e80573b
+project-files.sh:logic-flip:e8351464d6cc7dfbcc15dcf1eb9417aa1e80573b
+  _proj_fd_is():  [[ -L "$fd" ]] && return 1, then the two `ls -di` reads and
+                  [[ -n "$a" && "$a" == "$b" ]]
+  ENV-DEPENDENT: on Linux /dev/fd/N is a link into /proc, so `-ef` decides and
+    a mismatch returns at the `-L` test; the inode comparison after it is
+    macOS's, where /dev/fd/N is a node of fdescfs. Damaged, the Linux path
+    reaches the comparison and gets the same answer (another file has another
+    inode), or returns from it as before. A Mac's Phase 6 runs this branch.
+
+GROUP: project-files.sh — _proj_fd_perms's mode by name, macOS's fdescfs only
+project-files.sh:logic-flip:4ae02e2754b27d6f86b6b73f74315850ad5f0851
+project-files.sh:return-flip:4ae02e2754b27d6f86b6b73f74315850ad5f0851
+project-files.sh:cond-negate:d3e273a6f8baf561e0bbdddd4c631da018e3e80d
+project-files.sh:logic-flip:d3e273a6f8baf561e0bbdddd4c631da018e3e80d
+  _proj_fd_perms():  p="$(ls -ln "$1" … | cut -c2-10)" || return 1
+                     [[ ! -L "$1" ]] && _proj_fd_is "$1" "$2" && printf '%s\n' "$p"
+  ENV-DEPENDENT: the branch after `[[ -L "/dev/fd/$2" ]]`, which on Linux is
+    taken (its mode read through the descriptor, which test-project-files.sh
+    pins with a file renamed over the name). Only macOS reaches these two
+    lines.
+
+GROUP: project-files.sh — _proj_write's chmod by name, macOS's fdescfs only
+project-files.sh:cond-negate:1602ce0ba76947ae4cea3b901ab4a4034dde1d48
+project-files.sh:cond-negate:c75955f219c76d1de2cb872d83acd1a51bfcce9c
+project-files.sh:logic-flip:c75955f219c76d1de2cb872d83acd1a51bfcce9c
+  _proj_write():  ! { [[ -L "/dev/fd/$w" ]] && chmod "$x" "/dev/fd/$w"; } \
+                  && ! { [[ ! -L "$t" ]] && _proj_fd_is "$t" "$w" && chmod "$x" "$t"; }
+  ENV-DEPENDENT: on Linux the chmod through /dev/fd/N succeeds and the
+    by-name chmod is never reached. Negating the first test sends Linux to
+    the by-name chmod, which sets the same bits on the same file; the second
+    line's damage needs the first to fail, as it does only on macOS.
+
+GROUP: project-files.sh — _proj_replace's BSD `mv -h`
+project-files.sh:cond-negate:5ffaadbde483568a0e7ae67f5c994beafbb15118
+project-files.sh:logic-flip:5ffaadbde483568a0e7ae67f5c994beafbb15118
+  _proj_replace():  [[ -d "$2" && ! -L "$2" ]] && return 1, before mv -h
+  ENV-DEPENDENT: GNU mv -T replaces the name or refuses a directory; past it,
+    GNU mv has no -h and fails, so the guard returning 1 first changes
+    nothing on Linux. On BSD, mv -h moves INTO a real directory and succeeds,
+    which is what the guard stops.
+
+GROUP: project-files.sh — a name swapped between two calls
+project-files.sh:logic-flip:3f3968d0ada16cf54c089a2baef6d7d9ad8ea71d
+project-files.sh:logic-flip:06080bba1e9d201843d3cb6d383deb88f6d754e1
+project-files.sh:logic-flip:dcff6a0c9a4bdf4895c7e49652746c6a2c5c7340
+  _proj_read():   [[ ! -L "$f" && -f "/dev/fd/$fd" ]] && _proj_fd_is "$f" "$fd" && …
+  _proj_write():  [[ -L "$t" || ! -f "$t" ]] || ! _proj_fd_is "$t" "$w" || …
+                  [[ -f "$t" && ! -L "$t" ]] && rm -f "$t"
+  GAP: each damage only weakens a check against a name swapped between the
+    test before the open and the open (or the create and the write, or the
+    failure and the cleanup), and a hermetic test cannot put a swap there
+    without a hook in the function. With one, the agent's link or FIFO at the
+    name would be read, written or removed. The no-follow integration cases
+    and test-sync-no-follow.sh plant links before the call, which the earlier
+    checks refuse.
+
+GROUP: project-files.sh — `|| true` turned into `&& true` on a read to EOF
+project-files.sh:logic-flip:15e05666749c02ec7429120ca42cbe76eb97e0f5
+  _proj_ptr():  IFS= read -r -d '' _pp_out < "$t" || true
+  EQUIVALENT: read -d '' fails at end of input, which is every time here (a
+    pointer holds no NUL: one that does is refused just before), so `|| true`
+    and `&& true` both leave the list non-zero. Bash ignores the failure of a
+    command in an `&&` list that is not its last, under set -e too (the
+    callers run under it), so neither ends anything; the next line reads
+    _pp_out, which the read set either way, and the function's status is the
+    final `[[ -n "$_pp_out" ]]`.
