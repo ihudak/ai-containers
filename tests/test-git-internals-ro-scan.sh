@@ -795,7 +795,7 @@ EXTRA_MOUNTS="$O157" DOCS_PATH="$O157/node_modules/x" launch ..
   && pass "G157 a repository mounted read-only inside a writable mount is read-only through that mount too" \
   || fail "G157 read-only inside writable (rc=$LAUNCH_RC; git mounts: $(git_mounts | sed "s#$TMP#T#g" | tr '\n' ' '))"
 # Nothing is bound in the read-only mount's own view: it is read-only whole.
-! mounts | grep -qF ":/workspace/docs/.git" \
+! grep -qF ":/workspace/docs/.git" < <(mounts) \
   && pass "G157 nothing is bound in the read-only mount's own view" \
   || fail "G157 binds in the read-only view ($(mounts | grep -F ':/workspace/docs/' | tr '\n' ' '))"
 rm -rf "$O157"
@@ -829,7 +829,7 @@ mkdir -p "$PROJ/.git/worktrees/e144" "$PROJ/.git/f144" && printf 'ref: refs/head
   && printf 'x\n' > "$PROJ/.git/f144/gitdir" || { printf 'SCAFFOLD-FAILED: G144 worktrees\n'; exit 1; }
 launch ..
 [[ "$LAUNCH_RC" == 0 && ! -e "$PROJ/.git/worktrees/e144/commondir" && ! -e "$PROJ/.git/f144/commondir" ]] \
-  && ! git_mounts | grep -qE '/\.git/(worktrees/e144|f144)' \
+  && ! grep -qE '/\.git/(worktrees/e144|f144)' < <(git_mounts) \
   && pass "G144 a directory in .git that is no linked worktree's gets nothing made in it" \
   || fail "G144 not a worktree (rc=$LAUNCH_RC; $(ls "$PROJ/.git/worktrees/e144" "$PROJ/.git/f144" | tr '\n' ' '))"
 rm -rf "$PROJ/.git/worktrees/e144" "$PROJ/.git/f144"

@@ -168,8 +168,8 @@ rm -rf "$TMP/cl"
 mkdir -p "$TMP/cl/h" "$TMP/cl/githooks" && "${G[@]}" -C "$TMP/cl/h" init -q && rm -rf "$TMP/cl/h/.git/hooks" \
   && ln -s ../../githooks "$TMP/cl/h/.git/hooks" || { printf 'SCAFFOLD-FAILED: G106 hooks\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/cl" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && grep -A1 -F 'NOTE: /workspace/cl/h/.git is protected for the first time, and its hooks/' "$ERR" \
-    | grep -qF 'hooks/, a link: what git runs through it is not checked' \
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF 'hooks/, a link: what git runs through it is not checked' \
+    < <(grep -A1 -F 'NOTE: /workspace/cl/h/.git is protected for the first time, and its hooks/' "$ERR") \
   && pass "G106 a repository whose hooks/ is a link is reported as not checked, and the launch goes on" \
   || fail "G106 linked hooks/ at launch (rc=$LAUNCH_RC; stderr: $(grep -A1 'cl/h' "$ERR" | head -3 | tr '\n' ' '))"
 rm -rf "$TMP/cl"
@@ -269,7 +269,7 @@ mkdir -p "$nl109" && "${G[@]}" -C "$nl109" init -q && "${G[@]}" -C "$nl109" conf
   || { printf 'SCAFFOLD-FAILED: G109\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/rn" launch "$TMP/app"
 EXTRA_MOUNTS="$TMP/rn" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && grep -A1 -F 'was protected by an earlier launch that did not report it, and its config sets' "$ERR" | grep -qF 'core.sshcommand' \
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF 'core.sshcommand' < <(grep -A1 -F 'was protected by an earlier launch that did not report it, and its config sets' "$ERR") \
   && pass "G109 a repository at a path with a newline is named again at the next launch" \
   || fail "G109 a newline path taken for reported (rc=$LAUNCH_RC; stderr: $(grep -A1 NOTE "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/rn"

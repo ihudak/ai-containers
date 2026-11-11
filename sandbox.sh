@@ -863,8 +863,8 @@ launcher_ro_overlay() {
               _xm_t+=("$cdt"); _xm_by+=("$xt/commondir"); _xm_j+=("$jj")
             fi
           done
-        elif _in_writable "$cdt" && (( ++_gdi_warned <= 5 )); then
-          printf 'WARNING: %s names %s, which is not a git directory; nothing there is protected.\n' "$(_term "$xt/commondir")" "$(_term "$cdt")" >&2
+        elif _in_writable "$cdt"; then
+          _gdi_not_git "$xt/commondir" "$cdt"
         fi
       fi
     fi
@@ -3130,9 +3130,14 @@ _gd_resolve() {
     # another case it names the same place (GIT-38). Only here: a subshell more
     # for every target that exists cost every launch (third review).
     _canon_lex _gr_c "$_gr_lex"
-    if { _in_writable "$_gr_lex" || _in_writable "$_gr_c"; } && (( ++_gdi_warned <= 5 )); then
-      printf 'WARNING: %s names %s, which does not exist; if the agent makes it, your host'\''s git\n' "$(_term "$3")" "$(_term "$_gr_lex")" >&2
-      printf '         reads it unprotected until the next launch.\n' >&2
+    if _in_writable "$_gr_lex" || _in_writable "$_gr_c"; then
+      # Looked at again after the session: the rescan does not look under a
+      # pruned node_modules (GIT-65; G168).
+      _git_watch_add "$_gr_lex"
+      if (( ++_gdi_warned <= 5 )); then
+        printf 'WARNING: %s names %s, which does not exist; if the agent makes it, your host'\''s git\n' "$(_term "$3")" "$(_term "$_gr_lex")" >&2
+        printf '         reads it unprotected until the next launch.\n' >&2
+      fi
     fi
     return 1
   fi
@@ -3870,6 +3875,7 @@ _gdi_follow() {
     # file's directory for a */.git it names as well (review of the GIT-36/37 fix).
     if [[ -n "${gread[$t]:-}" && -n "${greftop[$t]:-}" ]]; then unset 'gread[$t]'; _gdi_ionly+=("$t"); fi
   fi
+  if [[ "${4,,}" == */.git ]] && ! _in_writable "$t"; then _gdi_out_cd "$t" "$3"; fi
   # A git directory outside this mount, reached from a .git file in it, that is
   # not a */.git or .git/modules one: its index is read here, against that .git
   # file's directory, which is this mount's — no other mount's scan sees the
@@ -3904,9 +3910,43 @@ _gdi_follow() {
   had[$t]=1
   if [[ -n "$_ok" ]]; then
     _gdi_dirs+=("$t")
-  elif (( ++_gdi_warned <= 5 )); then
-    printf 'WARNING: %s names %s, which is not a git directory; nothing there is protected.\n' "$(_term "$4")" "$(_term "$t")" >&2
+  else
+    _gdi_not_git "$4" "$t"
   fi
+}
+
+# _gdi_not_git <named by> <directory>: a .git file or commondir in reach names a
+# directory in a writable mount that is no git directory. Named, with what
+# follows: the agent can make it one, which the host's git then reads, and the
+# check after the session looks at it again, where the scan may not (under
+# node_modules), and where a common directory with no HEAD is no git directory
+# to a scan by content (bugs review GIT-63; G169).
+_gdi_not_git() {
+  _git_watch_add "$2"
+  if (( ++_gdi_warned <= 5 )); then
+    printf 'WARNING: %s names %s, which is not a git directory; nothing there is protected.\n' "$(_term "$1")" "$(_term "$2")" >&2
+    printf '         if the agent makes it one, your host'\''s git reads it unprotected until the next\n' >&2
+    printf '         launch; when the container exits it is checked again, and named if git would run something.\n' >&2
+  fi
+}
+
+# _gdi_out_cd <git directory> <mount root>: a git directory outside every
+# writable mount that git uses for a checkout in one (a .git file names it, or a
+# mount lies in its repository) takes its config and hooks from the common
+# directory its commondir names. One that leads into a writable mount is
+# followed as a commondir the scan finds is: protected in the mounts that expose
+# it, and named where it is not there, is reached through a link the mount
+# holds, or is no git directory. One outside them all is judged with it
+# (GIT-44). Before, it was left to that mount's scan, which a pruned
+# node_modules stops (bugs review GIT-65; G168).
+_gdi_out_cd() {
+  local c=""
+  [[ -z "${ocd_had[$1]:-}" ]] || return 0
+  ocd_had[$1]=1
+  [[ -f "$1/commondir" ]] || return 0
+  _git_ptr_read "$1/commondir" c || return 0
+  [[ -n "$c" && "$c" != ./ && "$c" != . ]] || return 0
+  _gdi_follow "$1" "$c" "$2" "$1/commondir"
 }
 
 git_dirs_in() {
@@ -3992,7 +4032,7 @@ git_dirs_in() {
   local -a gtop_g=() gtop_d=() tops=() _gdi_ionly=()
   local _j
   local qq
-  local -A ionly_had=() gpend=() gquiet=() gread=() gref=() greftop=() gwarned=()
+  local -A ionly_had=() gpend=() gquiet=() gread=() gref=() greftop=() gwarned=() ocd_had=()
   local gchanged up=""
   local ni=0
   # The repository a mount sits in, when the mount is a subdirectory of one: its
@@ -4026,7 +4066,7 @@ git_dirs_in() {
           # scan reached, it is protected in that bind's view, as a .git file's
           # target is (re-review of the GIT-44 fix).
           if ! _in_writable "$up/.git"; then
-            gquiet[$up/.git]=1; _gref_add "$up/.git" "$up"
+            gquiet[$up/.git]=1; _gref_add "$up/.git" "$up"; _gdi_out_cd "$up/.git" "$5"
           else
             for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
               [[ "${bsrc[_j]}" != "$5" ]] || continue
@@ -4076,7 +4116,7 @@ git_dirs_in() {
         # target lies (second final review of the GIT-44 fix; GIT-46).
         _gref_add "$tgt" "$up"
         if ! _in_writable "$tgt"; then
-          gquiet[$tgt]=1
+          gquiet[$tgt]=1; _gdi_out_cd "$tgt" "$5"
         elif [[ "$tgt" == "$5" || "$tgt" == "$5"/* ]]; then
           # In this mount, past what its scan reached: protected here, as a .git
           # file's target is (_gdi_follow; GIT-46).
@@ -5126,6 +5166,19 @@ _git_after_session() {
         exit 0
       ) || printf 'C\0\0\0'
     done
+    # What the launch named in a writable mount as no git directory, or not
+    # there: the scan above does not look under a pruned node_modules, and finds
+    # a common directory by content only with a HEAD, which one needs none of
+    # (bugs review GIT-63, GIT-65; G168, G169).
+    for w in ${_git_watch[@]+"${_git_watch[@]}"}; do
+      if (( SECONDS >= deadline )); then printf 'C\0\0\0'; break; fi
+      [[ -d "$w" ]] || continue
+      if [[ ! -r "$w" || ! -x "$w" ]]; then printf 'R\0%s\0%s\0' "$w" "cannot be listed, so it was not checked"; continue; fi
+      _is_common_dir "$w" || _is_git_dir "$w" || continue
+      k=""; h=""; _git_runs "$w" k h || true
+      if ! _git_usable; then k="${k:-not read, git does not run on this host}"; fi
+      if [[ -n "$k$h" ]]; then printf 'R\0%s\0%s\0' "$w" "${k:+config: $k}${k:+${h:+; }}${h:+hooks: $h}"; fi
+    done
   ) || true
   trap 'exit 1' USR1
   for (( i = 0; i + 2 < ${#recs[@]}; i += 3 )); do
@@ -5503,6 +5556,16 @@ declare -A _gref_i=()
 # _gref_add <git directory> <checkout>
 _gref_add() { _gref_t+=("$1"); _gref_d+=("$2"); _gref_i[$1]+="$(( ${#_gref_t[@]} - 1 )) "; }
 _git_bsrc=()               # every writable bind source of the launch (bsrc), for the rescan
+# Directories in a writable mount a .git file or commondir names that were no git
+# directory, or not there, at launch: _git_after_session looks at each again
+# (GIT-63, GIT-65). Each is named by a .git file or a git directory the launch
+# counts toward SANDBOX_GIT_MAX, and the look is inside the rescan's deadline.
+_git_watch=()
+declare -A _git_watch_had=()
+_git_watch_add() {
+  [[ -z "${_git_watch_had[$1]:-}" ]] || return 0
+  _git_watch_had[$1]=1; _git_watch+=("$1")
+}
 trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
 
 # The agent's identity: numeric, within a 32-bit id, and never root — capsh
