@@ -1074,7 +1074,7 @@ mk132 .husky/_; mkdir -p "$R132/r/.husky/_"
 launch "$R132"
 if [[ "$LAUNCH_RC" == 0 && -d "$R132/r/.git/.husky" && ! -L "$R132/r/.git/.husky" && -z "$(dup132)" ]] \
    && has_mount "$R132/r/.git/.husky:/workspace/p132/r/.git/.husky:ro" \
-   && ! mounts | grep -qF ":/workspace/p132/r/.git/.husky/"; then
+   && ! grep -qF ":/workspace/p132/r/.git/.husky/" < <(mounts); then
   pass "G132 a relative core.hooksPath inside the git directory has its first directory there made and bound read-only"
 else
   fail "G132 hooksPath in .git (rc=$LAUNCH_RC; made: $([[ -d "$R132/r/.git/.husky" ]] && echo yes || echo no); git mounts: $(git_mounts | grep -F husky | tr '\n' ' '); $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
@@ -1086,7 +1086,7 @@ grep -qF "runs its git hooks from /workspace/p132/r/.husky/_ (core.hooksPath)" "
 mk132 frontend/.husky/_
 launch "$R132"
 [[ "$LAUNCH_RC" == 0 ]] && has_mount "$R132/r/.git/frontend:/workspace/p132/r/.git/frontend:ro" \
-  && ! mounts | grep -qF ":/workspace/p132/r/.git/frontend/" \
+  && ! grep -qF ":/workspace/p132/r/.git/frontend/" < <(mounts) \
   && pass "G132 a deeper one (frontend/.husky/_) has .git/frontend bound read-only, so nothing on its way can be swapped" \
   || fail "G132 frontend/.husky/_ (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F frontend | tr '\n' ' '))"
 # .git/hooks, the default spelled from the checkout: from .git, .git/.git,
@@ -1104,7 +1104,7 @@ launch "$R132"; launch "$R132"
 # list), and it is named.
 mk132 info/x
 launch "$R132"
-[[ "$LAUNCH_RC" == 0 && ! -e "$R132/r/.git/info/x" ]] && ! mounts | grep -qF ":/workspace/p132/r/.git/info" \
+[[ "$LAUNCH_RC" == 0 && ! -e "$R132/r/.git/info/x" ]] && ! grep -qF ":/workspace/p132/r/.git/info" < <(mounts) \
   && grep -qF "runs its git hooks from /workspace/p132/r/.git/info/x (core.hooksPath)" "$ERR" \
   && pass "G132 one under .git/info is not made or bound, and is named" \
   || fail "G132 info/x (rc=$LAUNCH_RC; made: $([[ -e "$R132/r/.git/info/x" ]] && echo yes || echo no); git mounts: $(git_mounts | grep -F '/info' | tr '\n' ' '))"
@@ -1130,7 +1130,7 @@ rm -rf "$TMP/cs132"
 # extension is off and git keeps no such file, is not made a directory either.
 mk132 config/git-hooks
 launch "$R132"
-[[ "$LAUNCH_RC" == 0 && -f "$R132/r/.git/config" ]] && ! mounts | grep -qF ":/workspace/p132/r/.git/config/" \
+[[ "$LAUNCH_RC" == 0 && -f "$R132/r/.git/config" ]] && ! grep -qF ":/workspace/p132/r/.git/config/" < <(mounts) \
   && pass "G132 one through .git/config launches, with nothing made or bound there" \
   || fail "G132 config/git-hooks (rc=$LAUNCH_RC; $(grep -aF 'ERROR' "$ERR" | head -1))"
 mk132 config.worktree/x
@@ -1239,7 +1239,7 @@ mk132 a/b; "${G[@]}" -C "$R132/r" config extensions.worktreeConfig true && "${G[
   && "${G[@]}" init -q --bare "$R132/r/.git/modules/sub" || { printf 'SCAFFOLD-FAILED: G132 overlap\n'; exit 1; }
 launch "$R132"
 if [[ "$LAUNCH_RC" == 0 && -z "$(dup132)" ]] && has_mount "$R132/r/.git/a:/workspace/p132/r/.git/a:ro" \
-   && ! mounts | grep -qF ":/workspace/p132/r/.git/a/"; then
+   && ! grep -qF ":/workspace/p132/r/.git/a/" < <(mounts); then
   pass "G132 a core.hooksPath below another is bound once, read-only, and nothing is bound twice"
 else
   fail "G132 overlap (rc=$LAUNCH_RC; twice: $(dup132 | tr '\n' ' '); under a: $(mounts | grep -F '/.git/a' | tr '\n' ' '))"

@@ -141,6 +141,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A repository under a mount's `node_modules` that a linked worktree
+  outside every mount takes for its common directory is read-only.** git
+  takes that repository's `config` and hooks for the worktree's checkout in
+  the mount, but the launch looked for it only where the mount's scan goes,
+  and the scan skips `node_modules`, so the agent could write a
+  `core.fsmonitor` there that your host's git ran. It is now protected, and
+  one not there yet is named (bugs review GIT-65). A directory a `commondir`
+  or `.git` file names that is not a git directory yet, or not there, is
+  checked again when the container exits, and named if the session made it a
+  repository that runs something, under `node_modules` and without a `HEAD`
+  too (GIT-63).
+
 - **A `commondir` that git would follow back to its own git directory, or
   that the agent can repoint, refuses the launch.** In a repository's own git
   directory with no `config`, a `commondir` reading `.` (or `../.git`, or its

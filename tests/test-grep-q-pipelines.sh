@@ -99,10 +99,19 @@ unset _big _out
 # statically would be a second thing to get wrong. Two tracked files sharing a
 # basename would over-include, never under-include, and the rule fails safe in
 # that direction.
+#
+# AND THE OTHER WAY ROUND: a file that sources a LIBRARY setting pipefail runs
+# under it from that line on, though it sets nothing itself. The git-internals
+# tests take it from tests/lib-git-internals-ro.sh, and four of them sat outside
+# this scan with thirteen `| grep -q` pipelines, ten in the guard shape
+# `! mounts | grep -qF …` (bugs review TST-34). Matched by basename too, and
+# over-including in the same safe direction.
 sourced_by_pipefail=""
+pipefail_libs=""
 while IFS= read -r sf; do
   [[ -f "$REPO_DIR/$sf" ]] || continue
   grep -qE '^[[:space:]]*set[[:space:]]+-[a-z]*o?[a-z]*[[:space:]]*.*pipefail|^[[:space:]]*set[[:space:]]+-o[[:space:]]+pipefail' "$REPO_DIR/$sf" || continue
+  pipefail_libs="$pipefail_libs $(basename "$sf")"
   src_targets="$(grep -hE '^[[:space:]]*(source|\.)[[:space:]]' "$REPO_DIR/$sf" 2>/dev/null || true)"
   [[ -n "$src_targets" ]] || continue
   while IFS= read -r one; do
@@ -118,7 +127,15 @@ while IFS= read -r f; do
   if ! grep -qE '^[[:space:]]*set[[:space:]]+-[a-z]*o?[a-z]*[[:space:]]*.*pipefail|^[[:space:]]*set[[:space:]]+-o[[:space:]]+pipefail' "$REPO_DIR/$f"; then
     case " $sourced_by_pipefail " in
       *" $(basename "$f") "*) ;;      # sourced into a pipefail caller
-      *) continue ;;
+      *)
+        # Or it sources a library that sets pipefail.
+        src_from=0
+        while IFS= read -r one; do
+          case " $pipefail_libs " in *" $one "*) src_from=1; break ;; esac
+        done < <(grep -hE '^[[:space:]]*(source|\.)[[:space:]]' "$REPO_DIR/$f" 2>/dev/null \
+                   | grep -oE '[A-Za-z0-9._-]+\.sh' || true)
+        [[ "$src_from" -eq 1 ]] || continue
+        ;;
     esac
   fi
   scanned=$((scanned + 1))
