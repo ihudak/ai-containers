@@ -285,14 +285,16 @@ launch ..
 has_mount "$PROJ/node_modules/x47/common/config:/workspace/proj/node_modules/x47/common/config:ro" \
   && pass "G47 the common directory a commondir names is protected too" \
   || fail "G47 commondir target left writable (stderr: $(grep -F x47 "$ERR" | head -2 | tr '\n' ' '))"
-# …and a commondir that is itself a link: git reads through it (security review).
+# …and a commondir that is itself a link: git reads through it (security review),
+# and the agent can repoint it, which no read-only bind stops, so the launch is
+# refused (GIT-62; G166).
 "${G[@]}" init -q --bare "$PROJ/node_modules/x47/c2"
 mkdir -p "$PROJ/wt47b"; printf '%s\n' "$PROJ/node_modules/x47/c2" > "$PROJ/cd47.txt"
 ln -s ../cd47.txt "$PROJ/wt47b/commondir"; printf 'ref: refs/heads/main\n' > "$PROJ/wt47b/HEAD"
 launch ..
-has_mount "$PROJ/node_modules/x47/c2/config:/workspace/proj/node_modules/x47/c2/config:ro" \
-  && pass "G47 a commondir that is a link is read through, as git reads it" \
-  || fail "G47 a linked commondir's target left writable (stderr: $(grep -F c2 "$ERR" | head -2 | tr '\n' ' '))"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $PROJ/wt47b/commondir is a symlink" "$ERR" \
+  && pass "G47 a commondir that is a link refuses the launch" \
+  || fail "G47 a linked commondir not refused (rc=$LAUNCH_RC; stderr: $(grep -F wt47b "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/wt47b" "$PROJ/cd47.txt"
 # A target in ANOTHER writable mount (a pruned node_modules of an EXTRA_MOUNTS
 # directory, the launcher's own .agent-blocked) is not this mount's scan to
