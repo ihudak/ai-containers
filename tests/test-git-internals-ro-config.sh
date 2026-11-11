@@ -480,6 +480,82 @@ EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
 grep -qF "runs its git hooks from /workspace/h120/wt/.husky/_ (core.hooksPath)" "$ERR" \
   && pass "G120 a relative core.hooksPath is judged from the core.worktree git runs hooks in" \
   || fail "G120 hooksPath from core.worktree (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+# Relative, it is judged from where the .git lies, and only from there: with no
+# core.worktree, never from the root, where this value names a directory of the
+# writable mount too.
+mk120; mkdir -p "$TMP/h120/hk" && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath "${TMP#/}/h120/hk" \
+  || { printf 'SCAFFOLD-FAILED: G120 relative from the root\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "runs its git hooks from /workspace/h120/r/${TMP#/}/h120/hk (core.hooksPath)" "$ERR" \
+  && ! grep -qF 'runs its git hooks from /workspace/h120/hk (core.hooksPath)' "$ERR" \
+  && pass "G120 a relative core.hooksPath is judged from where the .git lies, not from the root" \
+  || fail "G120 relative hooksPath from the root (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks from' "$ERR" | head -2 | tr '\n' ' '))"
+# A gitdir file in a repository's own git directory is no linked worktree's: git
+# never reads one there, so a relative core.hooksPath is not judged from it.
+mk120; mkdir -p "$TMP/h120/else" && printf '%s/h120/else/.git\n' "$TMP" > "$TMP/h120/r/.git/gitdir" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath .husky/_ || { printf 'SCAFFOLD-FAILED: G120 stray gitdir\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF 'runs its git hooks from /workspace/h120/r/.husky/_ (core.hooksPath)' "$ERR" \
+  && ! grep -qF '/workspace/h120/else/.husky/_' "$ERR" \
+  && pass "G120 a gitdir file in a repository's own git directory is not a checkout to judge from" \
+  || fail "G120 stray gitdir (rc=$LAUNCH_RC; stderr: $(grep -F 'git hooks from' "$ERR" | head -2 | tr '\n' ' '))"
+# Two values that lead to the same directory, from config and config.worktree
+# (the launcher keeps the last of each file), walk it once: a hook there that
+# is a link the agent can redirect is named once.
+mk120; printf '#!/bin/sh\n' > "$TMP/h120/w.sh" && ln -s ../../../w.sh "$TMP/h120/r/.git/hooks/pre-commit" \
+  && "${G[@]}" -C "$TMP/h120/r" config extensions.worktreeConfig true \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath "$TMP/h120/r/.git/hooks" \
+  && "${G[@]}" -C "$TMP/h120/r" config --worktree core.hooksPath "$TMP/h120/r/.git/hooks/" || { printf 'SCAFFOLD-FAILED: G120 same directory\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$(grep -c "NOTE: /workspace/h120/r/.git/hooks/pre-commit, a hook your host's git runs, is a link" "$ERR")" == 1 ]] \
+  && pass "G120 two core.hooksPath values leading to one directory walk it once" \
+  || fail "G120 one directory walked $(grep -c "NOTE: /workspace/h120/r/.git/hooks/pre-commit, a hook your host's git runs" "$ERR") times (rc=$LAUNCH_RC)"
+# One written :(optional) that leads to hooks/ itself, which git falls back to
+# anyway: hooks/ is walked once, and a hook there that is a link is named once,
+# with what to do about a link.
+mk120; printf '#!/bin/sh\n' > "$TMP/h120/w.sh" && ln -s ../../../w.sh "$TMP/h120/r/.git/hooks/pre-commit" \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath ":(optional)$TMP/h120/r/.git/hooks" || { printf 'SCAFFOLD-FAILED: G120 optional hooks\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$(grep -c "NOTE: /workspace/h120/r/.git/hooks/pre-commit, a hook your host's git runs, is a link" "$ERR")" == 1 ]] \
+  && grep -qF 'Check it before a git commit on the host, or replace the link with what it names.' \
+       < <(grep -A2 -F "NOTE: /workspace/h120/r/.git/hooks/pre-commit, a hook your host's git runs, is a link" "$ERR") \
+  && pass "G120 hooks/ that an :(optional) core.hooksPath names is walked once, its link named with what to do" \
+  || fail "G120 :(optional) hooks/ (rc=$LAUNCH_RC; $(grep -c "hooks/pre-commit, a hook your host" "$ERR") named; $(grep -A2 -F 'hooks/pre-commit, a hook your host' "$ERR" | tail -1))"
+# Each way is spent from the launch's budget once. A linked worktree's checkout,
+# named by its .git file and by its gitdir, is one base, and a value written
+# :(optional) adds its plain reading only where that is not set already. Here
+# the common config sets one and the worktree's config.worktree the other,
+# judged from each checkout and git directory: six ways (each value has too many
+# components to walk, so it costs one way and no more). With the include entries
+# of other repositories they fill the budget to its last way: one entry more is
+# cut. The launch is from a project and a group of its own, which spend no way:
+# what the checks above leave in theirs would.
+deep120="$(printf 'a/%.0s' $(seq 1 130))"; declare -A c120=(); o120=("$LAUNCHER" "$HOME")
+mkdir -p "$TMP/p120/.ai-containers" "$TMP/home120" && "${G[@]}" init -q "$TMP/p120" \
+  && for f in "${AI_CONTAINERS_SHARED_FILES[@]}"; do cp -p "$ENGINE/$f" "$TMP/p120/.ai-containers/$f" || { printf 'SCAFFOLD-FAILED: G120 budget launcher\n'; exit 1; }; done \
+  && cp -R "$ENGINE/tools.d" "$TMP/p120/.ai-containers/" && { [[ ! -d "$ENGINE/services.d" ]] || cp -R "$ENGINE/services.d" "$TMP/p120/.ai-containers/"; } \
+  || { printf 'SCAFFOLD-FAILED: G120 budget project\n'; exit 1; }
+LAUNCHER="$TMP/p120/.ai-containers"; export HOME="$TMP/home120"
+for n120 in 994 995; do
+  mk120; "${G[@]}" -C "$TMP/h120/r" commit -q --allow-empty -m i && "${G[@]}" -C "$TMP/h120/r" worktree add -q "$TMP/h120/wt" \
+    && "${G[@]}" -C "$TMP/h120/r" config extensions.worktreeConfig true \
+    && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath "../${deep120}x" \
+    && "${G[@]}" -C "$TMP/h120/wt" config --worktree core.hooksPath ":(optional)../${deep120}x" \
+    || { printf 'SCAFFOLD-FAILED: G120 budget once\n'; exit 1; }
+  left120="$n120"; f120=0
+  while (( left120 > 0 )); do
+    f120=$((f120 + 1)); k120=$(( left120 > 100 ? 100 : left120 )); left120=$((left120 - k120))
+    "${G[@]}" init -q "$TMP/h120/f$f120" \
+      && { printf '[include]\n'; for m in $(seq 1 "$k120"); do printf '\tpath = /nonexistent120/f%d\n' "$m"; done; } >> "$TMP/h120/f$f120/.git/config" \
+      || { printf 'SCAFFOLD-FAILED: G120 budget filler\n'; exit 1; }
+  done
+  EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+  c120[$n120]="rc=$LAUNCH_RC, $(grep -c '^WARNING: not every' "$ERR") cut"
+done
+LAUNCHER="${o120[0]}"; export HOME="${o120[1]}"; rm -rf "$TMP/p120" "$TMP/home120"
+[[ "${c120[994]}" == "rc=0, 0 cut" && "${c120[995]}" == "rc=0, 1 cut" ]] \
+  && pass "G120 a linked worktree's checkout is one base, and an :(optional) value's plain reading is judged once" \
+  || fail "G120 ways spent twice (994 entries: ${c120[994]}; 995: ${c120[995]})"
 # Two ways to the hooks that the agent can change at the same step name it once:
 # a core.worktree that is where the .git lies.
 mk120; "${G[@]}" -C "$TMP/h120/r" config core.worktree "$TMP/h120/r" \
@@ -1184,10 +1260,14 @@ rm -rf "$R132" "$TMP/e132"
 # cannot be made in a git directory of yours refuses the launch, naming the
 # chmod that undoes it (bugs review GIT-48); another user's gets a WARNING.
 R133="$TMP/p133"
-mk133() {  # a fresh repository in the writable mount, launched once
+mk133() {  # a fresh repository in the writable mount, launched once; 1 if that launch failed
   rm -rf "$R133"; mkdir -p "$R133" && "${G[@]}" init -q "$R133/r" || { printf 'SCAFFOLD-FAILED: G133\n'; exit 1; }
   launch "$R133"
-  [[ "$LAUNCH_RC" == 0 && -f "$R133/r/.git/commondir" ]] || { printf 'SCAFFOLD-FAILED: G133 first launch (rc=%s)\n' "$LAUNCH_RC"; exit 1; }
+  # The launch's doing, so a FAIL and not SCAFFOLD-FAILED, which the falsify tier
+  # scores as no verdict at all; the check that builds on it is then skipped.
+  [[ "$LAUNCH_RC" == 0 && -f "$R133/r/.git/commondir" ]] && return 0
+  fail "G133 the first launch of a fresh repository (rc=$LAUNCH_RC; commondir made: $([[ -f "$R133/r/.git/commondir" ]] && echo yes || echo no))"
+  return 1
 }
 refused133() {  # <name> <label>: the launch refused, naming it, with docker never run
   chmod a-w "$R133/r/.git"; launch "$R133"; chmod u+w "$R133/r/.git"
@@ -1199,20 +1279,22 @@ refused133() {  # <name> <label>: the launch refused, naming it, with docker nev
   fi
 }
 if (( EUID != 0 )); then
-  mk133; rm -rf "$R133/r/.git/hooks"; refused133 hooks "a hooks/"
+  if mk133; then rm -rf "$R133/r/.git/hooks"; refused133 hooks "a hooks/"; fi
   rm -rf "$R133"; mkdir -p "$R133" && "${G[@]}" init -q "$R133/r" || { printf 'SCAFFOLD-FAILED: G133\n'; exit 1; }
   refused133 commondir "the ./ commondir of a repository launched for the first time"
-  mk133; "${G[@]}" -C "$R133/r" config extensions.worktreeConfig true; refused133 config.worktree "a config.worktree, where the extension is on,"
-  mk133; rm -f "$R133/r/.git/config"; refused133 config "a config"
+  if mk133; then "${G[@]}" -C "$R133/r" config extensions.worktreeConfig true; refused133 config.worktree "a config.worktree, where the extension is on,"; fi
+  if mk133; then rm -f "$R133/r/.git/config"; refused133 config "a config"; fi
   # objects/ moved aside: the .git still counts (review of the GIT-48 fix).
   rm -rf "$R133"; mkdir -p "$R133" && "${G[@]}" init -q "$R133/r" && mv "$R133/r/.git/objects" "$R133/r/.git/o" \
     || { printf 'SCAFFOLD-FAILED: G133 objects\n'; exit 1; }
   refused133 commondir "the ./ commondir of a .git whose objects/ was moved aside"
   # Nothing to make: a read-only .git launches as before.
-  mk133; chmod a-w "$R133/r/.git"; launch "$R133"; chmod u+w "$R133/r/.git"
-  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$R133/r/.git/config:/workspace/p133/r/.git/config:ro" \
-    && pass "G133 a read-only git directory that holds all of them launches" \
-    || fail "G133 read-only, nothing to make (rc=$LAUNCH_RC; $(grep -aF 'ERROR' "$ERR" | head -1))"
+  if mk133; then
+    chmod a-w "$R133/r/.git"; launch "$R133"; chmod u+w "$R133/r/.git"
+    [[ "$LAUNCH_RC" == 0 ]] && has_mount "$R133/r/.git/config:/workspace/p133/r/.git/config:ro" \
+      && pass "G133 a read-only git directory that holds all of them launches" \
+      || fail "G133 read-only, nothing to make (rc=$LAUNCH_RC; $(grep -aF 'ERROR' "$ERR" | head -1))"
+  fi
 else
   printf 'SKIP: G133 what cannot be made in a git directory of yours — root writes it anyway\n'
 fi

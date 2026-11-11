@@ -1110,7 +1110,10 @@ for n in 1 2 3; do
   for m in $(seq 1 150); do ln -s "../../w/f$m" "$FAKE/p$n/.ai-containers/l$m"; done
 done
 ln -s "$FAKE/w/own" "$LAUNCHER/own46.conf"
-EXTRA_MOUNTS="$FAKE" launch "$LAUNCHER" "$TMP/app"
+# And one with no links, in a mount scanned after: past the budget it is named
+# without being searched, so the budget bounds what the search costs too.
+FAKE2="$TMP/fake46e"; mk_launcher "$FAKE2/e"
+EXTRA_MOUNTS="$FAKE $FAKE2" launch "$LAUNCHER" "$TMP/app"
 rm -f "$LAUNCHER/own46.conf"
 w46="$(grep -c 'leads somewhere the agent can change' "$ERR")"
 [[ "$w46" -eq 201 ]] && grep -qF "WARNING: launcher link $LAUNCHER/own46.conf leads somewhere" "$ERR" \
@@ -1125,7 +1128,10 @@ unc46="$(sed -n '/hold more than 200 symlinks between them/,/^[^ ]/p' "$ERR")"
 [[ "$(grep -cE "^ +$FAKE/p[123]/\.ai-containers\$" <<<"$unc46")" -eq 2 ]] \
   && pass "T46 the launchers whose links were not all checked are named" \
   || fail "T46 unchecked launchers not named (stderr: $(tr '\n' ' ' <<<"$unc46"))"
-rm -rf "$FAKE"
+grep -qE "^ +$FAKE2/e/\.ai-containers\$" <<<"$unc46" \
+  && pass "T46 a launcher reached past the budget is named without being searched" \
+  || fail "T46 launcher past the budget searched (stderr: $(tr '\n' ' ' <<<"$unc46"))"
+rm -rf "$FAKE" "$FAKE2"
 
 # ── T47: the limit counts what is overlaid, not every launcher found. One
 # read-only overlay covers whatever is nested inside it, so launchers there

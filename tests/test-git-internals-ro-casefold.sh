@@ -379,6 +379,37 @@ launch ..
   || fail "G117 worktree gitdir in another case ($(grep -F 'no worktree' "$ERR" | head -1))"
 "${G[@]}" -C "$PROJ" worktree remove --force "$OW" 2>/dev/null; rm -rf "$OW"; "${G[@]}" -C "$PROJ" worktree prune
 
+# A core.hooksPath directory two repositories name, one in another case, is one
+# directory, walked once a launch: it is known by device and inode, not by how
+# a value spells it.
+mkdir -p "$TMP/h117" "$TMP/o117/hooks" && printf '#!/bin/sh\n' > "$TMP/h117/w.sh" \
+  && ln -s "$TMP/h117/w.sh" "$TMP/o117/hooks/pre-commit" && "${G[@]}" init -q "$TMP/h117/r1" && "${G[@]}" init -q "$TMP/h117/r2" \
+  && "${G[@]}" -C "$TMP/h117/r1" config core.hooksPath "$TMP/o117/hooks" \
+  && "${G[@]}" -C "$TMP/h117/r2" config core.hooksPath "$TMP/o117/HOOKS" || { printf 'SCAFFOLD-FAILED: G117 hooks in two cases\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h117" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(grep -Fci "NOTE: $TMP/o117/hooks/pre-commit, a hook your host" "$ERR")" == 1 ]] \
+  && pass "G117 a core.hooksPath directory named in two cases is walked once" \
+  || fail "G117 hooks directory in two cases (rc=$LAUNCH_RC; named $(grep -Fci "o117/hooks/pre-commit, a hook your host" "$ERR") times)"
+rm -rf "$TMP/h117" "$TMP/o117"
+
+# ── G121 here too: where a directory ignores case and its kernel does not, and
+# it is no Windows filesystem (a share of a host that ignores case), no
+# read-only bind covers another spelling of its name, so a launch that needs one
+# below a writable mount root is refused. Modelled on this filesystem, which
+# ignores case itself, by a stat that reports a FUSE share for every path. Linux
+# only: elsewhere _ci_alias_fs takes no filesystem for one.
+if [[ "$OSTYPE" == linux* ]]; then
+  real121="$(command -v stat)" && mkdir -p "$TMP/bin121" \
+    && printf '#!/usr/bin/env bash\n[[ "$1 $2 $3" == "-f -c %%T" ]] && { printf "fuse\\n"; exit 0; }\nexec %q "$@"\n' "$real121" > "$TMP/bin121/stat" \
+    && chmod +x "$TMP/bin121/stat" || { printf 'SCAFFOLD-FAILED: G121 stat\n'; exit 1; }
+  PATH="$TMP/bin121:$PATH" launch ..
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'and the kernel does not: in it,' "$ERR" \
+    && grep -qF '.AI-CONTAINERS' "$ERR" && grep -qF 'mount covers, so the agent could write it (bugs review GIT-41). Refusing the launch.' "$ERR" \
+    && pass "G121 where a directory ignores case and its kernel does not, a launch that needs a read-only bind there is refused" \
+    || fail "G121 a share that ignores case (rc=$LAUNCH_RC; docker ran: $([[ -s "$CAPTURE" ]] && echo yes || echo no); stderr: $(grep -F -A1 ERROR "$ERR" | head -2 | tr '\n' ' '))"
+  rm -rf "$TMP/bin121"
+fi
+
 # What the agent can make this cost is bounded: past the budget the launch is
 # refused, and says why.
 AI_CONTAINERS_SPELL_MAX=2 launch ..
@@ -420,6 +451,11 @@ rm -rf "$TMP/sp124" "$TMP/bin124"
 # dentry in the guest, so hooks/ and .git hold. Modelled here by the fake
 # docker's session writing the host's files under the other spelling.
 cfg0="$(cat "$PROJ/.git/config")"
+# Kept, to put the repository back after these checks whatever the launch did;
+# the commondir as the launches before left it, there or not.
+rm -f "$TMP/commondir127"; cp -p "$PROJ/.git/config" "$TMP/config127" \
+  && { [[ ! -f "$PROJ/.git/commondir" ]] || cp -p "$PROJ/.git/commondir" "$TMP/commondir127"; } \
+  || { printf 'SCAFFOLD-FAILED: G127 keep\n'; exit 1; }
 # What stood there is kept where only the launcher writes, never beside the file,
 # whose directory a sibling container can still write (security review of the fix).
 asides() { find "$HOME/.ai-containers/restored" -type f 2>/dev/null; }
@@ -452,6 +488,13 @@ for what121 in removes "replaces with a link" "replaces with a FIFO"; do
     || fail "G127 a config the session $what121 (rc=$LAUNCH_RC in ${LAUNCH_S}s; stderr: $(grep -F -e WARNING -e ERROR "$ERR" | tail -2 | tr '\n' ' '))"
   rm -rf "$HOME/.ai-containers/restored"
 done
+# The repository as these sessions found it, should the launch not have put it
+# back: the launch is the code under test, so what it fails to restore is a
+# FAIL above, and must not leave the checks below a repository git cannot run
+# (a commondir naming ../planted), which would end the file as a scaffold failure.
+rm -f "$PROJ/.git/config" "$PROJ/.git/commondir" && cp -p "$TMP/config127" "$PROJ/.git/config" \
+  && { [[ ! -f "$TMP/commondir127" ]] || cp -p "$TMP/commondir127" "$PROJ/.git/commondir"; } \
+  && rm -f "$TMP/config127" "$TMP/commondir127" || { printf 'SCAFFOLD-FAILED: G127 put back\n'; exit 1; }
 
 # A linked worktree's .git file, written as .GIT.
 "${G[@]}" -C "$PROJ" worktree add -q "$PROJ/wt121" 2>/dev/null || { printf 'SCAFFOLD-FAILED: G127 worktree\n'; exit 1; }

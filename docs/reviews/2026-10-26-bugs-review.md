@@ -35,6 +35,7 @@
 - **Updated 2026-11-10:** GAP-2's slice 7 found GIT-62 (open, MEDIUM: a `commondir` that is a symlink switches off the protection a regular one gets, so a link planted in a repository not yet protected keeps launches from protecting it while the link is there, and a session that then removes it and writes a config is not named after the session) and GIT-63 (open, LOW: what a `commondir` in another writable mount names is not looked at after the session), in section 29, reviewed up to `f3a74e1`.
 - **Updated 2026-11-11:** GAP-2's slice 7 found GIT-64 (open, MEDIUM: in a git directory with no `config`, a `commondir` that leads back to it, or that the agent can make lead back, keeps the launch from making and binding that `config`, and with `objects/` moved aside no warning is printed), in section 29, reviewed up to `83748b0`.
 - **Updated 2026-11-11:** GAP-2's slice 7 found GIT-65 (open, LOW: a common directory inside a writable mount, past its scan, that a linked worktree's directory outside every mount names is neither protected nor named; git never makes that layout itself), in section 29, at `26b54d7`.
+- **Updated 2026-11-11:** the review of GAP-2's slice 7, fourth batch, found TST-34 (open, LOW, test only: `tests/test-grep-q-pipelines.sh` does not scan the git-internals tests, which take `pipefail` from their library; no check passes falsely today), in section 29, at `852a887`.
 - **Updated 2026-11-08:** GIT-43's macOS half measured: `mount` names mount points by the physical path, so the fix holds there; G131 now runs on macOS with an attached disk image (section 25).
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
@@ -2407,7 +2408,7 @@ Found 2026-11-10, at `7a740ef`, while classifying the survivors of `git_dirs_in(
 
 ## 29. Found while doing GAP-2's slice 7
 
-GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7's survivors, at `f3a74e1` (main), GIT-64 by the review of the second, at `83748b0`, and GIT-65 while classifying the third batch's survivors, at `26b54d7`. Each was confirmed by running it.
+GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7's survivors, at `f3a74e1` (main), GIT-64 by the review of the second, at `83748b0`, and GIT-65 while classifying the third batch's survivors, at `26b54d7`. Each was confirmed by running it. TST-34 was found by the review of the fourth batch, at `852a887`.
 
 ### GIT-62: a `commondir` that is a symlink switches off the protection a regular one gets
 - **Status: OPEN** (2026-11-10).
@@ -2458,6 +2459,17 @@ GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7'
   - With the same common directory where the scan reaches it (`w/c`), it is protected.
 - **Fix direction:** in that loop, take a `commondir` that leads into a writable mount as one found there: protect it in that mount's view, as the `_xm_t` targets are protected, and name one that does not exist or that the agent can repoint, as `_gd_resolve()` names one. AGENTS.md, under git internals, says "a linked worktree's `commondir` [is] followed … so a git directory under a pruned `node_modules` or past the depth limit is protected too"; that then holds for this case too.
 - Slice 7's mutant 498 sits on that condition. It is a GAP tied to this entry: the original's silence is the bug, so no check of today's output can kill it.
+
+### TST-34: the `grep -q` pipeline lint does not scan the git-internals tests, which take `pipefail` from their library
+- **Status: OPEN** (2026-11-11).
+- **Severity: LOW** (test only). No check passes falsely today. Confidence: CONFIRMED by reading the lint and the files, at `852a887`.
+- **Location:** `tests/test-grep-q-pipelines.sh`, which scans a file that sets `pipefail` or that one setting it sources; `tests/lib-git-internals-ro.sh`, which sets it for the files that source it, four of which do not set it themselves: `tests/test-git-internals-ro-scan.sh`, `tests/test-git-internals-ro-index.sh`, `tests/test-git-internals-ro-config.sh` and `tests/test-git-internals-ro-reports.sh`.
+- **What's wrong:**
+  - A file that takes `pipefail` from a library it sources is not scanned, so 13 `… | grep -q` pipelines in those files go unchecked.
+  - Ten of them are `! mounts | grep -qF …` or `! git_mounts | grep -qE …`, the shape that passes falsely: if `grep -q` exits on a match while the writer is still writing, the writer dies of SIGPIPE, `pipefail` fails the pipeline, and `!` turns that into a pass for "not mounted".
+  - None does today: each writer prints a few lines in one write, before `grep` exits. More output would change that without a sound.
+- **Fix direction:** take a file that sources a library setting `pipefail` as one that sets it, and rewrite the 13 as `grep -q … < <(…)`, the form the lint prescribes.
+- The fourth batch rewrote the one it added.
 
 ## LNCH
 
