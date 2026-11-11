@@ -1410,5 +1410,45 @@ o141="$(TMPDIR="$TMP/g141/t/no" bash -c 'set -euo pipefail; source "$1"; _rd_run
 rm -rf "$TMP/g141" "$fns141"
 fi
 
+# ── G170: a file bind swapped after the FIFO search, before the manifest ─────
+# A concurrent container can swap a protected config after the second FIFO
+# search. Where its inode is recorded, a file bind that is now a FIFO, a device,
+# a link or gone refuses the launch, non-zero (review of 455fa85; GAP-2 slice
+# 8). Recording begins with asking whether docker is Colima's, the hook here:
+# a `colima` on PATH, and a `docker context inspect` that makes the swap and
+# names no Colima socket.
+mkdir -p "$TMP/hook170"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/hook170/colima"
+cat > "$TMP/hook170/docker" <<HOOK
+#!/usr/bin/env bash
+if [[ "\$1 \$2" == "context inspect" ]]; then
+  f="$PROJ/.git/config"
+  mv "\$f" "\$f.aside170" || exit 0
+  case "\$SWAP170" in
+    fifo) mkfifo "\$f" ;;
+    link) ln -s "\$f.aside170" "\$f" ;;
+    char) mknod "\$f" c 0 0 ;;
+  esac
+  exit 0
+fi
+exec "$TMP/bin/docker" "\$@"
+HOOK
+chmod +x "$TMP/hook170/colima" "$TMP/hook170/docker"
+gi_warm_up
+for k170 in fifo link gone char; do
+  # A whiteout (c 0 0) needs no privilege on Linux 5.8 and later, and root elsewhere.
+  if [[ "$k170" == char ]] && ! { mknod "$TMP/c170" c 0 0 2>/dev/null && [[ -c "$TMP/c170" ]]; }; then
+    rm -f "$TMP/c170"; printf 'SKIP: G170 a character device (mknod c 0 0 not permitted here)\n'; continue
+  fi
+  rm -f "$TMP/c170"
+  case "$k170" in fifo) w170="a FIFO" ;; link) w170="a link" ;; gone) w170="nothing" ;; char) w170="a character device" ;; esac
+  DOCKER_HOST="" SWAP170="$k170" PATH="$TMP/hook170:$PATH" launch_timed 60 ..
+  [[ "$LAUNCH_RC" != 124 && "$LAUNCH_RC" != 0 && ! -e "$CAPTURE" ]] && grep -qF "ERROR: $PROJ/.git/config is no longer what was checked" "$ERR" \
+    && pass "G170 a protected config swapped for $w170 before the manifest refuses the launch" \
+    || fail "G170 a config swapped for $w170 (rc=$LAUNCH_RC; docker run: $([[ -e "$CAPTURE" ]] && echo yes || echo no); $(grep -m1 ERROR "$ERR"))"
+  if [[ -e "$PROJ/.git/config.aside170" ]]; then rm -f "$PROJ/.git/config"; mv "$PROJ/.git/config.aside170" "$PROJ/.git/config"; fi
+done
+rm -rf "$TMP/hook170"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

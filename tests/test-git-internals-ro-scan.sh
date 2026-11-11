@@ -579,6 +579,38 @@ PATH="$TMP/shim92:$PATH" AI_CONTAINER_GROUP=al92 launch ..
   && pass "G92 a group directory that is \$HOME by device:inode is refused" \
   || fail "G92 a group directory aliasing \$HOME (rc=$LAUNCH_RC; $(grep -E 'ERROR' "$ERR" | head -1))"
 rm -rf "$HOME/.ai-containers/al92" "$TMP/shim92"
+# A group LINK to such an alias leads to your home too, and its hint is the
+# from:host one, not the one for a link elsewhere (GAP-2 slice 8).
+mkdir -p "$TMP/alias92" "$TMP/shim92"; ln -s "$TMP/alias92" "$HOME/.ai-containers/la92"
+cat > "$TMP/shim92/stat" <<SHIM
+#!/usr/bin/env bash
+real="\$(PATH="${PATH#"$TMP/bin:"}" command -v stat)"
+a=()
+for x in "\$@"; do case "\$x" in "$HOME/.ai-containers/la92/.") a+=("$HOME") ;; *) a+=("\$x") ;; esac; done
+exec "\$real" "\${a[@]}"
+SHIM
+chmod +x "$TMP/shim92/stat"
+PATH="$TMP/shim92:$PATH" AI_CONTAINER_GROUP=la92 launch ..
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF 'It leads to your home directory' "$ERR" && grep -qF 'AI_CONTAINER_GROUP_INIT=from:host' "$ERR" \
+  && pass "G92 a group link to \$HOME under another path says it leads to your home" \
+  || fail "G92 the hint for a group link to an alias of \$HOME ($(grep -v ERROR "$ERR" | head -2 | tr '\n' ' '))"
+rm -f "$HOME/.ai-containers/la92"; rm -rf "$TMP/alias92" "$TMP/shim92"
+# Where stat cannot report $HOME's device:inode, the path alone still refuses a
+# group directory that resolves to $HOME.
+H92="$TMP/h92/me"; mkdir -p "$H92" "$TMP/shim92"; ln -s "$TMP/h92" "$H92/.ai-containers"
+cat > "$TMP/shim92/stat" <<SHIM
+#!/usr/bin/env bash
+real="\$(PATH="${PATH#"$TMP/bin:"}" command -v stat)"
+for x in "\$@"; do [[ "\$x" == "$H92/." ]] && { : > "$TMP/shim92.fired"; exit 1; }; done
+exec "\$real" "\$@"
+SHIM
+chmod +x "$TMP/shim92/stat"
+rm -f "$TMP/shim92.fired"
+PATH="$TMP/shim92:$PATH" HOME="$H92" AI_CONTAINER_GROUP=me launch ..
+[[ "$LAUNCH_RC" != 0 && ! -e "$CAPTURE" && -e "$TMP/shim92.fired" ]] && grep -qF 'is your home directory' "$ERR" \
+  && pass "G92 a group directory that resolves to \$HOME is refused by path where stat cannot tell" \
+  || fail "G92 the path check alone (rc=$LAUNCH_RC; shim: $([[ -e "$TMP/shim92.fired" ]] && echo fired || echo unused); $(grep -E 'ERROR' "$ERR" | head -1))"
+rm -rf "$TMP/h92" "$TMP/shim92" "$TMP/shim92.fired"
 # A committed sandbox.env that names the host group, which the loader once
 # ignored, now refuses the launch, naming the file (review of batch 11).
 [[ -f "$LAUNCHER/sandbox.env" ]] && cp "$LAUNCHER/sandbox.env" "$TMP/se92.bak"

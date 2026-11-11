@@ -5,7 +5,7 @@
 set -uo pipefail
 # Hermetic: the developer's own pointers must not reach a launch — sandbox.sh
 # mounts them writable and writes into the git repositories it protects there.
-unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR
+unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR REPO_VOLUME_PREFIX
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=portability.sh
@@ -52,6 +52,8 @@ if [[ "\$1" == "volume" ]]; then
     printf '%s\n' "\$lbl"; exit 0
   fi
   [[ "\$2" == inspect && "\$vol" == *--wc-* && -n "\${FAKE_WC_MISSING:-}" ]] && exit 1
+  # FAKE_VOL_MISSING: no base volume either (a registered repo whose volume is gone).
+  [[ "\$2" == inspect && -n "\${FAKE_VOL_MISSING:-}" ]] && exit 1
   exit 0
 fi
 exit 1
@@ -586,6 +588,84 @@ if [[ "$RC" -ne 0 ]] && ! grep -q '^volume create' "$TMP/docker-calls.txt" && ! 
   pass "REPO-13 a refused later entry: nothing was seeded or run for an earlier one"
 else
   fail "REPO-13 seeding ran before a later entry was refused (rc=$RC; $(grep -E '^(volume create|run)' "$TMP/docker-calls.txt" | head -2 | tr '\n' ';'))"
+fi
+teardown
+
+# ── An @<repo> primary, and the refusals of a mount, by their status ────────
+# A refusal stops the launch with a status that is not 0: `runme.sh` and any
+# script that launches the sandbox read it. Most of these were checked by their
+# message alone, or not at all, so `exit 0` in place of `exit 1` went unnoticed
+# (GAP-2 slice 8). The refusal named is the last one printed: a later one stopping
+# the launch instead would mean this one let it past.
+refused() {  # <check> <what stderr says>
+  if [[ "$RC" -ne 0 && ! -s "$CAPTURE" && "$(grep -E '^(ERROR|Invalid)' "$ERR" | tail -n 1)" == *"$2"* ]]; then pass "$1"
+  else fail "$1 (rc=$RC; $(grep -E '^(ERROR|Invalid)' "$ERR" | tail -n 1))"; fi
+}
+workdir_is() { [[ "$(awk 'p { print; exit } $0 == "-w" { p = 1 }' "$CAPTURE")" == "$1" ]]; }
+# A registered repo named with @ is the working directory, attached writable.
+setup
+mkdir -p "$TMP/src/app" "$TMP/src/lib"; register_repo app "$TMP/src/app"; register_repo lib "$TMP/src/lib"
+run_sandbox @app
+if [[ "$RC" -eq 0 ]] && workdir_is /workspace/app && grep -qx "$TMP/src/app:/workspace/app:rw" "$CAPTURE"; then
+  pass "@app: a registered repo is the working directory, attached :rw"
+else
+  fail "@app (rc=$RC; -w $(awk 'p { print; exit } $0 == "-w" { p = 1 }' "$CAPTURE"); $(grep -m1 -E 'ERROR|Invalid' "$ERR"))"
+fi
+# …beside the REPOS it does not name, which keep their own mode…
+: > "$CAPTURE"; export REPOS="lib:ro"
+run_sandbox @app
+if [[ "$RC" -eq 0 ]] && grep -qx "$TMP/src/app:/workspace/app:rw" "$CAPTURE" && grep -qx "$TMP/src/lib:/workspace/lib:ro" "$CAPTURE"; then
+  pass "@app with REPOS=lib:ro: app is attached :rw beside lib :ro"
+else
+  fail "@app beside REPOS=lib:ro (rc=$RC; $(grep -E '/workspace/(app|lib)' "$CAPTURE" | tr '\n' ' '))"
+fi
+# …and one REPOS lists :ro is refused, never attached twice.
+: > "$CAPTURE"; export REPOS="app:ro"
+run_sandbox @app
+refused "@app listed in REPOS as :ro refuses the launch" "primary repo 'app' is attached :ro, but the working directory must be writable"
+unset REPOS
+: > "$CAPTURE"; run_sandbox @Bad_Name
+refused "@ with an invalid repo name refuses the launch" "Invalid repo name 'Bad_Name'"
+: > "$CAPTURE"; run_sandbox @nope
+refused "@ naming an unregistered repo refuses the launch" "primary repo 'nope' (selected with @) is not registered"
+teardown
+# A primary path, EXTRA_MOUNTS and REPOS entries that cannot be mounted.
+setup
+mkdir -p "$TMP/app" "$TMP/x/app" "$TMP/src/app" "$TMP/src/lib" "$TMP/x/lib" "$TMP/x/vault" "$TMP/x/specs" "$TMP/myvault" "$TMP/myspecs"
+register_repo app "$TMP/src/app"; register_repo lib "$TMP/src/lib"; register_repo gone "$TMP/src/gone"
+register_git_repo vol "git@example.invalid:vol.git" "$TMP/co/vol"
+run_sandbox "$TMP/nope"
+refused "a primary directory that does not exist refuses the launch" "primary workspace directory does not exist: $TMP/nope"
+: > "$CAPTURE"; EXTRA_MOUNTS="$TMP/nope" run_sandbox "$TMP/app"
+refused "an EXTRA_MOUNTS path that does not exist refuses the launch" "EXTRA_MOUNTS path does not exist: $TMP/nope"
+mkdir -p "$TMP/y/lib"
+: > "$CAPTURE"; EXTRA_MOUNTS="$TMP/x/lib $TMP/y/lib" run_sandbox "$TMP/app"
+refused "two EXTRA_MOUNTS entries of one name refuse the launch" "name 'lib' (EXTRA_MOUNTS) collides with EXTRA_MOUNTS at /workspace/lib"
+: > "$CAPTURE"; EXTRA_MOUNTS="$TMP/x/app" run_sandbox "$TMP/app"
+refused "a primary whose name an EXTRA_MOUNTS entry takes refuses the launch" "primary path basename 'app' collides with EXTRA_MOUNTS"
+: > "$CAPTURE"; REPOS="Bad_Name" run_sandbox "$TMP/app"
+refused "a REPOS entry with an invalid name refuses the launch" "Invalid repo name 'Bad_Name'"
+: > "$CAPTURE"; EXTRA_MOUNTS="$TMP/x/lib" REPOS="lib:ro" run_sandbox "$TMP/app"
+refused "a REPOS entry whose name EXTRA_MOUNTS takes refuses the launch" "name 'lib' is used by both EXTRA_MOUNTS and REPOS"
+: > "$CAPTURE"; REPOS="nope:ro" run_sandbox "$TMP/app"
+refused "an unregistered REPOS entry refuses the launch" "REPOS entry 'nope' is not a registered repo"
+: > "$CAPTURE"; REPOS="app:rwcopy" run_sandbox "$TMP/x/lib"
+refused "a bind-backed repo asked for :rwcopy refuses the launch" "repo 'app': :rwcopy needs a volume backend"
+: > "$CAPTURE"; REPOS="gone:ro" run_sandbox "$TMP/app"
+refused "a bind-backed repo whose source is gone refuses the launch" "repo 'gone' bind source does not exist on this host"
+: > "$CAPTURE"; REPOS="vol:ro" FAKE_VOL_MISSING=1 run_sandbox "$TMP/app"
+refused "a volume-backed repo whose volume is gone refuses the launch" "repo 'vol' is registered but its docker volume (ai-containers-repo-vol) is missing"
+: > "$CAPTURE"; EXTRA_MOUNTS="$TMP/x/vault" VAULT_PATH="$TMP/myvault" run_sandbox "$TMP/app"
+refused "VAULT_PATH beside another mount named vault refuses the launch" "name 'vault' is used by EXTRA_MOUNTS, but VAULT_PATH also mounts"
+: > "$CAPTURE"; EXTRA_MOUNTS="$TMP/x/specs" SPECS_PATH="$TMP/myspecs" run_sandbox "$TMP/app"
+refused "SPECS_PATH beside another mount named specs refuses the launch" "name 'specs' is used by EXTRA_MOUNTS, but SPECS_PATH also mounts"
+# SPECS_PATH naming the primary is the working directory, not a second mount,
+# as DOCS_PATH and ARCHITECTURE_REPO_PATH are.
+: > "$CAPTURE"; SPECS_PATH="$TMP/myspecs" run_sandbox "$TMP/myspecs"
+if [[ "$RC" -eq 0 ]] && grep -qx "SPECS_PATH=/workspace/myspecs" "$CAPTURE" && ! grep -q ':/workspace/specs:' "$CAPTURE"; then
+  pass "SPECS_PATH naming the primary re-points to the working directory, with no second mount"
+else
+  fail "SPECS_PATH = the primary (rc=$RC; $(grep -E 'SPECS_PATH=|/workspace/specs' "$CAPTURE" | tr '\n' ' '))"
 fi
 teardown
 

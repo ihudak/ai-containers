@@ -493,6 +493,96 @@ grep -qF "WARNING: $GROUP_ROOT/.aws is a link out of the group" "$ERR" \
   || fail "no WARNING for a group link out (stderr: $(tr '\n' ' ' < "$ERR"))"
 teardown
 
+# ── What else run_container decides from the group and the shell (GAP-2 slice 8) ─
+# Claude Code's ~/.claude.json is made once, as `{}`, and never written over:
+# it holds the agent's login and settings.
+setup
+unset CONTAINER_CPUS CONTAINER_MEMORY PREVIEW_PORTS SSH_SCOPE_DIR COPILOT_GITHUB_TOKEN REPO_VOLUME_PREFIX
+printf '# schema-version: 3\nalpha=ON\nbeta=OFF\ngamma=OFF\nclaude-code=ON\n' > "$SANDBOX_CONF"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && "$(cat "$GROUP_ROOT/.claude.json" 2>/dev/null)" == '{}' ]] && grep -qx -- "$GROUP_ROOT/.claude.json:/home/dev/.claude.json:rw" "$CAPTURE" \
+  && pass "claude-code: a group with no .claude.json gets one holding {}, mounted" \
+  || fail "claude-code: .claude.json not made ($(cat "$GROUP_ROOT/.claude.json" 2>&1); $(grep -F claude.json "$CAPTURE"))"
+# A first launch makes the tool's config directory without the NOTE about a
+# dangling link, which is for a link an older copy left, not for an absent one.
+! grep -qF 'replacing the dangling link' "$ERR" \
+  && pass "a config directory made on first use draws no NOTE about a dangling link" \
+  || fail "a NOTE about a dangling link where there was none ($(grep -F dangling "$ERR"))"
+# PREVIEW_PORTS: nothing is published without it.
+if grep -qx -- '-p' "$CAPTURE"; then fail "a port was published with no PREVIEW_PORTS"; else pass "no PREVIEW_PORTS publishes no port"; fi
+# The default-limits HINT is for a launch that sets neither CPUs nor memory.
+grep -qF 'HINT: running at default limits' "$ERR" \
+  && pass "neither CONTAINER_CPUS nor CONTAINER_MEMORY: the default-limits HINT" || fail "no default-limits HINT at the defaults"
+# SSH_SCOPE_DIR is gone: it is named only when set.
+! grep -qF 'SSH_SCOPE_DIR is no longer used' "$ERR" \
+  && pass "no SSH_SCOPE_DIR: no note about it" || fail "a note about SSH_SCOPE_DIR, which is not set"
+# No Ruby, no rvm volume: nothing asks docker for one.
+! grep -qF 'rvm volume' "$ERR" && ! grep -qF '/.rvm' "$CAPTURE" \
+  && pass "ruby off: no rvm volume asked for or mounted" || fail "ruby off, yet ($(grep -F rvm "$ERR" | head -1); $(grep -F .rvm "$CAPTURE"))"
+printf '{"oauthAccount":"kept"}\n' > "$GROUP_ROOT/.claude.json"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && "$(cat "$GROUP_ROOT/.claude.json")" == '{"oauthAccount":"kept"}' ]] \
+  && pass "claude-code: an existing .claude.json is kept as it is" \
+  || fail "claude-code: .claude.json written over ($(cat "$GROUP_ROOT/.claude.json"))"
+# PREVIEW_PORTS publishes each entry.
+: > "$CAPTURE"; PREVIEW_PORTS="3000 8080:80" run_sandbox "$TMP/app"
+[[ "$(awk '$0 == "-p" { getline; printf "%s ", $0 }' "$CAPTURE")" == "3000 8080:80 " ]] \
+  && pass "PREVIEW_PORTS publishes each entry with -p" \
+  || fail "PREVIEW_PORTS (got: $(awk '$0 == "-p" { getline; printf "%s ", $0 }' "$CAPTURE"))"
+: > "$CAPTURE"; CONTAINER_CPUS=2 run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && ! grep -qF 'HINT: running at default limits' "$ERR" \
+  && pass "CONTAINER_CPUS set: no default-limits HINT" || fail "the default-limits HINT with CONTAINER_CPUS=2 (rc=$RC)"
+: > "$CAPTURE"; SSH_SCOPE_DIR="$TMP/ssh" run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && grep -qF 'SSH_SCOPE_DIR is no longer used' "$ERR" \
+  && pass "SSH_SCOPE_DIR set: the note says it is no longer used" || fail "no note for SSH_SCOPE_DIR"
+teardown
+# With Ruby, the group's rvm volume is mounted at ~/.rvm.
+setup
+unset CONTAINER_CPUS CONTAINER_MEMORY PREVIEW_PORTS SSH_SCOPE_DIR COPILOT_GITHUB_TOKEN REPO_VOLUME_PREFIX
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\nruby=3.3.6\n' > "$SANDBOX_CONF"
+cat > "$TMP/bin/docker" <<DOCKER
+#!/usr/bin/env bash
+if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
+[[ "\$1 \$2" == "volume inspect" ]] && exit 0
+exit 1
+DOCKER
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+grep -qx -- 'ai-containers-rvm-default:/home/dev/.rvm' "$CAPTURE" && ! grep -qF 'no rvm volume' "$ERR" \
+  && pass "ruby on: the group's rvm volume is mounted at ~/.rvm" \
+  || fail "ruby on: no rvm mount ($(grep -F rvm "$ERR" | head -1); $(grep -F rvm "$CAPTURE"))"
+teardown
+# COPILOT_GITHUB_TOKEN comes from the group's gh login when Copilot is on and
+# none is set; without one, a HINT says how to log in.
+setup
+unset CONTAINER_CPUS CONTAINER_MEMORY PREVIEW_PORTS SSH_SCOPE_DIR COPILOT_GITHUB_TOKEN REPO_VOLUME_PREFIX
+mkdir -p "$GROUP_ROOT/.config/gh"
+printf 'github.com:\n    oauth_token: gho_test8\n    user: me\n' > "$GROUP_ROOT/.config/gh/hosts.yml"
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ncopilot=ON\n' > "$SANDBOX_CONF"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+grep -qx 'COPILOT_GITHUB_TOKEN=gho_test8' "$CAPTURE" && ! grep -qF 'No gh auth token' "$ERR" \
+  && pass "copilot on: the token comes from the group's gh hosts.yml, with no HINT" \
+  || fail "copilot on: no token from hosts.yml ($(grep -c COPILOT_GITHUB_TOKEN "$CAPTURE"); $(grep -F HINT "$ERR" | head -1))"
+: > "$CAPTURE"; COPILOT_GITHUB_TOKEN=gho_mine8 run_sandbox "$TMP/app"
+grep -qx 'COPILOT_GITHUB_TOKEN=gho_mine8' "$CAPTURE" && ! grep -qx 'COPILOT_GITHUB_TOKEN=gho_test8' "$CAPTURE" \
+  && pass "copilot on: a COPILOT_GITHUB_TOKEN that is set wins over the group's" \
+  || fail "copilot on: the token set was not the one passed"
+rm -f "$GROUP_ROOT/.config/gh/hosts.yml"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && ! grep -q '^COPILOT_GITHUB_TOKEN=' "$CAPTURE" && grep -qF 'No gh auth token found for group "default"' "$ERR" \
+  && pass "copilot on, no gh login: no token, and a HINT to log in" \
+  || fail "copilot on without a login ($(grep -c '^COPILOT_GITHUB_TOKEN=' "$CAPTURE"); $(grep -F HINT "$ERR" | head -1))"
+printf 'github.com:\n    oauth_token: gho_test8\n' > "$GROUP_ROOT/.config/gh/hosts.yml"
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ncopilot=OFF\n' > "$SANDBOX_CONF"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && ! grep -q '^COPILOT_GITHUB_TOKEN=' "$CAPTURE" && ! grep -qF 'No gh auth token' "$ERR" \
+  && pass "copilot off: the group's token is not passed, and no HINT" \
+  || fail "copilot off, yet ($(grep -c '^COPILOT_GITHUB_TOKEN=' "$CAPTURE"); $(grep -F HINT "$ERR" | head -1))"
+rm -f "$GROUP_ROOT/.config/gh/hosts.yml"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && ! grep -qF 'No gh auth token' "$ERR" \
+  && pass "copilot off, no gh login: no HINT" || fail "copilot off: a HINT to log in for Copilot"
+teardown
+
 # ── The bootstrap menu offers only groups a launch could select (LNCH-20) ───────
 # Not `host` (refused), not a hidden directory (the launcher's own .verify-*), not
 # a name that is no group, nor `default` or the group being made, which have
