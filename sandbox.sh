@@ -379,7 +379,7 @@ launcher_ro_overlay() {
   local -A _gdi_wt_read=() _gdi_nowt_gone=()
   local -A gpv=() gfprot=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir gown gmade gp ocfg ocd k2 first ik ip ib rep al rk rh hk
+  local g base what gmax gn gitmax cfg cdir gown gmade gp ocfg ocd k2 first ik ip ib rep al rk rh hk ownnc
   local -a hgro=() hgpre=() wkc=() hgv=()
   # The include walk's read of a config (_git_walk_keys), kept from the binding
   # pass, which takes core.hooksPath from it: one read a file (G120).
@@ -1018,6 +1018,36 @@ launcher_ro_overlay() {
         elif [[ -d "$g/objects" || "${g,,}" == */.git || "${g,,}" == */.git/modules/* ]]; then
           gown=1
         fi
+        # A commondir the agent can steer, which a read-only bind cannot hold
+        # (bugs review GIT-62, GIT-64). git never makes a link there; a bind
+        # follows one and holds its target, and the agent repoints it in any
+        # session. Nor does git write one that leads back to its own directory,
+        # which git then takes as the common one, config and hooks/ in it: in a
+        # directory with no config nothing was made or bound there, and a config
+        # the agent wrote next ran on your host. Both refuse the launch, as a
+        # commondir other than ./ does in a repository's own git directory that
+        # has a config. So, where it has none, does one that the agent could
+        # make lead back: through a link inside a writable mount, or to a path
+        # not there yet (_cd_steer). One that names another repository's git
+        # directory is that repository's linked worktree, and stays (G160).
+        if [[ -L "$g/commondir" ]]; then
+          printf 'ERROR: %s is a symlink; git never makes one, and the agent can repoint it\n' "$(_term "$g/commondir")" >&2
+          printf '       to send your host'\''s git to a config and hooks of its own. Replace it on the\n' >&2
+          printf '       host with what it leads to, or remove it, and launch again.\n' >&2
+          exit 1
+        fi
+        if [[ -f "$g/commondir" ]]; then
+          cdir=""; _git_ptr_read "$g/commondir" cdir || true
+          ownnc=""; if [[ -n "$gown" && ! -f "$g/config" ]]; then ownnc=1; fi
+          if [[ "$cdir" != ./ ]] && _cd_steer "$g" "$cdir" "$ownnc"; then
+            printf 'ERROR: %s %s,\n' "$(_term "$g/commondir")" "$_cds_why" >&2
+            printf '       which git would take for this repository'\''s configuration and hooks, where\n' >&2
+            printf '       nothing protects them. If you did not make it, remove it on the host and\n' >&2
+            printf '       launch again.\n' >&2
+            exit 1
+          fi
+          cdir=""
+        fi
         if [[ -n "$gown" ]] && { [[ -f "$g/config" ]] || [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] \
              || { [[ -f "$g/commondir" ]] && _git_ptr_read "$g/commondir" cdir && [[ "$cdir" == ./ ]]; }; }; then
           cfg="$g/config"; gmade=1
@@ -1160,7 +1190,10 @@ launcher_ro_overlay() {
             printf '         what it leads to is what your host'\''s git reads. Replace the link with it.\n' >&2
           elif [[ -e "$g/$f" ]]; then
             gro+=("$g/$f")
-          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ ( -n "$gmade" || -d "$g/objects" ) && -z "${_gcm_seen[$g/$f]:-}" ]]; then
+          # Only where this launch tried to make one: elsewhere the commondir names
+          # another repository's git directory, whose hooks/ git takes, and the
+          # warning was false (GIT-64).
+          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ -n "$gmade" && -z "${_gcm_seen[$g/$f]:-}" ]]; then
             printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$(_term "$g")" "$(_term "$f")" >&2
           fi
         done
@@ -3669,6 +3702,40 @@ _path_gone() {
     _pg_p="$_pg_p/$_pg_c"
     [[ -d "$_pg_p" && ! -L "$_pg_p" ]] || return 1
   done
+  return 1
+}
+
+# _cd_steer <git dir> <commondir text> <own, with no config: 1 or "">: succeeds,
+# with the reason in _cds_why, where the commondir leads back to <git dir>
+# itself, which git then takes as its own common directory; and, for a
+# repository's own git directory with no config (the third argument), where it
+# could be made to: it reaches its target through a link inside a writable
+# mount, or names a path that is not there inside one (bugs review GIT-64).
+# Physically, as git resolves it.
+_cds_why=""
+_cd_steer() {
+  local _cs_t _cs_raw _cs_lex _cs_ld=""
+  _cds_why=""
+  if [[ "$2" == /* ]]; then _cs_raw="$2"; else _cs_raw="$1/$2"; fi
+  _cs_t="$_cs_raw"
+  if _cd_phys _cs_t "$_cs_raw"; then
+    if [[ "$_cs_t" == "$1" ]]; then _cds_why="leads back to $(_term "$1") itself"; return 0; fi
+    [[ -n "$3" ]] || return 1
+    _cs_lex="$(_lex_norm "$_cs_raw")"
+    if [[ "$_cs_lex" != "$_cs_t" ]] && _lex_link_dir _cs_ld "$_cs_raw" && { _in_writable "$_cs_lex" || _in_writable "$_cs_ld"; }; then
+      _cds_why="reaches $(_term "$_cs_t") through a link inside a writable mount, which the agent can repoint"
+      return 0
+    fi
+    return 1
+  fi
+  [[ -n "$3" ]] || return 1
+  # Not there: the agent's to make only inside a writable mount, as it would
+  # be spelled on disk too (GIT-38; _gd_resolve judges it so).
+  _cs_lex="$(_lex_norm "$_cs_raw")"; _canon_lex _cs_t "$_cs_lex"
+  if _in_writable "$_cs_lex" || _in_writable "$_cs_t"; then
+    _cds_why="names $(_term "$_cs_lex"), which is not there; the agent could make it"
+    return 0
+  fi
   return 1
 }
 

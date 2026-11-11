@@ -151,20 +151,23 @@ grep -qF 'NOTE: /workspace/ep/r/.git was protected by an earlier launch that did
   || fail "G93 re-made repository not reported (rc=$LAUNCH_RC; stderr: $(grep -A1 NOTE "$ERR" | tr '\n' ' '))"
 rm -rf "$TMP/ep"
 
-# ── G106: a commondir or hooks/ that is a link: reported, and the launch goes on
-# git reads both through a link, so what they lead to cannot be checked; the
-# report says so, and the launch goes on (each link gets a WARNING of its own).
+# ── G106: a commondir or hooks/ that is a link ───────────────────────────────
+# git reads both through a link, so what they lead to cannot be checked. A
+# hooks/ link is reported so, and the launch goes on (with a WARNING of its own).
 # Two mutants that made _git_runs fail there ended the launch in silence, under
 # set -e, and survived every test (GAP-2's slice 2; sandbox.sh: `_git_runs()`).
-mkdir -p "$TMP/cl/r" "$TMP/cl/h" "$TMP/cl/githooks" && "${G[@]}" -C "$TMP/cl/r" init -q && printf './\n' > "$TMP/cl/target" \
-  && ln -s "$TMP/cl/target" "$TMP/cl/r/.git/commondir" \
-  && "${G[@]}" -C "$TMP/cl/h" init -q && rm -rf "$TMP/cl/h/.git/hooks" && ln -s ../../githooks "$TMP/cl/h/.git/hooks" \
-  || { printf 'SCAFFOLD-FAILED: G106\n'; exit 1; }
+# A commondir link refuses the launch since GIT-62: git never makes one, and the
+# agent can repoint it (G166); the rescan after a session still names one.
+mkdir -p "$TMP/cl/r" && "${G[@]}" -C "$TMP/cl/r" init -q && printf './\n' > "$TMP/cl/target" \
+  && ln -s "$TMP/cl/target" "$TMP/cl/r/.git/commondir" || { printf 'SCAFFOLD-FAILED: G106\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/cl" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && grep -A1 -F 'NOTE: /workspace/cl/r/.git was protected by an earlier launch that did not report it' "$ERR" \
-    | grep -qF 'commondir, a link or not a file: what git reads through it is not checked' \
-  && pass "G106 a repository whose commondir is a link is reported as not checked, and the launch goes on" \
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $TMP/cl/r/.git/commondir is a symlink" "$ERR" \
+  && pass "G106 a repository whose commondir is a link refuses the launch" \
   || fail "G106 linked commondir at launch (rc=$LAUNCH_RC; stderr: $(grep -A1 'cl/r' "$ERR" | head -3 | tr '\n' ' '))"
+rm -rf "$TMP/cl"
+mkdir -p "$TMP/cl/h" "$TMP/cl/githooks" && "${G[@]}" -C "$TMP/cl/h" init -q && rm -rf "$TMP/cl/h/.git/hooks" \
+  && ln -s ../../githooks "$TMP/cl/h/.git/hooks" || { printf 'SCAFFOLD-FAILED: G106 hooks\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/cl" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && grep -A1 -F 'NOTE: /workspace/cl/h/.git is protected for the first time, and its hooks/' "$ERR" \
     | grep -qF 'hooks/, a link: what git runs through it is not checked' \
   && pass "G106 a repository whose hooks/ is a link is reported as not checked, and the launch goes on" \

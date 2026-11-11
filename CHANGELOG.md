@@ -141,6 +141,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A `commondir` that git would follow back to its own git directory, or
+  that the agent can repoint, refuses the launch.** In a repository's own git
+  directory with no `config`, a `commondir` reading `.` (or `../.git`, or its
+  own path) made git take the directory as its own common one while the launch
+  made and bound nothing there, so a `config` the agent wrote next ran at your
+  host's next `git status`; one reached through a link in the mount, or naming
+  a path the agent could make, could be turned into that. A `commondir` that
+  is a link was only warned about, and the agent could repoint it in any
+  session. All of these now refuse the launch, naming the file to fix (bugs
+  review GIT-62, GIT-64).
+
 - **A repository or launcher that two writable mounts expose is read-only
   through both.** Each mount's scan protected what it found in that mount's
   view alone. With an outer `EXTRA_MOUNTS` directory holding the primary under
