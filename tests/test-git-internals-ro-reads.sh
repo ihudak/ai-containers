@@ -930,7 +930,10 @@ grep -E '^(declare -A _fs_ml_|_fs_ml_dir=|_fs_mp=|if stat -c )' "$ENGINE/sandbox
 M128="$TMP/m128"; mkdir -p "$M128/a" "$M128/b" && : > "$M128/a/f" && ln "$M128/a/f" "$M128/x128"
 sh128="$TMP/sh128"; mkdir -p "$sh128"
 # timeout -k 2 <seconds> find <mount> …: records the seconds and the mount.
-printf '#!/bin/bash\nprintf "%%s %%s\\n" "$3" "$5" >> %q\nshift 3\nexec "$@"\n' "$TMP/to128.log" > "$sh128/timeout"
+# The launcher's one probe of each timeout (an argument holding byte 0xff, its
+# last; _timeout_prefix, GIT-66) is run and not logged: what is logged is the
+# bound of the reads.
+printf '#!/bin/bash\n[[ "${!#}" == $'"'"'\\xff'"'"' ]] || printf "%%s %%s\\n" "$3" "$5" >> %q\nshift 3\nexec "$@"\n' "$TMP/to128.log" > "$sh128/timeout"
 cp "$sh128/timeout" "$sh128/gtimeout"; chmod +x "$sh128/timeout" "$sh128/gtimeout"
 # run128 <fresh|short>: asks about $M128/a/f, with $M128/a and $M128/b writable and
 # $M128/b on another device. Prints "<status> <mount>".

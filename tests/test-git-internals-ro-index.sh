@@ -765,7 +765,7 @@ got74="$(_lex_norm "/a/b"$'\n'"c/./d/../e")"
 # ── G75: the index-read timeout uses gtimeout where there is no timeout ───────
 # macOS has no timeout(1); Homebrew's coreutils installs gtimeout (GIT-16).
 load_fn _timeout_prefix
-mkdir -p "$TMP/tp75"; printf '#!/bin/sh\nexec "$@"\n' > "$TMP/tp75/gtimeout"; chmod +x "$TMP/tp75/gtimeout"
+mkdir -p "$TMP/tp75"; printf '#!/bin/sh\nshift 3; exec "$@"\n' > "$TMP/tp75/gtimeout"; chmod +x "$TMP/tp75/gtimeout"
 got75="$(PATH="$TMP/tp75" _timeout_prefix 2>/dev/null)"
 [[ "$got75" == "gtimeout -k 2 10" ]] && pass "G75 the index read is bounded by gtimeout where there is no timeout" \
   || fail "G75 gtimeout not used (got '$got75')"
@@ -1639,6 +1639,45 @@ EXTRA_MOUNTS="$TMP/o164b" launch ..
   && pass "G164 a target the other mount cannot protect is named, with no count of more" \
   || fail "G164 unprotectable target not named (rc=$LAUNCH_RC; $(grep -aE 'WARNING' "$ERR" | head -2 | tr '\n' ' ' | LC_ALL=C tr -c '[:print:]' '?'))"
 rm -rf "$TMP/o164b" "$PROJ/xm164b"
+
+# ── G167: a timeout(1) that refuses an argument that is not UTF-8 (GIT-66) ────
+# uutils' timeout, Ubuntu 26.04's, refuses one ("invalid UTF-8 was detected in
+# one or more arguments", 125), so every bounded read of a path holding one ran
+# nothing, and read as empty: a commondir placeholder `./` read as '' refused
+# G164's launch, and an empty pointer could as well have been followed nowhere.
+# Such a timeout is not used: GNU's (gnutimeout, which Ubuntu ships beside it)
+# is, or none, as on a Mac without Homebrew's coreutils. A fake stands in for
+# uutils', so the check runs where timeout is GNU's.
+mkdir -p "$TMP/tp167"
+printf '#!/bin/bash\nfor a; do if ! iconv -f UTF-8 -t UTF-8 <<<"$a" >/dev/null 2>&1; then echo "error: invalid UTF-8 was detected in one or more arguments" >&2; exit 125; fi; done\nshift 3; exec "$@"\n' > "$TMP/tp167/timeout"
+printf '#!/bin/sh\nshift 3; exec "$@"\n' > "$TMP/tp167/gnutimeout"; chmod +x "$TMP/tp167/timeout" "$TMP/tp167/gnutimeout"
+got167="$(PATH="$TMP/tp167:/usr/bin:/bin" _timeout_prefix 2>/dev/null)"
+[[ "$got167" == "gnutimeout -k 2 10" ]] && pass "G167 a timeout that refuses a non-UTF-8 argument gives way to gnutimeout" \
+  || fail "G167 the refusing timeout was taken (got '$got167')"
+rm -f "$TMP/tp167/gnutimeout"
+got167="$(PATH="$TMP/tp167" _timeout_prefix 2>/dev/null)"
+[[ -z "$got167" ]] && pass "G167 with no other, no bound rather than a bound that reads nothing" \
+  || fail "G167 the refusing timeout was taken alone (got '$got167')"
+# End to end: G164's name docker cannot be handed, the refusing timeout first.
+n167="bad"$'\xff'; mkdir -p "$TMP/o167/node_modules" "$PROJ/xm167"
+if mkdir "$TMP/o167/node_modules/$n167" 2>/dev/null && "${G[@]}" init -q --bare "$TMP/o167/node_modules/$n167"; then
+  printf 'gitdir: %s\n' "$TMP/o167/node_modules/$n167" > "$PROJ/xm167/.git"
+  PATH="$TMP/tp167:$PATH" EXTRA_MOUNTS="$TMP/o167" launch ..
+  [[ "$LAUNCH_RC" == 0 ]] && ! grep -aqF "commondir sends git to ''" "$ERR" \
+    && pass "G167 a git directory with a non-UTF-8 name has its commondir read, under such a timeout" \
+    || fail "G167 non-UTF-8 name under a refusing timeout (rc=$LAUNCH_RC; $(grep -aE 'ERROR' "$ERR" | head -1 | LC_ALL=C tr -c '[:print:]' '?'))"
+else
+  printf 'NOTE: this filesystem takes no name that is not UTF-8; the end-to-end check is not applicable\n'
+fi
+# A bound that exits 125 itself ran nothing: the read refuses the launch, never
+# reads as empty.
+printf '#!/bin/sh\ncase "$*" in *commondir*) exit 125 ;; esac\nshift 3; exec "$@"\n' > "$TMP/tp167/timeout"; chmod +x "$TMP/tp167/timeout"
+mkdir -p "$PROJ/r167" && "${G[@]}" init -q "$PROJ/r167"
+PATH="$TMP/tp167:$PATH" launch ..
+[[ "$LAUNCH_RC" != 0 ]] && grep -aqF "the command that bounds the read ran nothing" "$ERR" \
+  && pass "G167 a read whose bound exits 125 refuses the launch" \
+  || fail "G167 a bound that ran nothing (rc=$LAUNCH_RC; $(grep -aE 'ERROR' "$ERR" | head -1))"
+rm -rf "$TMP/o167" "$PROJ/xm167" "$PROJ/r167" "$TMP/tp167"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

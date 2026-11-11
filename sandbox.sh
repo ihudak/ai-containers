@@ -3146,13 +3146,27 @@ _gd_resolve() {
 }
 
 # _timeout_prefix [seconds]: the command that bounds a read (10 s by default), or
-# nothing where there is none — Homebrew coreutils' `gtimeout`, else `timeout`
-# (GIT-16; G44, G75).
+# nothing where there is none — Homebrew coreutils' `gtimeout`, else `timeout`,
+# else GNU's `gnutimeout` (GIT-16; G44, G75). One that refuses an argument that
+# is not UTF-8 is passed over: uutils' timeout, Ubuntu 26.04's, exits 125 for
+# one ("invalid UTF-8 was detected in one or more arguments") and runs nothing,
+# so every bounded read of a path holding such a byte read as empty, and the
+# agent names the directories (bugs review GIT-66; G167). Ubuntu ships GNU's
+# beside it as gnutimeout; with none that takes the byte, nothing bounds the
+# read, as on a Mac without Homebrew's coreutils. Asked once per PATH.
+_tp_cmd="" _tp_path=$'\n'
 _timeout_prefix() {
-  # gtimeout first: Homebrew coreutils' name for the same GNU tool (G44, G75).
-  if command -v gtimeout >/dev/null 2>&1; then printf 'gtimeout -k 2 %s' "${1:-10}"
-  elif command -v timeout >/dev/null 2>&1; then printf 'timeout -k 2 %s' "${1:-10}"
+  local c
+  if [[ "${_tp_path-$'\n'}" != "$PATH" ]]; then
+    _tp_cmd="" _tp_path="$PATH"
+    # gtimeout first: Homebrew coreutils' name for the same GNU tool (G44, G75).
+    # The probe runs this shell by its path, which PATH need not hold.
+    for c in gtimeout timeout gnutimeout; do
+      command -v "$c" >/dev/null 2>&1 || continue
+      if "$c" -k 2 5 "${BASH:-/bin/sh}" -c : $'\xff' >/dev/null 2>&1; then _tp_cmd="$c"; break; fi
+    done
   fi
+  if [[ -n "${_tp_cmd:-}" ]]; then printf '%s -k 2 %s' "$_tp_cmd" "${1:-10}"; fi
 }
 
 # Bounded reads (GIT-10, GIT-23). A small file the agent can write — a .git
@@ -3234,6 +3248,9 @@ _rd_run() {
       rm -f "$_rd_dir/ok"
     fi
   fi
+  # 125 is the bound's own failure: it ran nothing, and the empty output is not
+  # the file's (GIT-66).
+  if (( rc == 125 && ${#t[@]} )); then _rd_fail "$f" norun; return 1; fi
   if (( rc == 124 || rc == 137 )); then
     if [[ ! -f "$f" ]]; then _rd_fail "$f" fifo "$lim"
     elif (( lim > _rd_secs )); then _rd_fail "$f" slow "$lim"
@@ -3280,6 +3297,7 @@ _rd_fail() {
   case "${2:-}" in
     slow) why="could not be read within ${3:-?} s, though it is a regular file" ;;
     odd) why="holds what git reads otherwise than this launcher: a NUL, more than 4096 bytes, or a gitdir's space or tab at its end" ;;
+    norun) why="could not be read: the command that bounds the read ran nothing (it exited 125)" ;;
     spent) why="could not be read within ${3:-?} s, though it is a regular file, and this launch has no more time for slow reads" ;;
     *) why="could not be read within ${3:-its bound} s, and is not a regular file now (swapped for a FIFO, or removed)" ;;
   esac
