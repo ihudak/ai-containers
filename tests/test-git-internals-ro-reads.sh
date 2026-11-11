@@ -345,8 +345,9 @@ rm -rf "$TMP/n111"; mkdir -p "$TMP/n111" && "${G[@]}" init -q "$TMP/n111/m" && "
   && "${G[@]}" -C "$TMP/n111/m" worktree add -q "$TMP/n111/w" && wt111="$(ls -d "$TMP/n111/m/.git/worktrees"/* | head -1)" \
   && printf '../..\r..\n' > "$wt111/commondir" || { printf 'SCAFFOLD-FAILED: G111\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/n111" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && grep -qF "$wt111/commondir names" "$ERR" && ! grep -qF 'holds what git reads otherwise' "$ERR" \
-  && pass "G111 a commondir with a CR inside it is read as git reads it, and what it names is named" \
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "$wt111/commondir names" "$ERR" && grep -qF "ERROR: $wt111/commondir sends git to" "$ERR" \
+  && ! grep -qF 'holds what git reads otherwise' "$ERR" \
+  && pass "G111 a commondir with a CR inside it is read as git reads it: what it names is named, and it is no commondir git writes" \
   || fail "G111 inner CR (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|commondir' "$ERR" | head -2 | tr '\n' ' '))"
 # A worktree's gitdir git cuts of every trailing white space, not only CR and
 # LF (review of the GIT-30 fix): a space or tab at its end is refused too.
@@ -578,6 +579,17 @@ mk116() {  # a planted launcher holding a repository
   rm -rf "$TMP/o116"; mkdir -p "$TMP/o116/L" "$TMP/o116/w" && : > "$TMP/o116/L/sandbox.sh" && : > "$TMP/o116/L/sandbox-common.sh" \
     && "${G[@]}" init -q "$TMP/o116/L" || { printf 'SCAFFOLD-FAILED: G116\n'; exit 1; }
 }
+# A commondir there that is no regular file (a FIFO) refuses the launch unread,
+# as in a protected repository (G65): reading it blocked the launch until the
+# read's bound, and for ever where there is no timeout (bugs review GIT-64's
+# third review).
+mk116; rm -f "$TMP/o116/L/.git/commondir"; mkfifo "$TMP/o116/L/.git/commondir" || { printf 'SCAFFOLD-FAILED: G116 FIFO\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/o116" launch_timed 60 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $TMP/o116/L/.git/commondir is not a regular file; refusing the launch." "$ERR" \
+  && ! grep -qF 'could not be read within' "$ERR" \
+  && pass "G116 a FIFO commondir under an overlay refuses the launch, unread (${LAUNCH_S}s)" \
+  || fail "G116 FIFO commondir under an overlay (rc=$LAUNCH_RC; ${LAUNCH_S}s; $(grep -E 'ERROR' "$ERR" | head -1))"
 mk116; rm -f "$TMP/o116/L/.git/config"; ln -s ../../w/c.cfg "$TMP/o116/L/.git/config"
 EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
 grep -qF "WARNING: /workspace/o116/L/.git/config, under a read-only overlay, is a symlink" "$ERR" \
@@ -610,27 +622,39 @@ done
 # (security review of a1b7ce7; review of the GIT-40 fix).
 "${G[@]}" -C "$TMP/o116/L" config extensions.worktreeConfig false
 printf '[extensions]\n\tworktreeConfig = false\n' > "$TMP/o116/L/.git/worktrees/x/config"
+# Those refuse the launch now, as any commondir but ../.. in a worktree's
+# directory does, under an overlay as anywhere (bugs review GIT-64; G165).
 for cd116 in ../../nowhere /nonexistent-git40/x; do
   printf '%s\n' "$cd116" > "$TMP/o116/L/.git/worktrees/x/commondir"
   EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
-  grep -qF "/o116/L/.git/worktrees/x/config.worktree includes" "$ERR" \
-    && pass "G116 a commondir that leads nowhere ($cd116), under an overlay, has its config.worktree judged" \
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $TMP/o116/L/.git/worktrees/x/commondir sends git to" "$ERR" \
+    && pass "G116 a commondir that leads nowhere ($cd116), under an overlay, refuses the launch" \
     || fail "G116 unresolved commondir $cd116 (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
 done
+# A commondir link under an overlay refuses the launch, as anywhere: the
+# overlay covers the link, not what it leads to (bugs review GIT-62). Another
+# link among what git reads by name is named.
 rm -f "$TMP/o116/L/.git/worktrees/x/commondir"; ln -s ../../../../w/cd "$TMP/o116/L/.git/worktrees/x/commondir"; printf '../..\n' > "$TMP/o116/w/cd"
 EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
-grep -qF "WARNING: /workspace/o116/L/.git/worktrees/x/commondir, under a read-only overlay, is a symlink" "$ERR" \
-  && pass "G116 a commondir link under an overlay is named" \
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $TMP/o116/L/.git/worktrees/x/commondir is a symlink" "$ERR" \
+  && pass "G116 a commondir link under an overlay refuses the launch" \
   || fail "G116 commondir link (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
-# An empty commondir is no commondir to git, which reads the git directory's own
-# config, as the protected path does: its core.hooksPath is judged (review of
-# the GIT-40 fix).
+rm -f "$TMP/o116/L/.git/worktrees/x/commondir" "$TMP/o116/L/.git/worktrees/x/config.worktree" \
+  && printf '../..\n' > "$TMP/o116/L/.git/worktrees/x/commondir" && : > "$TMP/o116/w/cw" \
+  && ln -s ../../../../w/cw "$TMP/o116/L/.git/worktrees/x/config.worktree" || { printf 'SCAFFOLD-FAILED: G116 config.worktree link\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
+grep -qF "WARNING: /workspace/o116/L/.git/worktrees/x/config.worktree, under a read-only overlay, is a symlink" "$ERR" \
+  && pass "G116 a config.worktree link under an overlay is named" \
+  || fail "G116 config.worktree link (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
+# An empty commondir is no commondir to git, which takes the git directory itself
+# for the common one: one leading back to its own directory refuses the launch,
+# under an overlay as anywhere (bugs review GIT-64; G165).
 mk116; mkdir -p "$TMP/o116/L/.git/worktrees/y" "$TMP/o116/w/hk" && printf 'ref: refs/heads/main\n' > "$TMP/o116/L/.git/worktrees/y/HEAD" \
   && : > "$TMP/o116/L/.git/worktrees/y/commondir" && printf '[core]\n\thooksPath = %s\n' "$TMP/o116/w/hk" > "$TMP/o116/L/.git/worktrees/y/config" \
   || { printf 'SCAFFOLD-FAILED: G116 empty commondir\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
-grep -qF "runs its git hooks from /workspace/o116/w/hk (core.hooksPath)" "$ERR" \
-  && pass "G116 an empty commondir under an overlay is no commondir: its own config's core.hooksPath is judged" \
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $TMP/o116/L/.git/worktrees/y/commondir sends git to" "$ERR" \
+  && pass "G116 an empty commondir under an overlay leads back to its directory, and refuses the launch" \
   || fail "G116 empty commondir (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
 # The hooks' link check that runs out of time refuses, as the FIFO search does.
 mk116; "${G[@]}" init -q "$TMP/o116/r" || { printf 'SCAFFOLD-FAILED: G116 timeout\n'; exit 1; }

@@ -203,11 +203,14 @@ else
   printf 'SKIP: G44 needs timeout(1)\n'
 fi
 
-# ── G45: a commondir is resolved as git resolves it, physically ──────────────
+# ── G45: a commondir is read as git reads it ───────────────────────────────
 # bash's `cd` reads `s/..` lexically, git physically: with s a link into
 # A/.git/refs, git's common directory is A/.git while bash's was the worktree's
 # own directory, which has no config — so config.worktree was skipped although
 # git reads it, and its include was never named (review of batch 9, finding 3).
+# git writes no such commondir, and the agent can swap what it steps through:
+# it now refuses the launch, as any but ../.. in a worktree's directory does
+# (bugs review GIT-64; G165).
 A45="$PROJ/a45"; mkdir -p "$A45" && "${G[@]}" -C "$A45" init -q && printf 'x\n' > "$A45/f" \
   && "${G[@]}" -C "$A45" add f && "${G[@]}" -C "$A45" commit -qm init \
   && "${G[@]}" -C "$A45" config extensions.worktreeConfig true \
@@ -218,22 +221,23 @@ printf 'ref: refs/heads/master\n' > "$W45/HEAD"; printf '%s/.git\n' "$C45" > "$W
 printf 'gitdir: %s\n' "$W45" > "$C45/.git"
 "${G[@]}" config --file "$W45/config.worktree" include.path "$PROJ/evil45.gitconfig"
 launch ..
-grep -qF "worktrees/w/config.worktree includes" "$ERR" \
-  && pass "G45 a commondir through a link and .. is resolved as git does; its config.worktree is walked" \
-  || fail "G45 config.worktree skipped (stderr: $(grep -F a45 "$ERR" | head -2 | tr '\n' ' '))"
-# Read as git reads it: every trailing CR and LF stripped, not one each.
-printf 's/..\r\r\n' > "$W45/commondir"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $W45/commondir sends git to s/.. for" "$ERR" \
+  && pass "G45 a commondir through a link and .. refuses the launch" \
+  || fail "G45 commondir through a link (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|a45' "$ERR" | head -2 | tr '\n' ' '))"
+# Read as git reads it: every trailing CR and LF stripped, not one each, so
+# ../.. with two CRs is git's own, and its config.worktree is walked.
+printf '../..\r\r\n' > "$W45/commondir"
 launch ..
-grep -qF "worktrees/w/config.worktree includes" "$ERR" \
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "worktrees/w/config.worktree includes" "$ERR" \
   && pass "G45 … with every trailing CR and LF stripped, as git does" \
-  || fail "G45 a commondir with two trailing CRs is misread"
-# One that cannot be resolved fails closed: its placeholder is made (security
-# review of 99db199), so the agent cannot add a config.worktree after the launch.
+  || fail "G45 a commondir with two trailing CRs is misread (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|a45' "$ERR" | head -2 | tr '\n' ' '))"
+# One that names nothing refuses the launch before anything is made there
+# (it got a config.worktree placeholder; security review of 99db199).
 printf '%s\n' "$PROJ/nonexistent45" > "$W45/commondir"; rm -f "$W45/config.worktree"
 launch ..
-[[ -f "$W45/config.worktree" ]] \
-  && pass "G45 an unresolvable commondir still gets its config.worktree placeholder" \
-  || fail "G45 no config.worktree placeholder for an unresolvable commondir"
+[[ "$LAUNCH_RC" != 0 && ! -e "$W45/config.worktree" ]] && grep -qF "ERROR: $W45/commondir sends git to" "$ERR" \
+  && pass "G45 a commondir naming nothing refuses the launch, and nothing is made" \
+  || fail "G45 a commondir naming nothing (rc=$LAUNCH_RC; config.worktree $([[ -e "$W45/config.worktree" ]] && echo made || echo absent))"
 rm -rf "$A45" "$C45"
 
 # ── G46: a walk through links has one step budget ────────────────────────────
@@ -277,12 +281,12 @@ launch ..
 has_mount "$PROJ/node_modules/x47/g/config:/workspace/proj/node_modules/x47/g/config:ro" \
   && pass "G47 the git directory a .git file names is protected, wherever the scan does not go" \
   || fail "G47 gitdir: target left writable (mounts: $(grep -c node_modules "$CAPTURE"); stderr: $(grep -F x47 "$ERR" | head -2 | tr '\n' ' '))"
-# …and a linked worktree's commondir likewise.
-"${G[@]}" init -q --bare "$PROJ/node_modules/x47/common"
-mkdir -p "$PROJ/wt47"; printf '%s\n' "$PROJ/node_modules/x47/common" > "$PROJ/wt47/commondir"
-printf 'ref: refs/heads/main\n' > "$PROJ/wt47/HEAD"
+# …and a linked worktree's commondir likewise: a worktree of a repository there.
+"${G[@]}" init -q "$PROJ/node_modules/x47/common" && "${G[@]}" -C "$PROJ/node_modules/x47/common" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$PROJ/node_modules/x47/common" worktree add -q "$PROJ/wt47" -b wt47 \
+  || { printf 'SCAFFOLD-FAILED: G47 worktree\n'; exit 1; }
 launch ..
-has_mount "$PROJ/node_modules/x47/common/config:/workspace/proj/node_modules/x47/common/config:ro" \
+has_mount "$PROJ/node_modules/x47/common/.git/config:/workspace/proj/node_modules/x47/common/.git/config:ro" \
   && pass "G47 the common directory a commondir names is protected too" \
   || fail "G47 commondir target left writable (stderr: $(grep -F x47 "$ERR" | head -2 | tr '\n' ' '))"
 # …and a commondir that is itself a link: git reads through it (security review),
@@ -413,9 +417,9 @@ rm -rf "$PROJ/f48"
 # writable, silently (review of 4a4e30c, HIGH).
 B50="$TMP/b50"; mkdir -p "$B50/node_modules/x"; "${G[@]}" init -q --bare "$B50/node_modules/x/main"
 "${G[@]}" config --file "$B50/node_modules/x/main/config" core.bare false
-mkdir -p "$B50/node_modules/x/wt"; printf '../main\n' > "$B50/node_modules/x/wt/commondir"
-printf 'ref: refs/heads/main\n' > "$B50/node_modules/x/wt/HEAD"
-mkdir -p "$PROJ/src50"; printf 'gitdir: %s\n' "$B50/node_modules/x/wt" > "$PROJ/src50/.git"
+W50="$B50/node_modules/x/main/worktrees/wt"; mkdir -p "$W50"; printf '../..\n' > "$W50/commondir"
+printf 'ref: refs/heads/main\n' > "$W50/HEAD"
+mkdir -p "$PROJ/src50"; printf 'gitdir: %s\n' "$W50" > "$PROJ/src50/.git"
 EXTRA_MOUNTS="$B50" launch ..
 has_mount "$B50/node_modules/x/main/config:/workspace/b50/node_modules/x/main/config:ro" \
   && pass "G50 the common directory of a cross-mount target is protected too" \
@@ -426,11 +430,12 @@ has_mount "$B50/node_modules/x/main/config:/workspace/vault/node_modules/x/main/
   && has_mount "$B50/node_modules/x/main/config:/workspace/b50/node_modules/x/main/config:ro" \
   && pass "G50 a directory mounted twice is protected in both views" \
   || fail "G50 a second view left writable"
-# A queued target's commondir naming nothing yet is named, as in one mount.
-printf '../later50\n' > "$B50/node_modules/x/wt/commondir"
+# A queued target's commondir naming nothing yet is named, as in one mount, and
+# refuses the launch as any but ../.. does (G165).
+printf '../later50\n' > "$W50/commondir"
 EXTRA_MOUNTS="$B50" launch ..
-grep -qF "names $B50/node_modules/x/later50, which does not exist" "$ERR" \
-  && pass "G50 a queued target's commondir that names nothing is named" \
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "names $B50/node_modules/x/main/worktrees/later50, which does not exist" "$ERR" \
+  && pass "G50 a queued target's commondir that names nothing is named, and refuses the launch" \
   || fail "G50 a queued target's dangling commondir passed in silence ($(grep -F later50 "$ERR" | head -1))"
 rm -rf "$B50" "$PROJ/src50"
 
@@ -1408,8 +1413,8 @@ rm -rf "$PROJ/node_modules/aw154/.git"; "${G[@]}" init -q "$PROJ/node_modules/aw
   && printf 'ref: refs/heads/x154\n' > "$PROJ/.git/worktrees/x154/HEAD" \
   || { printf 'SCAFFOLD-FAILED: G154 commondir\n'; exit 1; }
 launch ..
-[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/node_modules/aw154/.git/config:/workspace/proj/node_modules/aw154/.git/config:ro" \
-  && pass "G154 a checkout's .git directory a planted commondir names first is protected all the same" \
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $PROJ/.git/worktrees/x154/commondir sends git to" "$ERR" \
+  && pass "G154 a planted worktree's commondir naming another repository refuses the launch" \
   || fail "G154 decoy commondir first (rc=$LAUNCH_RC; $(mounts | grep -F 'aw154/.git' | tr '\n' ' '); $(grep -F aw154 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/.git/worktrees/x154" "$PROJ/node_modules/aw154/.git"; cp "$TMP/dotgit154" "$PROJ/node_modules/aw154/.git"; rm -f "$TMP/dotgit154"
 "${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/node_modules/aw154" 2>/dev/null
@@ -1578,18 +1583,24 @@ for n162 in 2 3 4; do
     && printf '%s\n' "$PROJ/wt162x$n162/.git" > "$w162/wt162x$n162/gitdir" \
     && printf 'gitdir: %s\n' "$w162/wt162x$n162" > "$PROJ/wt162x$n162/.git" || { printf 'SCAFFOLD-FAILED: G162 x\n'; exit 1; }
 done
-printf '%s\n' "$B162/node_modules/ng" > "$w162/wt162x2/commondir"
-printf '%s\n' "$TMP/out162/ng" > "$w162/wt162x3/commondir"
 # Our ./ placeholder, in a worktree's directory with no objects/: no redirect,
 # so nothing to name.
 printf './\n' > "$w162/wt162x4/commondir"
+for n162 in 2 3; do mv "$w162/wt162x$n162" "$TMP/x$n162.aside162"; done
 EXTRA_MOUNTS="$B162" launch ..
 m162="$(mounts)"
 [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$B162/node_modules/r/.git/config:/workspace/b162/node_modules/r/.git/config:ro" <<<"$m162" \
   && [[ -z "$(awk -F: -v t="$TMP" 'index($2, t)' <<<"$m162")" ]] \
   && pass "G162 a commondir in another writable mount is protected there, and nowhere it does not lie" \
   || fail "G162 commondir across mounts (rc=$LAUNCH_RC; $(grep -F 'b162/node_modules/r/.git/config' <<<"$m162" | tr '\n' ' '))"
-[[ "$(grep -c 'which is not a git directory; nothing there is protected' "$ERR")" == 1 ]] \
+# Two that name no git directory, one in a writable mount and one outside
+# every mount: named once, where the agent could have made it; both refuse the
+# launch, as any commondir but ../.. in a worktree's directory does (G165).
+for n162 in 2 3; do mv "$TMP/x$n162.aside162" "$w162/wt162x$n162"; done
+printf '%s\n' "$B162/node_modules/ng" > "$w162/wt162x2/commondir"
+printf '%s\n' "$TMP/out162/ng" > "$w162/wt162x3/commondir"
+EXTRA_MOUNTS="$B162" launch ..
+[[ "$LAUNCH_RC" != 0 && "$(grep -c 'which is not a git directory; nothing there is protected' "$ERR")" == 1 ]] \
   && grep -qF "WARNING: $w162/wt162x2/commondir names $B162/node_modules/ng, which is not a git directory" "$ERR" \
   && pass "G162 a commondir naming no git directory is named once, where the agent could have made it" \
   || fail "G162 not a git directory ($(grep -F 'not a git directory' "$ERR" | tr '\n' ' '))"
@@ -1735,21 +1746,22 @@ for k168 in d l; do
 done
 
 # ── G169: what a commondir names, not a git directory at launch ──────────────
-# A linked worktree's directory in another writable mount (under its pruned
-# node_modules) whose commondir names a directory that is no git directory gets
-# a WARNING that says what follows; a session that makes it one, with no HEAD
-# (a common directory needs none) and a config that runs a program, has it named
-# after the session (bugs review GIT-63).
-B169="$TMP/b169"; mkdir -p "$B169/node_modules/ng" && "${G[@]}" init -q "$B169/node_modules/r" \
-  && "${G[@]}" -C "$B169/node_modules/r" commit -q --allow-empty -m i \
-  && "${G[@]}" -C "$B169/node_modules/r" worktree add -q "$PROJ/wt169" -b wt169 \
-  && printf '%s\n' "$B169/node_modules/ng" > "$B169/node_modules/r/.git/worktrees/wt169/commondir" \
-  || { printf 'SCAFFOLD-FAILED: G169\n'; exit 1; }
+# A linked worktree's directory outside every mount, which git and the agent
+# leave as it is, whose commondir names a directory in a writable mount (under
+# its pruned node_modules) that is no git directory gets a WARNING that says
+# what follows; a session that makes it one, with no HEAD (a common directory
+# needs none) and a config that runs a program, has it named after the session
+# (bugs review GIT-63). A worktree's directory in the mount with such a
+# commondir refuses the launch: git writes none but ../.. (GIT-67; G165).
+B169="$TMP/b169"; O169="$TMP/o169"
+mkdir -p "$B169/node_modules/ng" "$B169/co" "$O169/wt" && printf 'ref: refs/heads/main\n' > "$O169/wt/HEAD" \
+  && printf '%s\n' "$B169/node_modules/ng" > "$O169/wt/commondir" && printf '%s\n' "$B169/co/.git" > "$O169/wt/gitdir" \
+  && printf 'gitdir: %s\n' "$O169/wt" > "$B169/co/.git" || { printf 'SCAFFOLD-FAILED: G169\n'; exit 1; }
 sess169="git init -q --bare '$B169/node_modules/ng' && rm -f '$B169/node_modules/ng/HEAD' && git config --file '$B169/node_modules/ng/config' core.fsmonitor ./fsm"
-FAKE_SESSION="$sess169" EXTRA_MOUNTS="$B169" launch ..
+FAKE_SESSION="$sess169" EXTRA_MOUNTS="$B169" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] \
   && grep -qF "if the agent makes it one, your host's git reads it unprotected" \
-     < <(grep -A2 -F "WARNING: $B169/node_modules/r/.git/worktrees/wt169/commondir names $B169/node_modules/ng, which is not a git directory" "$ERR") \
+     < <(grep -A2 -F "WARNING: $O169/wt/commondir names $B169/node_modules/ng, which is not a git directory" "$ERR") \
   && pass "G169 a commondir naming no git directory is named with what follows" \
   || fail "G169 the WARNING (rc=$LAUNCH_RC; $(grep -A2 -F 'not a git directory' "$ERR" | tr '\n' ' '))"
 grep -qF "$B169/node_modules/ng (config: core.fsmonitor" \
@@ -1757,16 +1769,27 @@ grep -qF "$B169/node_modules/ng (config: core.fsmonitor" \
   && pass "G169 a common directory with no HEAD the session makes there is named after it" \
   || fail "G169 rescan ($(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
 # One naming a path not there: named at launch, and a repository the session
-# makes there named after it — the rescan does not follow a commondir in
-# another mount's worktree directory, nor look under node_modules.
-printf '%s\n' "$B169/node_modules/nx" > "$B169/node_modules/r/.git/worktrees/wt169/commondir"
+# makes there named after it — the rescan does not look under node_modules.
+rm -rf "$B169/node_modules/ng"; printf '%s\n' "$B169/node_modules/nx" > "$O169/wt/commondir"
 FAKE_SESSION="git init -q --bare '$B169/node_modules/nx' && git config --file '$B169/node_modules/nx/config' core.fsmonitor ./fsm" \
-  EXTRA_MOUNTS="$B169" launch ..
-grep -qF "WARNING: $B169/node_modules/r/.git/worktrees/wt169/commondir names $B169/node_modules/nx, which does not exist" "$ERR" \
+  EXTRA_MOUNTS="$B169" launch "$TMP/app"
+grep -qF "WARNING: $O169/wt/commondir names $B169/node_modules/nx, which does not exist" "$ERR" \
   && grep -qF "$B169/node_modules/nx (config: core.fsmonitor" \
      < <(grep -A3 -F 'WARNING: the session made git repositories in a writable mount' "$ERR") \
   && pass "G169 a commondir naming a path not there is named, and a repository the session makes there after it" \
   || fail "G169 not there (rc=$LAUNCH_RC; $(grep -F 'nx' "$ERR" | head -3 | tr '\n' ' '))"
+rm -rf "$B169" "$O169"
+# In the mount, a worktree's directory with such a commondir is refused at launch.
+mkdir -p "$B169/node_modules/ng" && "${G[@]}" init -q "$B169/node_modules/r" \
+  && "${G[@]}" -C "$B169/node_modules/r" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$B169/node_modules/r" worktree add -q "$PROJ/wt169" -b wt169 \
+  && printf '%s\n' "$B169/node_modules/ng" > "$B169/node_modules/r/.git/worktrees/wt169/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G169 in the mount\n'; exit 1; }
+EXTRA_MOUNTS="$B169" launch ..
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $B169/node_modules/r/.git/worktrees/wt169/commondir sends git to" "$ERR" \
+  && pass "G169 a worktree's directory in the mount whose commondir names no repository refuses the launch" \
+  || fail "G169 in the mount (rc=$LAUNCH_RC; $(grep -E 'ERROR' "$ERR" | head -1))"
 "${G[@]}" -C "$B169/node_modules/r" worktree remove --force "$PROJ/wt169" 2>/dev/null
 rm -rf "$B169" "$PROJ/wt169"
 

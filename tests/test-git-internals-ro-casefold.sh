@@ -392,6 +392,19 @@ EXTRA_MOUNTS="$TMP/h117" launch "$TMP/app"
   || fail "G117 hooks directory in two cases (rc=$LAUNCH_RC; named $(grep -Fci "o117/hooks/pre-commit, a hook your host" "$ERR") times)"
 rm -rf "$TMP/h117" "$TMP/o117"
 
+# A separate git directory, not named .git, with objects/ moved aside, whose
+# commondir leads back to it spelled in another case: git takes it for its own
+# common directory, and writes no such commondir, so it refuses the launch
+# (bugs review GIT-64; G165).
+mkdir -p "$PROJ/r117" && "${G[@]}" init -q --separate-git-dir="$PROJ/r117/gd" "$PROJ/r117/co" \
+  && rm -rf "$PROJ/r117/gd/config" "$PROJ/r117/gd/hooks" && mv "$PROJ/r117/gd/objects" "$PROJ/r117/gd/objects.117" \
+  && printf '../GD\n' > "$PROJ/r117/gd/commondir" || { printf 'SCAFFOLD-FAILED: G117 commondir in another case\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $PROJ/r117/gd/commondir sends git to" "$ERR" \
+  && pass "G117 a separate git directory whose commondir leads back to it in another case refuses the launch" \
+  || fail "G117 commondir back to its .git in another case (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/r117"
+
 # ── G121 here too: where a directory ignores case and its kernel does not, and
 # it is no Windows filesystem (a share of a host that ignores case), no
 # read-only bind covers another spelling of its name, so a launch that needs one

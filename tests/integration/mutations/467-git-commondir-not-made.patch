@@ -10,12 +10,12 @@
 diff --git a/sandbox.sh b/sandbox.sh
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -882,7 +882,7 @@
+@@ -1006,7 +1006,7 @@
            if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || _git_cant_make "$g" hooks; fi
            first=""
            if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
 -            if ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null; then first=1; else _git_cant_make "$g" commondir; fi
 +            :
            fi
-           # Anything but our ./ sends the host's git elsewhere for this repository's
-           # configuration and hooks, and git never writes one here: refuse, rather
+           # Freezing the config read-only freezes whatever is in it. The launch
+           # that first protects a repository — the one that just made its

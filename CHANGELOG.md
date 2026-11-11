@@ -153,16 +153,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repository that runs something, under `node_modules` and without a `HEAD`
   too (GIT-63).
 
-- **A `commondir` that git would follow back to its own git directory, or
-  that the agent can repoint, refuses the launch.** In a repository's own git
-  directory with no `config`, a `commondir` reading `.` (or `../.git`, or its
-  own path) made git take the directory as its own common one while the launch
-  made and bound nothing there, so a `config` the agent wrote next ran at your
-  host's next `git status`; one reached through a link in the mount, or naming
-  a path the agent could make, could be turned into that. A `commondir` that
-  is a link was only warned about, and the agent could repoint it in any
-  session. All of these now refuse the launch, naming the file to fix (bugs
-  review GIT-62, GIT-64).
+- **A `commondir` git does not write refuses the launch.** A git directory's
+  `commondir` names the directory whose configuration and hooks git takes for
+  it. One other than `./` was refused only in a repository's own git
+  directory beside a `config`; elsewhere the launch followed it. With no
+  `config`, one leading back to the directory had nothing made or bound there,
+  and in any git directory one could be steered to a config the agent wrote:
+  a spelling git and the kernel resolve apart (`HEAD/..`), a step through a
+  directory the agent later swapped for a link, a directory it filled later.
+  A `commondir` link, dangling or not, was only named. Your host's git then
+  ran that config at the next `git status`. git writes a `commondir` only in a
+  linked worktree's directory, as `../..` (libgit2: that directory's full
+  path), naming the repository's git directory. Anything else, and any link,
+  now refuses the launch, naming the file and the `rm` that removes it.
+  Linked worktrees, submodules and separate git directories as git makes
+  them are unaffected, and so is libgit2's form of a worktree's `commondir`;
+  a libgit2 worktree whose repository has moved is refused (bugs review
+  GIT-62, GIT-64, GIT-67).
 
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read

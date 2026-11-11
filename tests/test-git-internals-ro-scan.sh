@@ -921,125 +921,173 @@ launch ..
   || fail "G160 ./ worktree (rc=$LAUNCH_RC; $(ls -A "$PROJ/r160/.git/worktrees/w" | tr '\n' ' '))"
 rm -rf "$PROJ/r160"
 # A .git with no config whose commondir names another repository's git
-# directory is read as a linked worktree's: git takes config and hooks from
-# there, which is protected; it is not refused.
+# directory was read as a linked worktree's, which let the agent choose the
+# config git reads (bugs review GIT-64's review): nothing makes that layout, and
+# it refuses the launch, as one beside a config does (G165).
 mkdir -p "$PROJ/c160" "$PROJ/r160" && "${G[@]}" init -q "$PROJ/c160" && mkdir -p "$PROJ/r160/.git/refs" \
   && printf 'ref: refs/heads/main\n' > "$PROJ/r160/.git/HEAD" && printf '%s\n' "$PROJ/c160/.git" > "$PROJ/r160/.git/commondir" \
   || { printf 'SCAFFOLD-FAILED: G160 common\n'; exit 1; }
 launch ..
-[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/c160/.git/config:/workspace/proj/c160/.git/config:ro" \
-  && has_mount "$PROJ/r160/.git/commondir:/workspace/proj/r160/.git/commondir:ro" \
-  && ! grep -qF "r160/.git/commondir sends git to" "$ERR" \
-  && pass "G160 a .git with no config and a commondir naming a repository is not refused; the commondir is read-only, what it names protected" \
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $PROJ/r160/.git/commondir sends git to" "$ERR" \
+  && pass "G160 a .git with no config and a commondir naming a repository refuses the launch" \
   || fail "G160 foreign commondir (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/c160" "$PROJ/r160"
 
-# ── G165: a commondir that leads back to its own git directory (GIT-64) ──────
-# git takes such a directory as its own common directory, hooks/ and config
-# included. With no config there the launch made nothing and refused nothing,
-# and a config the agent wrote in a later session ran at your host's next git
-# status (bugs review GIT-64). It now refuses the launch, as a commondir other
-# than ./ in a repository's own git directory does where there is a config.
-r165() {  # <commondir text> → launch, with no config and no hooks/
+# ── G165: a commondir git does not write (GIT-64) ───────────────────────────
+# git takes the configuration and hooks of the directory a commondir leads to.
+# With no config, one leading back to its own git directory had nothing made or
+# bound there, and one naming another directory let the agent choose the config
+# git reads: one with a commondir of its own, one made a repository later, one
+# reached through a link it repoints (bugs review GIT-64 and its review). git
+# writes a commondir only in a linked worktree's directory, as ../.. (libgit2:
+# that directory's full path), so any other refuses the launch, in any git
+# directory, a config beside it or not.
+refused16x() {  # <check> <commondir> <what the ERROR says of it>: the launch was refused for it
+  if [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $2 $3" "$ERR"; then pass "$1"
+  else fail "$1 (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"; fi
+}
+mk165() {  # a .git with no config and no hooks/, its commondir reading $1
   rm -rf "$PROJ/r165"; mkdir -p "$PROJ/r165" && "${G[@]}" init -q "$PROJ/r165" \
     && rm -rf "$PROJ/r165/.git/config" "$PROJ/r165/.git/hooks" \
     && printf '%s\n' "$1" > "$PROJ/r165/.git/commondir" || { printf 'SCAFFOLD-FAILED: G165\n'; exit 1; }
-  launch ..
 }
-for c165 in . ./. .// ../.git "$PROJ/r165/.git"; do
-  r165 "$c165"
-  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $PROJ/r165/.git/commondir leads back to" "$ERR" \
-    && pass "G165 a .git with no config whose commondir reads '$c165' refuses the launch" \
-    || fail "G165 commondir '$c165' back to its own .git (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+for v165 in . ./. .// ../.git "$PROJ/r165/.git" ''; do
+  mk165 "$v165"; launch ..
+  refused16x "G165 a .git with no config whose commondir reads '$v165' refuses the launch" "$PROJ/r165/.git/commondir" "sends git to"
 done
-# ... with objects/ moved aside too, which left the launch without a word.
-r165 . >/dev/null; mv "$PROJ/r165/.git/objects" "$PROJ/r165/.git/objects.aside"; launch ..
-[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $PROJ/r165/.git/commondir leads back to" "$ERR" \
-  && pass "G165 ... and with its objects/ moved aside" \
-  || fail "G165 objects/ aside (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING|READ-ONLY' "$ERR" | head -2 | tr '\n' ' '))"
-# A linked worktree's directory whose commondir reads '.', no objects/ needed.
+mk165 .; mv "$PROJ/r165/.git/objects" "$PROJ/r165/.git/objects.165" || { printf 'SCAFFOLD-FAILED: G165 objects\n'; exit 1; }
+launch ..
+refused16x "G165 … with its objects/ moved aside too" "$PROJ/r165/.git/commondir" "sends git to"
+# A linked worktree's directory, which needs no objects/, and a separate git
+# directory not named .git, with objects/ moved aside, the same.
 rm -rf "$PROJ/r165"; mkdir -p "$PROJ/r165" && "${G[@]}" init -q "$PROJ/r165" && mkdir -p "$PROJ/r165/.git/worktrees/w" \
   && printf 'ref: refs/heads/main\n' > "$PROJ/r165/.git/worktrees/w/HEAD" && printf '.\n' > "$PROJ/r165/.git/worktrees/w/commondir" \
   || { printf 'SCAFFOLD-FAILED: G165 worktree\n'; exit 1; }
 launch ..
-[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $PROJ/r165/.git/worktrees/w/commondir leads back to" "$ERR" \
-  && pass "G165 a worktree's directory whose commondir reads '.' refuses the launch" \
-  || fail "G165 worktree '.' (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
-# One that does not lead back at launch, but can be made to: through a link
-# inside the mount the agent can repoint, or to a path that is not there yet.
-r165 x >/dev/null; mkdir -p "$PROJ/c165" && "${G[@]}" init -q "$PROJ/c165" && ln -s "$PROJ/c165/.git" "$PROJ/l165" \
-  && printf '%s\n' "$PROJ/l165" > "$PROJ/r165/.git/commondir"
+refused16x "G165 a linked worktree's directory whose commondir reads '.' refuses the launch" \
+  "$PROJ/r165/.git/worktrees/w/commondir" "sends git to"
+rm -rf "$PROJ/r165"; mkdir -p "$PROJ/r165" && "${G[@]}" init -q --separate-git-dir="$PROJ/r165/gd" "$PROJ/r165/co" \
+  && rm -rf "$PROJ/r165/gd/config" "$PROJ/r165/gd/hooks" && mv "$PROJ/r165/gd/objects" "$PROJ/r165/gd/objects.165" \
+  && printf '.\n' > "$PROJ/r165/gd/commondir" || { printf 'SCAFFOLD-FAILED: G165 separate\n'; exit 1; }
 launch ..
-[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $PROJ/r165/.git/commondir reaches" "$ERR" \
-  && pass "G165 a .git with no config whose commondir goes through a link the agent can repoint refuses the launch" \
-  || fail "G165 commondir through a link (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
-printf '%s\n' "$PROJ/n165/.git" > "$PROJ/r165/.git/commondir"
+refused16x "G165 a separate git directory whose commondir leads back to it refuses the launch" "$PROJ/r165/gd/commondir" "sends git to"
+# Naming another repository's git directory, with no config: refused too, as
+# nothing makes that layout (it was read as a linked worktree's, G160), and
+# whatever it names. One that has a commondir of its own, which git does not
+# follow, so its config is the one read; a directory that is no repository yet,
+# which the agent can make one; and one reached past a link that `..` cancels,
+# which the agent can repoint later.
+mkdir -p "$PROJ/c165" && "${G[@]}" init -q "$PROJ/c165" || { printf 'SCAFFOLD-FAILED: G165 c165\n'; exit 1; }
+mk165 "$PROJ/c165/.git"; launch ..
+refused16x "G165 a .git with no config whose commondir names another repository refuses the launch" "$PROJ/r165/.git/commondir" "sends git to"
+mk165 ../b165/.git; mkdir -p "$PROJ/r165/b165" && "${G[@]}" init -q "$PROJ/r165/b165" \
+  && rm -rf "$PROJ/r165/b165/.git/config" "$PROJ/r165/b165/.git/hooks" && printf '%s\n' "$PROJ/c165/.git" > "$PROJ/r165/b165/.git/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G165 chain\n'; exit 1; }
 launch ..
-[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $PROJ/r165/.git/commondir names $PROJ/n165/.git, which is not there" "$ERR" \
-  && pass "G165 a .git with no config whose commondir names a path that is not there refuses the launch" \
-  || fail "G165 commondir to nowhere (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
-# One not there outside every writable mount, which the agent cannot make, does
-# not refuse the launch.
-printf '%s\n' "$TMP/nowhere165/.git" > "$PROJ/r165/.git/commondir"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $PROJ/r165/" "$ERR" && grep -qF '/.git/commondir sends git to' "$ERR" \
+  && pass "G165 a chain of commondirs with no config refuses the launch" \
+  || fail "G165 a chain of commondirs (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+mk165 ../x165; mkdir -p "$PROJ/r165/x165" || { printf 'SCAFFOLD-FAILED: G165 empty\n'; exit 1; }
 launch ..
-! grep -qF "ERROR: $PROJ/r165/.git/commondir" "$ERR" \
-  && pass "G165 ... but not one naming a path that is not there outside every writable mount" \
-  || fail "G165 commondir to nowhere outside (rc=$LAUNCH_RC; $(grep -E 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
-rm -rf "$PROJ/r165" "$PROJ/c165" "$PROJ/l165"
-
-# A .git with no config whose commondir names another repository's git directory
-# takes its hooks/ from there: with objects/ there too, it is not said to lack
-# one, which only a directory this launch tried to make one in can (GIT-64).
-mkdir -p "$PROJ/c165" "$PROJ/r165" && "${G[@]}" init -q "$PROJ/c165" && "${G[@]}" init -q "$PROJ/r165" \
-  && rm -rf "$PROJ/r165/.git/config" "$PROJ/r165/.git/hooks" && printf '%s\n' "$PROJ/c165/.git" > "$PROJ/r165/.git/commondir" \
-  || { printf 'SCAFFOLD-FAILED: G165 foreign\n'; exit 1; }
+refused16x "G165 a .git with no config whose commondir names a directory that is no repository yet refuses the launch" \
+  "$PROJ/r165/.git/commondir" "sends git to"
+mk165 ../l165/../../c165/.git; mkdir -p "$PROJ/r165/sub165" && ln -s "$PROJ/r165/sub165" "$PROJ/r165/l165" \
+  || { printf 'SCAFFOLD-FAILED: G165 link\n'; exit 1; }
 launch ..
-[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "WARNING: $PROJ/r165/.git has no hooks" "$ERR" \
-  && pass "G165 a .git whose commondir names another repository is not said to lack hooks/" \
-  || fail "G165 false hooks warning (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
-rm -rf "$PROJ/c165" "$PROJ/r165"
-
-# A linked worktree's directory whose commondir names a path that is not there,
-# a stale worktree, keeps the warning: only a repository's own git directory
-# with no config is refused for that, git taking config and hooks/ elsewhere
-# for a worktree's.
-mkdir -p "$PROJ/r165" && "${G[@]}" init -q "$PROJ/r165" && mkdir -p "$PROJ/r165/.git/worktrees/w" \
-  && printf 'ref: refs/heads/main\n' > "$PROJ/r165/.git/worktrees/w/HEAD" && printf '%s\n' "$PROJ/gone165/.git" > "$PROJ/r165/.git/worktrees/w/commondir" \
-  || { printf 'SCAFFOLD-FAILED: G165 stale worktree\n'; exit 1; }
+refused16x "G165 a .git with no config whose commondir steps past a link refuses the launch" "$PROJ/r165/.git/commondir" "sends git to"
+rm -rf "$PROJ/r165" "$PROJ/c165"
+# In a linked worktree's directory, only what git and libgit2 write, and only
+# naming a .git or a directory that holds objects/ and refs/, which the launch
+# finds and protects. A spelling git resolves apart from the kernel (HEAD/..), a
+# step through a directory the agent can swap for a link, or a link `..`
+# cancels, refuses the launch, and so does ../.. naming a directory that is no
+# repository yet, which the agent could fill (bugs review GIT-64's second
+# review).
+rm -rf "$PROJ/r165"; mkdir -p "$PROJ/r165" && "${G[@]}" init -q "$PROJ/r165" && "${G[@]}" -C "$PROJ/r165" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$PROJ/r165" worktree add -q "$PROJ/r165/w" -b w165 && W165="$PROJ/r165/.git/worktrees/w" \
+  && mkdir -p "$W165/sub" && ln -s "$W165" "$W165/L" || { printf 'SCAFFOLD-FAILED: G165 worktree forms\n'; exit 1; }
+for v165 in HEAD/../../.. sub/../../.. L/../../.. ../../ ./../..; do
+  printf '%s\n' "$v165" > "$W165/commondir"; launch ..
+  refused16x "G165 a linked worktree's commondir reading '$v165' refuses the launch" "$W165/commondir" "sends git to"
+done
+printf '%s/\n' "$PROJ/r165/.git" > "$W165/commondir"; launch ..
+# A linked worktree's directory takes hooks/ from its repository: it gets no
+# placeholders, and no warning that one could not be made (GIT-48, GIT-64).
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$W165/commondir:/workspace/proj/r165/.git/worktrees/w/commondir:ro" \
+  && [[ ! -e "$W165/config" && ! -e "$W165/hooks" ]] && ! grep -qF "WARNING: $W165 has no" "$ERR" \
+  && pass "G165 a linked worktree's commondir naming its repository's git directory by its full path, as libgit2 writes it, is taken" \
+  || fail "G165 libgit2's commondir (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+mkdir -p "$PROJ/r165/t/worktrees/T/refs" && printf 'ref: refs/heads/main\n' > "$PROJ/r165/t/worktrees/T/HEAD" \
+  && printf '../..\n' > "$PROJ/r165/t/worktrees/T/commondir" || { printf 'SCAFFOLD-FAILED: G165 dormant\n'; exit 1; }
+printf '../..\n' > "$W165/commondir"; launch ..
+refused16x "G165 a worktree's ../.. naming a directory that is no repository refuses the launch" "$PROJ/r165/t/worktrees/T/commondir" \
+  "names $PROJ/r165/t, which is no repository's own git directory"
+rm -rf "$PROJ/r165/t"
+# Nor one that holds objects/ and refs/ but has a commondir of its own (a
+# worktree's directory nested in another's): git reads its config, which as no
+# repository's own is neither made nor bound (bugs review GIT-64's third review).
+V165="$PROJ/r165/.git/worktrees/wv"; mkdir -p "$V165/objects" "$V165/refs" "$V165/worktrees/w2" "$PROJ/r165/co2" \
+  && printf 'ref: refs/heads/main\n' > "$V165/HEAD" && printf '../..\n' > "$V165/commondir" \
+  && printf 'ref: refs/heads/main\n' > "$V165/worktrees/w2/HEAD" && printf '../..\n' > "$V165/worktrees/w2/commondir" \
+  && printf '%s/co2/.git\n' "$PROJ/r165" > "$V165/worktrees/w2/gitdir" && printf 'gitdir: %s\n' "$V165/worktrees/w2" > "$PROJ/r165/co2/.git" \
+  || { printf 'SCAFFOLD-FAILED: G165 nested\n'; exit 1; }
 launch ..
-[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "ERROR: $PROJ/r165/.git/worktrees/w/commondir" "$ERR" \
-  && pass "G165 a worktree's directory whose commondir names a path not there is not refused" \
-  || fail "G165 stale worktree refused (rc=$LAUNCH_RC; $(grep -E 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+refused16x "G165 a worktree's ../.. naming one with a commondir of its own refuses the launch" "$V165/worktrees/w2/commondir" \
+  "names $V165, which is no repository's own git directory"
+rm -rf "$V165" "$PROJ/r165/co2"
+# Nor a .git with objects/ moved aside, which git would not take for a common
+# directory either: what counts is objects/ and refs/, not the name.
+X165="$PROJ/node_modules/x165"; mkdir -p "$PROJ/co3" && "${G[@]}" init -q "$X165" \
+  && rm -rf "$X165/.git/config" && mv "$X165/.git/objects" "$X165/.git/objects.165" && mkdir -p "$X165/.git/worktrees/w" \
+  && printf 'ref: refs/heads/main\n' > "$X165/.git/worktrees/w/HEAD" && printf '../..\n' > "$X165/.git/worktrees/w/commondir" \
+  && printf '%s/co3/.git\n' "$PROJ" > "$X165/.git/worktrees/w/gitdir" && printf 'gitdir: %s\n' "$X165/.git/worktrees/w" > "$PROJ/co3/.git" \
+  || { printf 'SCAFFOLD-FAILED: G165 pruned\n'; exit 1; }
+launch ..
+refused16x "G165 a worktree's ../.. naming a .git with no objects/ refuses the launch" "$X165/.git/worktrees/w/commondir" \
+  "names $X165/.git, which is no repository's own git directory"
+rm -rf "$PROJ/node_modules" "$PROJ/co3"
+"${G[@]}" -C "$PROJ/r165" worktree remove --force "$PROJ/r165/w" 2>/dev/null
 rm -rf "$PROJ/r165"
 
-# ── G166: a commondir that is a symlink (GIT-62) ─────────────────────────────
-# git reads a commondir link as it reads the file it leads to, and the agent can
-# repoint it in any session: a read-only bind follows it, and holds the target.
-# Where a regular one other than ./ refused the launch, a link was only warned
-# about, and in a .git with no config it switched the protection off. git never
-# makes one, so it refuses the launch, wherever it is.
-r166() {  # <with-config: 1 or ""> <link target>
-  rm -rf "$PROJ/r166"; mkdir -p "$PROJ/r166" && "${G[@]}" init -q "$PROJ/r166" || { printf 'SCAFFOLD-FAILED: G166\n'; exit 1; }
-  if [[ -z "$1" ]]; then rm -rf "$PROJ/r166/.git/config" "$PROJ/r166/.git/hooks"; fi
-  ln -s "$2" "$PROJ/r166/.git/commondir"
-  launch ..
+# ── G166: a commondir that is a link (GIT-62) ───────────────────────────────
+# git reads the path through the link, which the agent can repoint in every
+# session; a dangling one is no commondir to git, which then takes the
+# directory itself (with objects/ and refs/ there; measured with git 2.56). In a
+# repository's own git directory one left nothing made or bound, or was only
+# named (bugs review GIT-62), and elsewhere it was named and read through. git
+# never makes one: it refuses the launch, in any git directory.
+mk166() {  # a fresh repository, with the regular file cd166 beside its .git reading $1
+  rm -rf "$PROJ/r166"; mkdir -p "$PROJ/r166" && "${G[@]}" init -q "$PROJ/r166" \
+    && printf '%s\n' "$1" > "$PROJ/r166/cd166" || { printf 'SCAFFOLD-FAILED: G166\n'; exit 1; }
 }
-r166 "" /nonexistent166
-[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $PROJ/r166/.git/commondir is a symlink" "$ERR" \
-  && pass "G166 a commondir link in a .git with no config refuses the launch" \
-  || fail "G166 link, no config (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
-printf './\n' > "$TMP/cd166"; r166 1 "$TMP/cd166"
-[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $PROJ/r166/.git/commondir is a symlink" "$ERR" \
-  && pass "G166 a commondir link in a .git with a config refuses the launch, though it leads to './'" \
-  || fail "G166 link, config (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
-rm -rf "$PROJ/r166"; mkdir -p "$PROJ/r166" && "${G[@]}" init -q "$PROJ/r166" && mkdir -p "$PROJ/r166/.git/worktrees/w" \
-  && printf 'ref: refs/heads/main\n' > "$PROJ/r166/.git/worktrees/w/HEAD" && ln -s "$TMP/cd166" "$PROJ/r166/.git/worktrees/w/commondir" \
-  || { printf 'SCAFFOLD-FAILED: G166 worktree\n'; exit 1; }
+mk166 ./; rm -rf "$PROJ/r166/.git/config" "$PROJ/r166/.git/hooks" "$PROJ/r166/.git/objects" \
+  && ln -s /nonexistent166 "$PROJ/r166/.git/commondir" || { printf 'SCAFFOLD-FAILED: G166 dangling\n'; exit 1; }
 launch ..
-[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $PROJ/r166/.git/worktrees/w/commondir is a symlink" "$ERR" \
-  && pass "G166 a worktree's directory with a commondir link refuses the launch" \
-  || fail "G166 worktree link (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
-rm -rf "$PROJ/r166" "$TMP/cd166"
+refused16x "G166 a .git with no config whose commondir is a dangling link refuses the launch" "$PROJ/r166/.git/commondir" "is a symlink"
+mk166 ./; ln -s ../cd166 "$PROJ/r166/.git/commondir" || { printf 'SCAFFOLD-FAILED: G166 config\n'; exit 1; }
+launch ..
+refused16x "G166 a .git with a config whose commondir is a link to our ./ refuses the launch" "$PROJ/r166/.git/commondir" "is a symlink"
+mk166 ../..; mkdir -p "$PROJ/r166/.git/modules/m/refs" && printf 'ref: refs/heads/main\n' > "$PROJ/r166/.git/modules/m/HEAD" \
+  && ln -s ../../../cd166 "$PROJ/r166/.git/modules/m/commondir" || { printf 'SCAFFOLD-FAILED: G166 module\n'; exit 1; }
+launch ..
+refused16x "G166 a module's git directory whose commondir is a link refuses the launch" "$PROJ/r166/.git/modules/m/commondir" "is a symlink"
+# A linked worktree's directory: one leading back to it, one dangling (objects/
+# and refs/ there, so git takes the directory itself), and one leading to the
+# repository's own, as git writes it but through a link (G144 found it).
+for k166 in ./ dangling ../..; do
+  mk166 "$k166"; mkdir -p "$PROJ/r166/.git/worktrees/w" && printf 'ref: refs/heads/main\n' > "$PROJ/r166/.git/worktrees/w/HEAD" \
+    || { printf 'SCAFFOLD-FAILED: G166 worktree\n'; exit 1; }
+  if [[ "$k166" == dangling ]]; then
+    mkdir -p "$PROJ/r166/.git/worktrees/w/objects" "$PROJ/r166/.git/worktrees/w/refs" \
+      && ln -s /nonexistent166 "$PROJ/r166/.git/worktrees/w/commondir" || { printf 'SCAFFOLD-FAILED: G166 dangling worktree\n'; exit 1; }
+  else
+    ln -s ../../../cd166 "$PROJ/r166/.git/worktrees/w/commondir" || { printf 'SCAFFOLD-FAILED: G166 linked worktree\n'; exit 1; }
+  fi
+  launch ..
+  refused16x "G166 a linked worktree's directory whose commondir is a link ($k166) refuses the launch" \
+    "$PROJ/r166/.git/worktrees/w/commondir" "is a symlink"
+done
+rm -rf "$PROJ/r166"
 
 # ── G161: under a launcher's read-only overlay, a second name still counts ───
 # A repository inside a launcher another mount exposes gets no binds of its
