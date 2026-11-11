@@ -69,6 +69,18 @@ grep -qF "includes ../other.gitconfig (includeif.gitdir:/x/.path)" "$ERR" \
   && pass "G25 an include outside every mount, or under the read-only launcher, is silent" \
   || fail "G25 quiet includes (stderr: $(grep 'includes' "$ERR" | tr '\n' ' '))"
 "${G[@]}" -C "$PROJ" config --unset-all include.path; "${G[@]}" -C "$PROJ" config --remove-section 'includeIf.gitdir:/x/'
+# A protected repository's config that is a link is named as one, and the
+# include walk does not read through it: the link cannot be bound, so the agent
+# can repoint it, and what it leads to now says nothing of what the host's git
+# will read. It lies under no read-only overlay, so it is not named as one there.
+mkdir -p "$TMP/p25" && "${G[@]}" init -q "$TMP/p25/r" && printf '[include]\n\tpath = w25.gitconfig\n' > "$TMP/p25/real.cfg" \
+  && rm -f "$TMP/p25/r/.git/config" && ln -s ../../real.cfg "$TMP/p25/r/.git/config" || { printf 'SCAFFOLD-FAILED: G25 link\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/p25" launch "$TMP/app"
+grep -qF "WARNING: $TMP/p25/r/.git/config is a symlink, which cannot be mounted read-only in place" "$ERR" \
+  && ! grep -qF 'includes w25.gitconfig' "$ERR" && ! grep -qF 'under a read-only overlay, is a symlink' "$ERR" \
+  && pass "G25 a protected config that is a link is named, and its includes not walked through it" \
+  || fail "G25 linked config (rc=$LAUNCH_RC; stderr: $(grep -E 'p25|w25' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/p25"
 
 # ── G114: paths a config names are resolved physically, as git resolves them ──
 # A `..` after a link steps out of where the link leads. core.hooksPath and the
@@ -115,7 +127,34 @@ grep -qF "WARNING: /workspace/proj/.git/config includes ../proj/nested29.gitconf
 [[ "$LAUNCH_RC" == 0 && "$(grep -c 'nested29.gitconfig (include.path' "$ERR")" -eq 1 ]] \
   && pass "G29 an include loop ends, and each include is named once" \
   || fail "G29 loop (rc=$LAUNCH_RC; named: $(grep -c 'nested29' "$ERR"))"
-"${G[@]}" -C "$PROJ" config --unset-all include.path; rm -rf "$TMP/inc29"
+# So does a loop back to the config itself: its own include is named once.
+# git refuses to run in a repository whose config includes itself, so the setup
+# writes the config with --file.
+"${G[@]}" config --file "$TMP/inc29/b.gitconfig" --add include.path "$PROJ/.git/config" \
+  && "${G[@]}" config --file "$PROJ/.git/config" --add include.path ../w29.gitconfig || { printf 'SCAFFOLD-FAILED: G29 loop to the config\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 && "$(grep -c 'includes ../w29.gitconfig (include.path)' "$ERR")" -eq 1 ]] \
+  && pass "G29 an include loop back to the config itself ends, and the config's own include is named once" \
+  || fail "G29 loop to the config (rc=$LAUNCH_RC; named: $(grep -c 'w29.gitconfig' "$ERR"))"
+"${G[@]}" config --file "$PROJ/.git/config" --unset-all include.path; rm -rf "$TMP/inc29"
+# To git's depth: git reads ten included files deep and dies at an eleventh.
+# What the ninth includes is named, the tenth is read (its core.hooksPath into
+# the project is named), and the eleventh is not read.
+mkdir -p "$TMP/inc29d" || { printf 'SCAFFOLD-FAILED: G29 depth\n'; exit 1; }
+for n in $(seq 1 10); do
+  "${G[@]}" config --file "$TMP/inc29d/i$n.gitconfig" include.path "$TMP/inc29d/i$((n + 1)).gitconfig" \
+    || { printf 'SCAFFOLD-FAILED: G29 depth\n'; exit 1; }
+done
+"${G[@]}" config --file "$TMP/inc29d/i9.gitconfig" --add include.path ../proj/w29b.gitconfig \
+  && "${G[@]}" config --file "$TMP/inc29d/i10.gitconfig" core.hooksPath "$PROJ/hk29" \
+  && "${G[@]}" config --file "$TMP/inc29d/i11.gitconfig" include.path ../proj/w29c.gitconfig \
+  && "${G[@]}" config --file "$PROJ/.git/config" include.path "$TMP/inc29d/i1.gitconfig" || { printf 'SCAFFOLD-FAILED: G29 depth\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "includes ../proj/w29b.gitconfig (include.path in $TMP/inc29d/i9.gitconfig)" "$ERR" \
+  && grep -qF "runs its git hooks from /workspace/proj/hk29 (core.hooksPath)" "$ERR" && ! grep -qF 'w29c.gitconfig' "$ERR" \
+  && pass "G29 includes are followed ten files deep, as git reads them, and no deeper" \
+  || fail "G29 depth (rc=$LAUNCH_RC; stderr: $(grep -E 'w29[bc]|hk29' "$ERR" | head -2 | tr '\n' ' '))"
+"${G[@]}" config --file "$PROJ/.git/config" --unset-all include.path; rm -rf "$TMP/inc29d"
 
 # ── G30: what the agent writes in an included file cannot silence the check ───
 # The launcher runs from inside the project, and a git started there reads the
@@ -567,6 +606,24 @@ EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
 grep -qF 'not every include of /workspace/h120/r/.git/config was followed' "$ERR" && grep -qF 'runs its git hooks from /workspace/h120/r/.husky/_' "$ERR" \
   && pass "G120 a core.hooksPath past the point where its config's walk was cut is still judged" \
   || fail "G120 hooksPath after a cut (rc=$LAUNCH_RC; stderr: $(grep -E 'not every|git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+# So is a core.worktree there, as the base a relative one is judged from: in the
+# config, and in config.worktree where git reads that.
+mk120; mkdir -p "$TMP/h120/wt" && { printf '[include]\n'; for m in $(seq 1 101); do printf '\tpath = /nonexistent120/f%d\n' "$m"; done
+  printf '[core]\n\thooksPath = .husky/_\n\tworktree = %s\n' "$TMP/h120/wt"; } >> "$TMP/h120/r/.git/config" \
+  || { printf 'SCAFFOLD-FAILED: G120 cut worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF 'not every include of /workspace/h120/r/.git/config was followed' "$ERR" && grep -qF 'runs its git hooks from /workspace/h120/wt/.husky/_' "$ERR" \
+  && pass "G120 a core.worktree past the point where its config's walk was cut is still a base" \
+  || fail "G120 core.worktree after a cut (rc=$LAUNCH_RC; stderr: $(grep -E 'not every|git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+mk120; mkdir -p "$TMP/h120/wt" && "${G[@]}" -C "$TMP/h120/r" config extensions.worktreeConfig true \
+  && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath .husky/_ \
+  && { printf '[include]\n'; for m in $(seq 1 101); do printf '\tpath = /nonexistent120/f%d\n' "$m"; done
+       printf '[core]\n\tworktree = %s\n' "$TMP/h120/wt"; } >> "$TMP/h120/r/.git/config.worktree" \
+  || { printf 'SCAFFOLD-FAILED: G120 cut config.worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+grep -qF 'not every include of /workspace/h120/r/.git/config.worktree was followed' "$ERR" && grep -qF 'runs its git hooks from /workspace/h120/wt/.husky/_' "$ERR" \
+  && pass "G120 so is one past the cut in config.worktree" \
+  || fail "G120 config.worktree's core.worktree after a cut (rc=$LAUNCH_RC; stderr: $(grep -E 'not every|git hooks' "$ERR" | head -2 | tr '\n' ' '))"
 mk120; printf '#!/bin/sh\n' > "$TMP/h120/inc.cfg" && { printf '[core]\n'; for m in $(seq 1 150); do printf '\thooksPath = .husky/_\n'; done; printf '[include]\n\tpath = %s\n' "$TMP/h120/inc.cfg"; } >> "$TMP/h120/r/.git/config" \
   || { printf 'SCAFFOLD-FAILED: G120 core entries\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
@@ -759,14 +816,17 @@ EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
   && pass "G126 a commondir naming a directory that is not a common directory has nothing judged there" \
   || fail "G126 plain common directory judged (rc=$LAUNCH_RC; stderr: $(grep -E 'plain2|git hooks' "$ERR" | head -1))"
 rm -rf "$TMP/h121/p9"
+# Each sets a core.hooksPath of its own in the writable mount, which is named
+# where it is judged: three of the five are.
 for n in 1 2 3 4 5; do
-  "${G[@]}" init -q "$TMP/o121/g$n" && mkdir -p "$TMP/h121/L/p$n" && printf 'gitdir: %s\n' "$TMP/o121/g$n/.git" > "$TMP/h121/L/p$n/.git" \
-    || { printf 'SCAFFOLD-FAILED: G126 cap\n'; exit 1; }
+  "${G[@]}" init -q "$TMP/o121/g$n" && mkdir -p "$TMP/h121/L/p$n" "$TMP/h121/hk$n" && printf 'gitdir: %s\n' "$TMP/o121/g$n/.git" > "$TMP/h121/L/p$n/.git" \
+    && "${G[@]}" -C "$TMP/o121/g$n" config core.hooksPath "$TMP/h121/hk$n" || { printf 'SCAFFOLD-FAILED: G126 cap\n'; exit 1; }
 done
 SANDBOX_GIT_MAX=3 EXTRA_MOUNTS="$TMP/h121" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && grep -qF 'WARNING: .git files under read-only overlays here name more than 3 git directories outside' "$ERR" \
+  && [[ "$(grep -cF 'runs its git hooks from /workspace/h121/hk' "$ERR")" == 3 ]] \
   && pass "G126 git directories outside every mount past SANDBOX_GIT_MAX are named, not judged" \
-  || fail "G126 cap (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  || fail "G126 cap (rc=$LAUNCH_RC; $(grep -cF 'runs its git hooks from /workspace/h121/hk' "$ERR") of 5 judged; stderr: $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
 # A relative gitdir (git 2.48 and later, worktree.useRelativePaths) is resolved
 # from the linked worktree's git directory. That directory is judged too, where
 # git runs the hooks of a push into the worktree's checkout (GIT-45; measured,
@@ -1250,12 +1310,25 @@ o135="$(bash -c 'source "$1"; set -u
   && pass "G135 an entry is split at its newline, one with no value too, and a 64 KB key is refused at once" \
   || fail "G135 the split (got: $o135)"
 rm -rf "$TMP/h135"; mkdir -p "$TMP/h135" && "${G[@]}" init -q "$TMP/h135/r" || { printf 'SCAFFOLD-FAILED: G135\n'; exit 1; }
-{ for i in 1 2 3; do printf '[includeIf "gitdir:%s%d"]\n\tpath = x\n' "$(printf '%65536s' '' | tr ' ' a)" "$i"; done; } >> "$TMP/h135/r/.git/config"
+{ for i in 1 2 3; do printf '[includeIf "gitdir:%s%d"]\n\tpath = x\n' "$(printf '%65536s' '' | tr ' ' a)" "$i"; done
+  printf '[include]\n\tpath = ../../w135.gitconfig\n'; } >> "$TMP/h135/r/.git/config"
 s135=$SECONDS; EXTRA_MOUNTS="$TMP/h135" launch "$TMP/app"; t135=$(( SECONDS - s135 ))
 [[ "$LAUNCH_RC" == 0 && "$t135" -le 10 ]] && grep -qF "WARNING: not every include of /workspace/h135/r/.git/config was followed" "$ERR" \
    && grep -qF "(a key of more than 256 characters)" "$ERR" && ! grep -qF "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "$ERR" \
   && pass "G135 a config of 64 KB keys is cut, said so, named by size, and the launch stays fast" \
   || fail "G135 long keys (rc=$LAUNCH_RC; ${t135}s; $(grep -cF 'WARNING: not every include' "$ERR") cut warnings)"
+grep -qF "includes ../../w135.gitconfig (include.path)" "$ERR" \
+  && pass "G135 the entries after a few such keys are still read" \
+  || fail "G135 an include after the long keys not named (rc=$LAUNCH_RC; stderr: $(grep -F 'includes' "$ERR" | head -1))"
+# Past 1000 of them in a file, the config's include walk stops there.
+rm -rf "$TMP/h135"; mkdir -p "$TMP/h135" && "${G[@]}" init -q "$TMP/h135/r" || { printf 'SCAFFOLD-FAILED: G135 1001\n'; exit 1; }
+{ k135="$(printf '%300s' '' | tr ' ' a)"; for i in $(seq 1 1001); do printf '[includeIf "gitdir:%s%d"]\n\tpath = x\n' "$k135" "$i"; done
+  printf '[include]\n\tpath = ../../w135.gitconfig\n'; } >> "$TMP/h135/r/.git/config"
+EXTRA_MOUNTS="$TMP/h135" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: not every include of /workspace/h135/r/.git/config was followed" "$ERR" \
+  && ! grep -qF "w135.gitconfig" "$ERR" \
+  && pass "G135 past 1000 such keys in a file, the include walk stops there, and says so" \
+  || fail "G135 1001 long keys (rc=$LAUNCH_RC; $(grep -cF 'WARNING: not every include' "$ERR") cut warnings; $(grep -cF w135 "$ERR") naming w135)"
 # And cheaply: every entry is split, and a bounded regex, compiled on each
 # call, made 5000 include entries cost 9 s more than one (review of the fix;
 # G38 allows 15). Against the same launch with one, timed in the same run.

@@ -436,12 +436,14 @@ rm -rf "$B50" "$PROJ/src50"
 # The group's own directories are not scanned — tools re-clone what they hold, and
 # a pin there turns that into Resource busy — but a .git file can name one. It is
 # protected (left writable, the host's git would run it), and named, so a failed
-# re-clone has an explanation (review of 4a4e30c).
+# re-clone has an explanation (review of 4a4e30c). Five are named, then a count:
+# one is named with no count.
 GR51="$HOME/.ai-containers/default/.agents/m51"; mkdir -p "$GR51"; "${G[@]}" init -q --bare "$GR51/.git"
 mkdir -p "$PROJ/src51"; printf 'gitdir: %s\n' "$GR51/.git" > "$PROJ/src51/.git"
 launch ..
 grep -qF "inside the container group's own directories" "$ERR" && grep -qF "$PROJ/src51/.git" "$ERR" \
-  && pass "G51 protecting a git directory in the group's directories is named" \
+  && ! grep -qF "more in the container group's own directories" "$ERR" \
+  && pass "G51 protecting a git directory in the group's directories is named, with no count of more" \
   || fail "G51 group-directory protection not named (stderr: $(grep -F m51 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$GR51" "$PROJ/src51"
 
@@ -1609,7 +1611,8 @@ rm -rf "$B162" "$TMP/out162" "$PROJ/wt162" "$PROJ/wt162x2" "$PROJ/wt162x3" "$PRO
 # launcher the other mount exposes lies under that launcher's read-only overlay
 # and is not named; one whose name docker cannot be handed cannot be protected
 # there and is named, whatever other read-only binds the launch makes (the
-# project's own .git has some).
+# project's own .git has some). Twenty are named, then a count of the rest:
+# one is named with no count.
 mkdir -p "$TMP/o164a/.ai-containers" "$PROJ/xm164a" && : > "$TMP/o164a/.ai-containers/sandbox.sh" \
   && : > "$TMP/o164a/.ai-containers/sandbox-common.sh" && "${G[@]}" init -q --bare "$TMP/o164a/.ai-containers/g" \
   && printf 'gitdir: %s\n' "$TMP/o164a/.ai-containers/g" > "$PROJ/xm164a/.git" || { printf 'SCAFFOLD-FAILED: G164 launcher\n'; exit 1; }
@@ -1630,7 +1633,8 @@ EXTRA_MOUNTS="$TMP/o164b" launch ..
 [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/.git/config:/workspace/proj/.git/config:ro" \
   && grep -aqF "WARNING: $PROJ/xm164b/.git names $TMP/o164b/node_modules/bad" "$ERR" \
   && grep -aqF "a git directory in another writable mount (/workspace/o164b)," "$ERR" \
-  && pass "G164 a target the other mount cannot protect is named" \
+  && ! grep -aqF "more git directories in other writable mounts could not be protected" "$ERR" \
+  && pass "G164 a target the other mount cannot protect is named, with no count of more" \
   || fail "G164 unprotectable target not named (rc=$LAUNCH_RC; $(grep -aE 'WARNING' "$ERR" | head -2 | tr '\n' ' ' | LC_ALL=C tr -c '[:print:]' '?'))"
 rm -rf "$TMP/o164b" "$PROJ/xm164b"
 

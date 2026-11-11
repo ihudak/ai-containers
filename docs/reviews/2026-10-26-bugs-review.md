@@ -34,6 +34,7 @@
 - **Updated 2026-11-10:** GIT-59 and GIT-60 (MEDIUM), and GIT-52, GIT-54, GIT-56 and GIT-61 (LOW), are FIXED by the WSL native agent, which took them from the Linux agent's list with GIT-50 (the user's choice): a linked worktree's checkout in another writable mount has its `.git` taken in that mount's view; a checkout behind a directory the agent made unsearchable gets that directory read-only whole; a decoy no longer hides a `.git` directory; the walk up takes the `.git` git takes; a read-only mount inside a writable one is scanned; "no worktree is known" is said once every mount is scanned (section 28). LNCH-24 (LOW), GIT-56's twin for launchers, found and FIXED with it.
 - **Updated 2026-11-10:** GAP-2's slice 7 found GIT-62 (open, MEDIUM: a `commondir` that is a symlink switches off the protection a regular one gets, so a link planted in a repository not yet protected keeps launches from protecting it while the link is there, and a session that then removes it and writes a config is not named after the session) and GIT-63 (open, LOW: what a `commondir` in another writable mount names is not looked at after the session), in section 29, reviewed up to `f3a74e1`.
 - **Updated 2026-11-11:** GAP-2's slice 7 found GIT-64 (open, MEDIUM: in a git directory with no `config`, a `commondir` that leads back to it, or that the agent can make lead back, keeps the launch from making and binding that `config`, and with `objects/` moved aside no warning is printed), in section 29, reviewed up to `83748b0`.
+- **Updated 2026-11-11:** GAP-2's slice 7 found GIT-65 (open, LOW: a common directory inside a writable mount, past its scan, that a linked worktree's directory outside every mount names is neither protected nor named; git never makes that layout itself), in section 29, at `26b54d7`.
 - **Updated 2026-11-08:** GIT-43's macOS half measured: `mount` names mount points by the physical path, so the fix holds there; G131 now runs on macOS with an attached disk image (section 25).
 - **Companion:** [2026-10-26-feature-gaps-review.md](2026-10-26-feature-gaps-review.md).
 - **Confidence:** CONFIRMED = reproduced, or unambiguous from the code. PLAUSIBLE = strong reasoning, not reproduced (usually needs hardware or a platform not available here); verify before fixing.
@@ -2406,7 +2407,7 @@ Found 2026-11-10, at `7a740ef`, while classifying the survivors of `git_dirs_in(
 
 ## 29. Found while doing GAP-2's slice 7
 
-GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7's survivors, at `f3a74e1` (main), and GIT-64 by the review of the second, at `83748b0`. Each was confirmed by running it.
+GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7's survivors, at `f3a74e1` (main), GIT-64 by the review of the second, at `83748b0`, and GIT-65 while classifying the third batch's survivors, at `26b54d7`. Each was confirmed by running it.
 
 ### GIT-62: a `commondir` that is a symlink switches off the protection a regular one gets
 - **Status: OPEN** (2026-11-10).
@@ -2444,6 +2445,19 @@ GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7'
   - GIT-62's fix direction (take a link as a regular `commondir` other than `./` is taken) assumes a regular one is refused, which holds only where there is a `config`. Fix the two together.
   - Then check whether the `-d "$g/objects"` arm of the hooks warning still fires anywhere it is true. If it does not, drop it.
   - Slice 7's mutants 400 and 404 sit on that arm. G165 kills them by checking that the warning names such a directory while `objects/` is there. The fix turns G165 into a check for the refusal or the binds.
+
+### GIT-65: a common directory in a writable mount, past its scan, that an outside linked worktree names is neither protected nor named
+- **Status: OPEN** (2026-11-11).
+- **Severity: LOW.** It is silent, and the host's git runs what the agent writes there. But it needs a layout git never makes on its own: a linked worktree's git directory outside every writable mount, whose `commondir` names a common directory inside one. `git worktree add` puts that directory inside the common directory, so it is hand-made, and the agent cannot make it (the worktree's directory lies outside every mount). No route through git was found: a `worktrees/` that is a link is refused by git ("gitfile does not point to a valid repository"), and `git worktree move` and `worktree.useRelativePaths` keep the `commondir` at `../..` (the reviewer's runs). Confidence: CONFIRMED (the coordinator and the reviewer, at `26b54d7`, git 2.56).
+- **Location:** `sandbox.sh: launcher_ro_overlay()`, the GIT-44 loop over the git directories outside every writable mount that git uses for a mounted checkout (`_gref_t`: what a `.git` file or link names, and the repository a mount lies in). A `commondir` there is followed only to a common directory outside every writable mount: `[[ -z "${pgk[$ocd]:-}" ]] && ! _in_writable "$ocd" && _is_common_dir "$ocd"`. One inside a writable mount is left to that mount's scan.
+- **What's wrong:**
+  - Take a writable mount `w` holding a checkout `w/co` and, under `w/node_modules/c`, a repository. `w/co/.git` names a linked worktree's directory outside every mount, whose `commondir` names `w/node_modules/c/.git`. `git -C w/co rev-parse --git-common-dir` prints `w/node_modules/c/.git`, so git takes that `config` and `hooks/` for the checkout.
+  - The scan prunes `node_modules`, and the `commondir` is followed only to a common directory outside every writable mount. So `w/node_modules/c/.git` gets no binds and no pins, and nothing names it. The launch prints only the READ-ONLY line for `w/co/.git`. The agent can write `core.fsmonitor` into that `config`, and your host's git runs it at the next `git status` in `w/co` (reproduced: `FSMON-RAN`).
+  - The rescan after the session says nothing either: that git directory existed at launch.
+  - The same holds where the `commondir` names a directory in the mount that does not exist yet. Git fails there until the agent makes a repository at that path. The launch names nothing, and neither does the rescan after a session that makes one there, since it does not look under `node_modules` (the reviewer's run: `FSMON-RAN` on the host).
+  - With the same common directory where the scan reaches it (`w/c`), it is protected.
+- **Fix direction:** in that loop, take a `commondir` that leads into a writable mount as one found there: protect it in that mount's view, as the `_xm_t` targets are protected, and name one that does not exist or that the agent can repoint, as `_gd_resolve()` names one. AGENTS.md, under git internals, says "a linked worktree's `commondir` [is] followed … so a git directory under a pruned `node_modules` or past the depth limit is protected too"; that then holds for this case too.
+- Slice 7's mutant 498 sits on that condition. It is a GAP tied to this entry: the original's silence is the bug, so no check of today's output can kill it.
 
 ## LNCH
 
