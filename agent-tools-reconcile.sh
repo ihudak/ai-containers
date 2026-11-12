@@ -50,6 +50,12 @@ export UV_TOOL_BIN_DIR="$home_root/uv/bin"
 # environment links to its interpreter, so one kept in the container layer would
 # vanish on restart and take the tool with it.
 export UV_PYTHON_INSTALL_DIR="$home_root/uv/python"
+# uv's download cache (~/.cache/uv) is in the container layer and the tools are in
+# the group's bind mount, two filesystems, so uv can never hardlink one to the other:
+# it copied anyway, after "warning: Failed to hardlink files; falling back to full
+# copy" on every install. Asking for a copy does the same without the warning. A
+# UV_LINK_MODE the user set wins.
+export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 npm_prefix="$home_root/npm"
 npm_bin="$npm_prefix/bin"
 

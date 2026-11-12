@@ -371,6 +371,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.deb` for 256 s with exponential backoff. The wkhtmltopdf change makes the next
   `./build.sh` rebuild from that layer on.
 
+- **Installing graphify or mkdocs at container start no longer warns
+  `Failed to hardlink files`.** uv's download cache is in the container and
+  the tools are in the group's folder, two filesystems, so uv always fell back
+  to copying, and said so on every install. The installer now asks uv for a
+  copy (`UV_LINK_MODE=copy`; one you set wins). The script is baked into the
+  image, so the next `./build.sh` brings it.
+
 - **`repo.sh reset` no longer refuses a sound repository at random.** The git
   helper read the status of its search for nested repositories with
   `wait "$!"` on a process substitution, which in bash 5.1 to 5.3 reports

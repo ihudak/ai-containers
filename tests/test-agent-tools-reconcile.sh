@@ -52,6 +52,7 @@ echo "uv \$*" >> "$home/calls.log"
 echo "uv-saw-UV_PYTHON_INSTALL_DIR=\${UV_PYTHON_INSTALL_DIR:-}" >> "$home/calls.log"
 echo "uv-cwd=\$PWD" >> "$home/calls.log"
 echo "uv-saw-UV_HTTP_RETRIES=\${UV_HTTP_RETRIES:-}" >> "$home/calls.log"
+echo "uv-saw-UV_LINK_MODE=\${UV_LINK_MODE:-}" >> "$home/calls.log"
 # A version asked for by number is missing with UV_PY_MISSING=1: neither the image
 # nor the group has the previous minor, so the fallback must download it.
 if [[ "\$1 \$2" == "python find" && "\${3:-}" == [0-9]* && "\${UV_PY_MISSING:-0}" == 1 ]]; then exit 2; fi
@@ -283,6 +284,20 @@ h="$(UV_HTTP_RETRIES=5 UV_PY_MISSING=1 UV_FAIL=default run_case "graphify")"
 [[ "$(retries_of "$h" 'python install 3.14')" == 5 ]] \
   && pass "a UV_HTTP_RETRIES of the user's wins for that download" \
   || fail "the user's UV_HTTP_RETRIES was replaced ('$(retries_of "$h" 'python install 3.14')')"
+rm -rf "$h"
+# The cache is in the container layer and the tools in the group's bind mount, so
+# uv could only copy, and warned on every install that it could not hardlink.
+# Every uv call the fallback makes is asked for a copy; a user's value wins.
+link_modes() { sed -n 's/^uv-saw-UV_LINK_MODE=//p' "$1/calls.log" | sort -u | tr '\n' ' '; }
+h="$(unset UV_LINK_MODE; UV_PY_MISSING=1 UV_FAIL=default run_case "graphify")"
+{ [[ "$(link_modes "$h")" == "copy " ]] && [[ "$(grep -c '^uv-saw-UV_LINK_MODE=' "$h/calls.log")" -ge 3 ]]; } \
+  && pass "every uv call is asked to copy, not hardlink (no cross-filesystem warning)" \
+  || fail "uv link modes seen: '$(link_modes "$h")'"
+rm -rf "$h"
+h="$(UV_LINK_MODE=symlink run_case "graphify")"
+[[ "$(link_modes "$h")" == "symlink " ]] \
+  && pass "a UV_LINK_MODE of the user's wins" \
+  || fail "the user's UV_LINK_MODE was replaced ('$(link_modes "$h")')"
 rm -rf "$h"
 h="$(UV_PYINST_FAIL=1 UV_PY_MISSING=1 UV_FAIL=default run_case "graphify")"
 { grep -q 'could not download Python 3.14' "$h/out.log" && grep -qx 'uv tool install graphifyy --python 3.14' "$h/calls.log" \
