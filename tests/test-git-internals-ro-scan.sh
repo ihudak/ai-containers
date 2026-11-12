@@ -854,16 +854,21 @@ else
   chmod 755 "$TMP/u144/r/.git/modules/m"; rm -rf "$TMP/u144"
 fi
 chmod 755 "$TMP/probe144"; rmdir "$TMP/probe144"
-# A directory in .git/worktrees with neither commondir nor gitdir is no linked
-# worktree's, and one elsewhere in .git holding a gitdir is not either: nothing is
-# made in them.
+# A directory elsewhere in .git holding a gitdir is no linked worktree's: nothing
+# is made in it. One in .git/worktrees with neither commondir nor gitdir was
+# passed over too, and is now taken by where it lies, with the placeholders any
+# git directory gets (bugs review GIT-78; G189).
 mkdir -p "$PROJ/.git/worktrees/e144" "$PROJ/.git/f144" && printf 'ref: refs/heads/main\n' > "$PROJ/.git/worktrees/e144/HEAD" \
   && printf 'x\n' > "$PROJ/.git/f144/gitdir" || { printf 'SCAFFOLD-FAILED: G144 worktrees\n'; exit 1; }
 launch ..
-[[ "$LAUNCH_RC" == 0 && ! -e "$PROJ/.git/worktrees/e144/commondir" && ! -e "$PROJ/.git/f144/commondir" ]] \
-  && ! grep -qE '/\.git/(worktrees/e144|f144)' < <(git_mounts) \
+[[ "$LAUNCH_RC" == 0 && ! -e "$PROJ/.git/f144/commondir" ]] \
+  && ! grep -qE '/\.git/f144' < <(git_mounts) \
   && pass "G144 a directory in .git that is no linked worktree's gets nothing made in it" \
-  || fail "G144 not a worktree (rc=$LAUNCH_RC; $(ls "$PROJ/.git/worktrees/e144" "$PROJ/.git/f144" | tr '\n' ' '))"
+  || fail "G144 not a worktree (rc=$LAUNCH_RC; $(ls "$PROJ/.git/f144" | tr '\n' ' '))"
+[[ "$LAUNCH_RC" == 0 && "$(cat "$PROJ/.git/worktrees/e144/commondir" 2>/dev/null)" == ./ ]] \
+  && has_mount "$PROJ/.git/worktrees/e144/commondir:/workspace/proj/.git/worktrees/e144/commondir:ro" \
+  && pass "G144 one in .git/worktrees with neither commondir nor gitdir gets the placeholder, read-only" \
+  || fail "G144 under worktrees (rc=$LAUNCH_RC; $(ls "$PROJ/.git/worktrees/e144" | tr '\n' ' '))"
 rm -rf "$PROJ/.git/worktrees/e144" "$PROJ/.git/f144"
 # One whose commondir is a link (to a regular file), with no HEAD and no gitdir,
 # is a linked worktree's still: the scan's find skips the link, so only the
@@ -1302,6 +1307,15 @@ printf '%s\n' "$D187/elsewhere" > "$D187/dot.git/commondir"
 ( cd "$D187/elsewhere" && bash -c "$c187" ) 2>/dev/null
 [[ -f "$D187/dot.git/commondir" ]] && pass "G187 …and removes no commondir but ./" \
   || fail "G187 the command removed another commondir"
+# Nor does it wait at one that has become a FIFO: it read the file first, and
+# hung there until killed (bugs review GIT-83).
+rm -f "$D187/dot.git/commondir"; mkfifo "$D187/dot.git/commondir"
+( cd "$D187/elsewhere" && p_timeout 10 bash -c "$c187" ) 2>/dev/null; r187=$?
+[[ -n "$c187" && "$r187" != 124 && -p "$D187/dot.git/commondir" ]] \
+  && pass "G187 …and returns at once, removing nothing, where the commondir has become a FIFO" \
+  || fail "G187 a FIFO commondir (exit $r187; $(ls -l "$D187/dot.git/commondir" 2>&1 | cut -c1-10))"
+# Lets go a reader the command left waiting, where it still reads first.
+( exec 3<>"$D187/dot.git/commondir" ) 2>/dev/null
 rm -f "$D187/dot.git/commondir"
 "${G[@]}" init -q "$D187/up" && "${G[@]}" -C "$D187/up" commit -q --allow-empty -m i && "${G[@]}" init -q "$D187/sup" \
   && "${G[@]}" -C "$D187/sup" -c protocol.file.allow=always submodule add -q "$D187/up" s 2>/dev/null \
@@ -1312,6 +1326,277 @@ EXTRA_MOUNTS="$D187" launch "$TMP/app"
   && pass "G187 a submodule's git directory keeps the placeholder" \
   || fail "G187 submodule (rc=$LAUNCH_RC; commondir: $(cat "$D187/sup/.git/modules/s/commondir" 2>&1))"
 rm -rf "$D187"
+
+# ── G188: every directory under a git directory's worktrees/ is checked ───────
+# A linked worktree's directory holds no objects or refs: what made it a git
+# directory to the scan was a regular commondir, or inside a .git a regular
+# gitdir. With the commondir a dangling link or a FIFO (and the gitdir gone) the
+# launch never asked _git_cd_check, bound nothing and said nothing; the session
+# then made the link's target, and the host's git in the checkout ran the
+# agent's config. So every directory there is taken, whatever it holds (bugs
+# review GIT-78).
+D188="$TMP/d188"; O188="$TMP/out188"; mkdir -p "$D188" "$O188" \
+  && "${G[@]}" init -q --bare "$D188/b.git" && "${G[@]}" -C "$PROJ" push -q "$D188/b.git" HEAD:refs/heads/main 2>/dev/null \
+  && "${G[@]}" --git-dir="$D188/b.git" worktree add -q "$O188/co" main 2>/dev/null \
+  && "${G[@]}" init -q "$D188/r" && "${G[@]}" -C "$D188/r" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$D188/r" worktree add -q "$O188/rco" -b wb 2>/dev/null \
+  || { printf 'SCAFFOLD-FAILED: G188\n'; exit 1; }
+wb188="$D188/b.git/worktrees/co"; wr188="$D188/r/.git/worktrees/rco"
+EXTRA_MOUNTS="$D188" launch "$TMP/app"
+m188="$(mounts | grep -F '/worktrees/' | LC_ALL=C sort)"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$wb188/commondir:/workspace/d188/b.git/worktrees/co/commondir:ro" \
+  && has_mount "$wr188/commondir:/workspace/d188/r/.git/worktrees/rco/commondir:ro" \
+  && pass "G188 control: a bare repository's and a checkout's linked worktree are protected" \
+  || fail "G188 control (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1); $(tr '\n' ' ' <<<"$m188"))"
+# A second launch changes nothing of what a real worktree gets.
+EXTRA_MOUNTS="$D188" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(mounts | grep -F '/worktrees/' | LC_ALL=C sort)" == "$m188" && "$(wc -l <<<"$m188" | tr -d ' ')" == 6 ]] \
+  && pass "G188 …and get the same six mounts at every launch" \
+  || fail "G188 mounts changed (rc=$LAUNCH_RC; $(wc -l <<<"$m188") before; now: $(mounts | grep -F '/worktrees/' | LC_ALL=C sort | tr '\n' ' '))"
+# The bare repository's: its commondir replaced by a dangling link, then a FIFO.
+rm -f "$wb188/commondir" && ln -s ../../../cdfile "$wb188/commondir"
+EXTRA_MOUNTS="$D188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $wb188/commondir is a symlink" "$ERR" \
+  && pass "G188 a bare repository's worktree with a dangling link for its commondir refuses the launch" \
+  || fail "G188 bare, dangling link (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -f "$wb188/commondir" && mkfifo "$wb188/commondir"
+EXTRA_MOUNTS="$D188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $wb188/commondir is not a regular file" "$ERR" \
+  && pass "G188 …and so does a FIFO there" \
+  || fail "G188 bare, FIFO (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -f "$wb188/commondir" && printf '../..\n' > "$wb188/commondir"
+# The checkout's: with its gitdir removed as well, nothing else made it one.
+rm -f "$wr188/commondir" "$wr188/gitdir" && ln -s ../../../cdfile "$wr188/commondir"
+EXTRA_MOUNTS="$D188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $wr188/commondir is a symlink" "$ERR" \
+  && pass "G188 a checkout's worktree with no gitdir and a dangling link for its commondir refuses the launch" \
+  || fail "G188 checkout, dangling link (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -f "$wr188/commondir" && mkfifo "$wr188/commondir"
+EXTRA_MOUNTS="$D188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $wr188/commondir is not a regular file" "$ERR" \
+  && pass "G188 …and so does a FIFO there" \
+  || fail "G188 checkout, FIFO (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+# With nothing else in the directory at all.
+rm -f "$wr188/commondir"; find "$wr188" -mindepth 1 -delete; ln -s /nonexistent/cd "$wr188/commondir"
+EXTRA_MOUNTS="$D188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $wr188/commondir is a symlink" "$ERR" \
+  && pass "G188 …and a directory that holds nothing but that link" \
+  || fail "G188 checkout, only the link (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -f "$wr188/commondir"
+# A link in worktrees/, which git follows to the worktree's directory.
+mkdir -p "$D188/ev" && ln -s /nonexistent/cd "$D188/ev/commondir" && ln -s "$D188/ev" "$D188/b.git/worktrees/lw"
+EXTRA_MOUNTS="$D188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $D188/b.git/worktrees/lw is a symlink" "$ERR" \
+  && ! grep -qE '^ +\(cd -P|rm ' "$ERR" \
+  && pass "G188 a link in worktrees/ refuses the launch, and no command is printed" \
+  || fail "G188 link in worktrees/ (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$D188/b.git/worktrees/lw" "$D188/ev"
+# What is neither a directory nor a link there is passed over.
+printf 'x\n' > "$D188/b.git/worktrees/afile"
+EXTRA_MOUNTS="$D188" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "worktrees/afile" < <(mounts) \
+  && pass "G188 a plain file in worktrees/ is passed over" \
+  || fail "G188 plain file in worktrees/ (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -f "$D188/b.git/worktrees/afile"
+# Where git does not run: the directories are listed before anything git reads.
+ng188=""; i188=0
+IFS=: read -r -a pd188 <<<"$PATH"
+for d188 in "${pd188[@]}"; do
+  if [[ -n "$d188" && -x "$d188/git" && ! -d "$d188/git" ]]; then
+    i188=$((i188 + 1)); n188="$TMP/nogit188/$i188"; mkdir -p "$n188"
+    ln -s "$d188"/* "$n188"/ 2>/dev/null; rm -f "$n188/git"
+    d188="$n188"
+  fi
+  ng188="${ng188:+$ng188:}$d188"
+done
+PATH="$ng188" "$BASH" -c 'command -v git' >/dev/null 2>&1 \
+  && { printf 'SCAFFOLD-FAILED: G188 git is still on the no-git PATH\n'; exit 1; }
+mkdir -p "$D188/b.git/worktrees/ng" && ln -s /nonexistent/cd "$D188/b.git/worktrees/ng/commondir"
+PATH="$ng188" EXTRA_MOUNTS="$D188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $D188/b.git/worktrees/ng/commondir is a symlink" "$ERR" \
+  && pass "G188 …where git does not run, too" \
+  || fail "G188 without git (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$D188/b.git/worktrees/ng" "$TMP/nogit188"
+# A repository's own git directory that is none to the scan (its objects/ and
+# HEAD moved aside before any launch protected it): the worktree's directory,
+# with its HEAD, is taken by a commondir of any kind.
+H188="$TMP/h188"; mkdir -p "$H188" && "${G[@]}" init -q --bare "$H188/b.git" \
+  && "${G[@]}" -C "$PROJ" push -q "$H188/b.git" HEAD:refs/heads/main 2>/dev/null \
+  && "${G[@]}" --git-dir="$H188/b.git" worktree add -q "$O188/hco" main 2>/dev/null \
+  && mv "$H188/b.git/objects" "$H188/b.git/o" && mv "$H188/b.git/HEAD" "$H188/b.git/H" \
+  && rm -f "$H188/b.git/worktrees/hco/commondir" && ln -s /nonexistent/cd "$H188/b.git/worktrees/hco/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G188 hidden\n'; exit 1; }
+EXTRA_MOUNTS="$H188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $H188/b.git/worktrees/hco/commondir is a symlink" "$ERR" \
+  && pass "G188 a worktree's directory with a HEAD and a dangling commondir link is taken where its repository is not" \
+  || fail "G188 hidden repository (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -f "$H188/b.git/worktrees/hco/commondir" && mkfifo "$H188/b.git/worktrees/hco/commondir"
+EXTRA_MOUNTS="$H188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $H188/b.git/worktrees/hco/commondir is not a regular file" "$ERR" \
+  && pass "G188 …and with a FIFO for its commondir" \
+  || fail "G188 hidden repository, FIFO (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$H188"
+
+# ── G189: one with no commondir gets the placeholder, so none can be made ─────
+# An empty directory there, and one with a HEAD and a config that sets
+# core.worktree: GIT-73's rule (no placeholder beside such a config) is not for
+# these, or a planted config would leave the commondir for the session to make.
+mkdir -p "$D188/b.git/worktrees/junk" && printf 'ref: refs/heads/main\n' > "$wr188/HEAD" \
+  && printf '[core]\n\tworktree = /nonexistent\n' > "$wr188/config"
+EXTRA_MOUNTS="$D188" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(cat "$D188/b.git/worktrees/junk/commondir" 2>/dev/null)" == ./ ]] \
+  && has_mount "$D188/b.git/worktrees/junk/commondir:/workspace/d188/b.git/worktrees/junk/commondir:ro" \
+  && has_mount "$D188/b.git/worktrees/junk/config:/workspace/d188/b.git/worktrees/junk/config:ro" \
+  && has_mount "$D188/b.git/worktrees/junk/hooks:/workspace/d188/b.git/worktrees/junk/hooks:ro" \
+  && pass "G189 an empty directory under worktrees/ gets commondir, config and hooks, read-only" \
+  || fail "G189 empty directory (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1); $(mounts | grep -F /junk/ | tr '\n' ' '))"
+[[ "$LAUNCH_RC" == 0 && "$(cat "$wr188/commondir" 2>/dev/null)" == ./ ]] \
+  && has_mount "$wr188/commondir:/workspace/d188/r/.git/worktrees/rco/commondir:ro" \
+  && ! grep -qF "worktrees/rco sets core.worktree in its config" "$ERR" \
+  && pass "G189 one whose config sets core.worktree gets the placeholder all the same" \
+  || fail "G189 core.worktree (rc=$LAUNCH_RC; commondir: $(cat "$wr188/commondir" 2>&1); $(grep -F rco "$ERR" | head -2 | tr '\n' ' '))"
+# One the scan took before, by its gitdir, is held to the same.
+mkdir -p "$D188/r/.git/worktrees/wc" && printf '%s\n' "$O188/gone/.git" > "$D188/r/.git/worktrees/wc/gitdir" \
+  && printf '[core]\n\tworktree = /nonexistent\n' > "$D188/r/.git/worktrees/wc/config"
+EXTRA_MOUNTS="$D188" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(cat "$D188/r/.git/worktrees/wc/commondir" 2>/dev/null)" == ./ ]] \
+  && has_mount "$D188/r/.git/worktrees/wc/commondir:/workspace/d188/r/.git/worktrees/wc/commondir:ro" \
+  && pass "G189 …and so does one with a gitdir, which the scan took before" \
+  || fail "G189 core.worktree beside a gitdir (rc=$LAUNCH_RC; commondir: $(cat "$D188/r/.git/worktrees/wc/commondir" 2>&1); $(grep -F /wc "$ERR" | head -2 | tr '\n' ' '))"
+"${G[@]}" --git-dir="$D188/b.git" worktree list >/dev/null 2>&1 && "${G[@]}" -C "$D188/r" status >/dev/null 2>&1 \
+  && [[ "$(cd "$O188/co" && "${G[@]}" rev-parse --git-common-dir 2>/dev/null)" == "$D188/b.git" ]] \
+  && pass "G189 git on the host still works in both repositories and in the real worktree" \
+  || fail "G189 host git after the placeholders"
+# They count toward SANDBOX_GIT_MAX, as any git directory the agent plants does.
+mkdir -p "$D188/b.git/worktrees"/{p1,p2,p3,p4,p5}
+SANDBOX_GIT_MAX=7 EXTRA_MOUNTS="$D188" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "more than 7 git directories" "$ERR" && grep -qF "$D188/b.git/worktrees/p" "$ERR" \
+  && pass "G189 directories planted under worktrees/ count toward SANDBOX_GIT_MAX, and are named" \
+  || fail "G189 SANDBOX_GIT_MAX (rc=$LAUNCH_RC; $(grep -F -A4 ERROR "$ERR" | tr '\n' ' '))"
+rmdir "$D188/b.git/worktrees"/{p1,p2,p3,p4,p5}
+
+# ── G190: worktrees/ itself: a link refuses, one you cannot list is bound whole ─
+# The checks for one you cannot list held before this fix as well, the
+# launcher's and the git scan's own binding those: two pin the mount and its
+# WARNING, two that it is bound once. G191's, under a pruned directory, are
+# the ones the fix made pass.
+mv "$D188/r/.git/worktrees" "$D188/r/.git/wtreal" && ln -s wtreal "$D188/r/.git/worktrees" \
+  && rm -f "$D188/r/.git/wtreal/rco/commondir" && ln -s /nonexistent/cd "$D188/r/.git/wtreal/rco/commondir"
+EXTRA_MOUNTS="$D188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $D188/r/.git/worktrees is a symlink" "$ERR" \
+  && pass "G190 a worktrees that is a link refuses the launch" \
+  || fail "G190 worktrees link (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -f "$D188/r/.git/worktrees" && ln -s /nonexistent/wt "$D188/r/.git/worktrees"
+EXTRA_MOUNTS="$D188" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $D188/r/.git/worktrees is a symlink" "$ERR" \
+  && ! grep -qE '^ +\(cd -P|rm ' "$ERR" \
+  && pass "G190 …a dangling one too, and no command is printed for either" \
+  || fail "G190 dangling worktrees link (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1); $(grep -E '^ +\(cd -P|rm ' "$ERR" | head -2))"
+rm -f "$D188/r/.git/worktrees"; rm -f "$D188/r/.git/wtreal/rco/commondir"; mv "$D188/r/.git/wtreal" "$D188/r/.git/worktrees"
+if [[ "$(id -u)" != 0 ]]; then
+  chmod 000 "$D188/b.git/worktrees"
+  EXTRA_MOUNTS="$D188" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$D188/b.git/worktrees:/workspace/d188/b.git/worktrees:ro" \
+    && grep -qF "WARNING: $D188/b.git/worktrees cannot be listed by you" "$ERR" \
+    && pass "G190 a bare repository's worktrees/ you cannot list is mounted read-only whole, and named" \
+    || fail "G190 unlistable worktrees/ (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$D188/b.git/worktrees"; chmod 000 "$D188/b.git/worktrees/junk"
+  EXTRA_MOUNTS="$D188" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$D188/b.git/worktrees/junk:/workspace/d188/b.git/worktrees/junk:ro" \
+    && grep -qF "WARNING: $D188/b.git/worktrees/junk cannot be listed by you" "$ERR" \
+    && pass "G190 …and so is a directory in it" \
+    || fail "G190 unlistable directory in worktrees/ (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$D188/b.git/worktrees/junk"
+  # Inside a .git the scan queues it as well: bound once.
+  chmod 000 "$D188/r/.git/worktrees"
+  EXTRA_MOUNTS="$D188" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 && "$(mounts | grep -cxF "$D188/r/.git/worktrees:/workspace/d188/r/.git/worktrees:ro")" == 1 ]] \
+    && pass "G190 a .git's worktrees/ you cannot list is bound once" \
+    || fail "G190 unlistable .git/worktrees (rc=$LAUNCH_RC; $(mounts | grep -cF "/r/.git/worktrees:") mounts; $(grep -F ERROR "$ERR" | head -1))"
+  chmod 755 "$D188/r/.git/worktrees"
+  # Seven levels down, past where the launcher scan looks for unlistable
+  # directories: the git scan queues it, and so does the listing of worktrees/.
+  mkdir -p "$D188/a/b/c/d" && "${G[@]}" init -q "$D188/a/b/c/d/r" && mkdir "$D188/a/b/c/d/r/.git/worktrees" \
+    && chmod 000 "$D188/a/b/c/d/r/.git/worktrees"
+  EXTRA_MOUNTS="$D188" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 && "$(mounts | grep -cxF "$D188/a/b/c/d/r/.git/worktrees:/workspace/d188/a/b/c/d/r/.git/worktrees:ro")" == 1 ]] \
+    && pass "G190 …and so is one seven levels down" \
+    || fail "G190 unlistable .git/worktrees, deep (rc=$LAUNCH_RC; $(mounts | grep -cF "/d/r/.git/worktrees:") mounts; $(grep -F ERROR "$ERR" | head -1))"
+  chmod 755 "$D188/a/b/c/d/r/.git/worktrees"; rm -rf "$D188/a"
+else
+  pass "G190 an unlistable worktrees/ (skipped as root, who can list anything)"
+  pass "G190 an unlistable directory in worktrees/ (skipped as root)"
+  pass "G190 an unlistable .git/worktrees (skipped as root)"
+  pass "G190 an unlistable .git/worktrees seven levels down (skipped as root)"
+fi
+
+# ── G191: a git directory only a .git file reaches, and one under an overlay ──
+# A separate git directory under a pruned node_modules, in this mount and in
+# another; and a repository inside a launcher, which gets no binds of its own.
+D191="$TMP/d191"; E191="$TMP/e191"; mkdir -p "$D191/node_modules" "$E191/node_modules" "$D191/lz" \
+  && "${G[@]}" init -q --separate-git-dir "$D191/node_modules/sep.git" "$D191/co" \
+  && "${G[@]}" -C "$D191/co" commit -q --allow-empty -m i && "${G[@]}" -C "$D191/co" worktree add -q "$O188/s1" -b s1 2>/dev/null \
+  && "${G[@]}" init -q --separate-git-dir "$E191/node_modules/sep.git" "$D191/co2" \
+  && "${G[@]}" -C "$D191/co2" commit -q --allow-empty -m i && "${G[@]}" -C "$D191/co2" worktree add -q "$O188/s2" -b s2 2>/dev/null \
+  && : > "$D191/lz/sandbox.sh" && : > "$D191/lz/sandbox-common.sh" \
+  && "${G[@]}" init -q "$D191/lz/r" && "${G[@]}" -C "$D191/lz/r" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$D191/lz/r" worktree add -q "$O188/s3" -b s3 2>/dev/null \
+  || { printf 'SCAFFOLD-FAILED: G191\n'; exit 1; }
+EXTRA_MOUNTS="$D191 $E191" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && pass "G191 control: the three repositories launch" \
+  || fail "G191 control (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+for w191 in "$D191/node_modules/sep.git/worktrees/s1" "$E191/node_modules/sep.git/worktrees/s2" "$D191/lz/r/.git/worktrees/s3"; do
+  rm -f "$w191/commondir" "$w191/gitdir" && ln -s /nonexistent/cd "$w191/commondir"
+  EXTRA_MOUNTS="$D191 $E191" launch_timed 120 "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $w191/commondir is a symlink" "$ERR" \
+    && pass "G191 refused: ${w191#"$TMP"/}" \
+    || fail "G191 ${w191#"$TMP"/} (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  rm -f "$w191/commondir"; printf '../..\n' > "$w191/commondir"
+done
+# One you cannot list, where neither scan looks (the launcher scan prunes
+# node_modules too): bound read-only whole, as inside a .git.
+if [[ "$(id -u)" != 0 ]]; then
+  chmod 000 "$D191/node_modules/sep.git/worktrees"
+  EXTRA_MOUNTS="$D191 $E191" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$D191/node_modules/sep.git/worktrees:/workspace/d191/node_modules/sep.git/worktrees:ro" \
+    && grep -qF "WARNING: $D191/node_modules/sep.git/worktrees cannot be listed by you" "$ERR" \
+    && pass "G191 a worktrees/ you cannot list, under a pruned directory, is mounted read-only whole, and named" \
+    || fail "G191 unlistable worktrees/ (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$D191/node_modules/sep.git/worktrees"
+  # A directory in it, here and in the other mount's view.
+  chmod 000 "$D191/node_modules/sep.git/worktrees/s1" "$E191/node_modules/sep.git/worktrees/s2"
+  EXTRA_MOUNTS="$D191 $E191" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$D191/node_modules/sep.git/worktrees/s1:/workspace/d191/node_modules/sep.git/worktrees/s1:ro" \
+    && has_mount "$E191/node_modules/sep.git/worktrees/s2:/workspace/e191/node_modules/sep.git/worktrees/s2:ro" \
+    && grep -qF "WARNING: $E191/node_modules/sep.git/worktrees/s2 cannot be listed by you" "$ERR" \
+    && pass "G191 …and so is a directory in one, in this mount and in another" \
+    || fail "G191 unlistable directories in worktrees/ (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '); $(mounts | grep -F /worktrees/ | tr '\n' ' '))"
+  chmod 755 "$D191/node_modules/sep.git/worktrees/s1" "$E191/node_modules/sep.git/worktrees/s2"
+  chmod 000 "$E191/node_modules/sep.git/worktrees"
+  EXTRA_MOUNTS="$D191 $E191" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$E191/node_modules/sep.git/worktrees:/workspace/e191/node_modules/sep.git/worktrees:ro" \
+    && pass "G191 …and a worktrees/ in the other mount" \
+    || fail "G191 unlistable worktrees/ in the other mount (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$E191/node_modules/sep.git/worktrees"
+else
+  pass "G191 an unlistable worktrees/ under a pruned directory (skipped as root, who can list anything)"
+  pass "G191 unlistable directories in worktrees/ (skipped as root)"
+  pass "G191 an unlistable worktrees/ in the other mount (skipped as root)"
+fi
+
+# ── G192: one the session makes is named when the container exits ─────────────
+D192="$TMP/d192"; mkdir -p "$D192" && "${G[@]}" init -q "$D192/r" && "${G[@]}" -C "$D192/r" commit -q --allow-empty -m i \
+  || { printf 'SCAFFOLD-FAILED: G192\n'; exit 1; }
+EXTRA_MOUNTS="$D192" launch "$TMP/app"
+FAKE_SESSION="mkdir -p '$D192/r/.git/worktrees/new' && ln -s /nonexistent/cd '$D192/r/.git/worktrees/new/commondir'" EXTRA_MOUNTS="$D192" launch "$TMP/app"
+grep -qF "$D192/r/.git/worktrees/new (" < <(grep -A3 -F 'WARNING: the session made git repositories' "$ERR") \
+  && pass "G192 a directory the session makes under worktrees/, its commondir a link, is named after it" \
+  || fail "G192 after the session ($(grep -A3 -F 'WARNING: the session' "$ERR" | tr '\n' ' '))"
+EXTRA_MOUNTS="$D192" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && "$LAUNCH_RC" != 124 ]] && grep -qF "ERROR: $D192/r/.git/worktrees/new/commondir is a symlink" "$ERR" \
+  && pass "G192 …and refuses the next launch" \
+  || fail "G192 next launch (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+chmod -R u+rwx "$D188" "$D191" "$E191" 2>/dev/null; rm -rf "$D188" "$O188" "$D191" "$E191" "$D192"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

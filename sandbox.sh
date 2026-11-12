@@ -835,6 +835,7 @@ launcher_ro_overlay() {
   # — left writable, the host's git would read it — and named.
   local -A uhave=()
   local j jj xq=0 xt xk xv2 cdt _gdi_warned=0
+  local -a xwd=() xwu=()
   for k in ${ug[@]+"${!ug[@]}"}; do uhave[${udst[k]}${ug[k]#"${usrc[k]}"}]=1; done
   # What one mount's scan found, in every other writable mount that exposes it:
   # an outer mount's scan does not reach a repository under a pruned
@@ -857,6 +858,15 @@ launcher_ro_overlay() {
     [[ -z "${uhave[$xv2]:-}" ]] || continue
     uhave[$xv2]=1
     ug+=("$xt"); ukind+=("$xk"); usrc+=("${bsrc[j]}"); udst+=("${bdst[j]}")
+    # Every directory under its worktrees/, as the scan takes them (GIT-78).
+    if [[ "$xk" == dir ]]; then
+      xwd=(); xwu=()
+      _gdi_wt_kids "$xt" xwd xwu
+      for cdt in ${xwd[@]+"${xwd[@]}"}; do _xm_t+=("$cdt"); _xm_by+=("$xt"); _xm_j+=("$j"); done
+      for cdt in ${xwu[@]+"${xwu[@]}"}; do
+        _xm_t+=("$cdt"); _xm_by+=("$xt"); _xm_j+=("$j"); _xm_k[${#_xm_t[@]}-1]=unr
+      done
+    fi
     if [[ "$xk" == dir && -f "$xt/commondir" ]]; then
       cdt=""; _git_ptr_read "$xt/commondir" cdt || true
       if [[ -n "$cdt" && "$cdt" != ./ && "$cdt" != . ]] && _gd_resolve "$xt" "$cdt" "$xt/commondir" cdt; then
@@ -1044,7 +1054,7 @@ launcher_ro_overlay() {
             wcd=""
             if _cd_bash wcd "$g" && [[ -n "$wcd" && "$wcd" != *$'\n' ]]; then
               printf '         uses the repository, remove it on the host, in bash or zsh:\n' >&2
-              _cd_cmd "$wcd" '[ "$(cat commondir)" = ./ ] && rm commondir'
+              _cd_cmd "$wcd" '[ -f commondir ] && [ ! -L commondir ] && [ "$(cat commondir)" = ./ ] && rm commondir'
             else
               printf '         uses the repository, remove it on the host: %s cannot be entered by a\n' "$(_term "$g")" >&2
               printf '         command printed here, so look at it there first.\n' >&2
@@ -3076,15 +3086,19 @@ _is_git_dir() {
   # read-only, a mount point the agent cannot remove. HEAD, objects/ and refs/
   # are not, so moving one aside in one session hid the directory from the next
   # launch (GIT-7; G77, G78; automated security reviews of 855d205, 7429d87).
-  # Taking a planted commondir too only protects more. A bare repository only the
-  # scan finds gets no placeholder (GIT-11), so one whose HEAD is removed is not
-  # found again — the trade-off GIT-11 accepted.
+  # Taking a planted commondir too only protects more.
   if [[ -f "$1/commondir" && ! -L "$1/commondir" ]]; then return 0; fi
   # A HEAD that is a link counts too: git takes one (review of 56c91c4; G68).
   # A FIFO counts as well, so that it is refused rather than hidden (G70).
   # A link counts whatever it leads to, a directory too (G71).
   [[ -L "$1/HEAD" ]] || [[ -e "$1/HEAD" && ! -d "$1/HEAD" ]] || return 1
-  { _git_has_store "$1" || [[ -f "$1/commondir" ]]; }
+  # Beside a HEAD, a commondir that is anything but a directory: a dangling link
+  # or a FIFO too, which _git_cd_check() refuses. Taken only where it was, or led
+  # to, a regular file, a linked worktree's directory with one was no git
+  # directory, and where its repository's own git directory was not taken either
+  # (its objects/ moved aside before its first protection) nothing listed it
+  # (review of the plan for GIT-78's fix; G188).
+  _git_has_store "$1" || [[ -L "$1/commondir" ]] || [[ -e "$1/commondir" && ! -d "$1/commondir" ]]
 }
 # _git_has_store <dir>: objects and refs, more than git asks of them: git takes
 # them by access(X_OK), an executable file as a directory, and a reftable
@@ -4141,6 +4155,52 @@ _gdi_out_cd() {
   _gdi_follow "$1" "$c" "$2" "$1/commondir" own
 }
 
+# _gdi_wt_kids <git directory> <out: directories> <out: unlistable>: every
+# directory directly inside its worktrees/, where git keeps a linked worktree's
+# directory, whatever each holds. Such a directory has no objects or refs, so
+# what made it a git directory to the scan was a regular commondir, or inside a
+# .git a regular gitdir: with its commondir a dangling link or a FIFO (and the
+# gitdir gone) the launch never asked _git_cd_check(), bound nothing and said
+# nothing, the session made the link's target, and the host's git in the
+# checkout ran the agent's config. Taken by where it lies, never by what it
+# holds, which the agent writes; each then goes through what any git directory
+# does (bugs review GIT-78; G188 to G192).
+# A worktrees that is a link refuses the launch, and so does a link in it: git
+# reaches a worktree's directory through either (measured, git 2.56), a link
+# cannot be pinned, and the agent could repoint it. One you cannot list, and a
+# directory in it you cannot list, are bound read-only whole, as inside a .git.
+# What is neither a directory nor a link there is passed over: git cannot enter it.
+_gdi_wt_kids() {
+  # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
+  local -n _wk_d=$2 _wk_u=$3
+  local _wk_m="$1/worktrees" _wk_k
+  local -a _wk_l=()
+  if [[ -L "$_wk_m" ]]; then
+    printf 'ERROR: %s is a symlink; refusing the launch. git reaches every linked\n' "$(_term "$_wk_m")" >&2
+    printf '       worktree'\''s directory through it, and takes each worktree'\''s configuration and\n' >&2
+    printf '       hooks by what it finds there; the agent could repoint it. git never makes one.\n' >&2
+    printf '       If you made it, put the directory it leads to in its place, on the host. If you\n' >&2
+    printf '       did not, look at where it leads first. No command is printed here.\n' >&2
+    exit 1
+  fi
+  [[ -d "$_wk_m" ]] || return 0
+  _disk_spell _wk_m
+  if [[ ! -r "$_wk_m" || ! -x "$_wk_m" ]]; then _wk_u+=("$_wk_m"); return 0; fi
+  mapfile -d '' -t _wk_l < <(find "$_wk_m" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 2>/dev/null)
+  for _wk_k in ${_wk_l[@]+"${_wk_l[@]}"}; do
+    if [[ -L "$_wk_k" ]]; then
+      printf 'ERROR: %s is a symlink; refusing the launch. git takes a linked worktree'\''s\n' "$(_term "$_wk_k")" >&2
+      printf '       directory through it, with the configuration and hooks it finds there, and the\n' >&2
+      printf '       agent could repoint it. git never makes one.\n' >&2
+      printf '       If you made it, put the directory it leads to in its place, on the host. If you\n' >&2
+      printf '       did not, look at where it leads first. No command is printed here.\n' >&2
+      exit 1
+    fi
+    _git_wt_kid[$_wk_k]=1
+    if [[ ! -r "$_wk_k" || ! -x "$_wk_k" ]]; then _wk_u+=("$_wk_k"); else _wk_d+=("$_wk_k"); fi
+  done
+}
+
 # _gdi_bare_up <dir> <mount root>: called from git_dirs_in's walk up from a mount.
 # git's discovery asks of each directory, after its .git, whether it is itself a
 # git directory, a bare repository, and stops there: git run in the mount then
@@ -4366,7 +4426,8 @@ git_dirs_in() {
     up="${up%/*}"
   done
   local -A tseen=()
-  local q wxk wptr gone
+  local q wxk wptr gone _gdi_wk
+  local -a _gdi_wkd=() _gdi_wku=()
   local -a links=()
   local gover=""
   while :; do
@@ -4393,6 +4454,20 @@ git_dirs_in() {
       g="${_gdi_ionly[ni]}"; ni=$((ni + 1))
     else
       g="${_gdi_dirs[n]}"; n=$((n + 1))
+      # Every directory under its worktrees/, whatever it holds (GIT-78): queued
+      # here, so one a .git file or a commondir led to has its own taken too.
+      _gdi_wkd=(); _gdi_wku=()
+      _gdi_wt_kids "$g" _gdi_wkd _gdi_wku
+      for _gdi_wk in ${_gdi_wkd[@]+"${_gdi_wkd[@]}"}; do
+        if [[ -z "${had[$_gdi_wk]:-}" ]]; then _gdi_dirs+=("$_gdi_wk"); had[$_gdi_wk]=1; fi
+      done
+      for _gdi_wk in ${_gdi_wku[@]+"${_gdi_wku[@]}"}; do
+        [[ -z "${had[$_gdi_wk]:-}" ]] || continue
+        had[$_gdi_wk]=1
+        # One inside a .git the scan queued too, unmarked: the protection loop
+        # binds it once, the second being under the first's overlay (G190).
+        _gdi_unr+=("$_gdi_wk")
+      done
       # A commondir that is a link is read through, as git reads it; the protection
       # step names the link itself, which the agent can repoint (security review).
       if [[ -f "$g/commondir" ]]; then
@@ -5807,6 +5882,8 @@ declare -A _git_watch_had=() _git_watch_cd=()
 # The git directories protected with no commondir placeholder, their config
 # setting core.worktree (GIT-73): _git_after_session names one made in the session.
 _git_nocd=()
+# The directories taken under a git directory's worktrees/ (_gdi_wt_kids; GIT-78).
+declare -A _git_wt_kid=()
 # _git_wt_cfg <git directory>: its config sets core.worktree, which git reads only
 # where there is no commondir. Not for a submodule's under .git/modules: git
 # reaches it through the .git file in its checkout and takes that directory for
@@ -5814,6 +5891,10 @@ _git_nocd=()
 _git_wt_cfg() {
   local _gw=""
   [[ "${1,,}" != */.git/modules/* ]] || return 1
+  # Nor for a directory taken under a git directory's worktrees/ (_gdi_wt_kids):
+  # git writes a commondir in every one, and a config planted there would leave
+  # this one for the session to make (GIT-78; G189).
+  [[ -z "${_git_wt_kid[$1]:-}" ]] || return 1
   _git_config_get _gw "$1/config" core.worktree && [[ -n "$_gw" ]]
 }
 # The git directories whose config this launch bound read-only, or that lie under

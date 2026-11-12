@@ -392,6 +392,16 @@ EXTRA_MOUNTS="$TMP/h117" launch "$TMP/app"
   || fail "G117 hooks directory in two cases (rc=$LAUNCH_RC; named $(grep -Fci "o117/hooks/pre-commit, a hook your host" "$ERR") times)"
 rm -rf "$TMP/h117" "$TMP/o117"
 
+# A git directory's worktrees spelled in another case is the one git uses: the
+# directories in it are taken, and named as on disk (bugs review GIT-78; G188).
+mkdir -p "$TMP/w117" && "${G[@]}" init -q --bare "$TMP/w117/b.git" && mkdir -p "$TMP/w117/b.git/WORKTREES/W1" \
+  && ln -s /nonexistent/cd "$TMP/w117/b.git/WORKTREES/W1/commondir" || { printf 'SCAFFOLD-FAILED: G117 WORKTREES\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/w117" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $TMP/w117/b.git/WORKTREES/W1/commondir is a symlink" "$ERR" \
+  && pass "G117 a directory under a WORKTREES in another case is taken, and named as on disk" \
+  || fail "G117 WORKTREES in another case (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/w117"
+
 # A separate git directory, not named .git, with objects/ moved aside, whose
 # commondir leads back to it spelled in another case: git takes it for its own
 # common directory, and writes no such commondir, so it refuses the launch

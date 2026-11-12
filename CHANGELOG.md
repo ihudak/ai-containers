@@ -231,6 +231,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   by a container still running is not followed; it needs bash or zsh (bugs
   review GIT-70).
 
+- **A linked worktree whose `commondir` was swapped for a link or a FIFO no
+  longer slips past the launch.** A linked worktree's directory holds no
+  objects, so with its `commondir` a dangling link, in a bare repository or
+  in a checkout once the `gitdir` beside it was gone too, the launch did not
+  take it for a git directory, bound nothing of it and said nothing; the
+  session then made the link's target, and git in that worktree's checkout on
+  the host ran the agent's configuration. Every directory under a git
+  directory's `worktrees/` is now checked whatever it holds: such a
+  `commondir` refuses the launch, and a directory with none gets a
+  placeholder, so none can be made later. A `worktrees` that is itself a
+  symlink, or a symlink in it, refuses the launch too. Where the scan already
+  reached a repository, the worktrees git made are mounted exactly as before;
+  a git directory reached only through a `.git` file (under a pruned
+  `node_modules`, or in another mount) had none of its worktrees' directories
+  bound, and now has (bugs review GIT-78).
+
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read
   the launcher bounds came back empty for a directory named with such a byte,
