@@ -273,6 +273,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   aside: the next launch bound nothing of it, and the session could write its
   `config`. It is now found by the `config` and `hooks/` the launch binds
   there (bugs review GIT-85).
+- **A refusal that tells you to remove a linked worktree's `gitdir` now says
+  what that costs and what to write in its place.** Left removed, `git gc`
+  deletes that worktree's directory, its `HEAD`, index and own refs with it.
+  For a checkout's `.git` file it says that removing it detaches the
+  checkout. No new command is printed for either (bugs review GIT-82).
 - **A launch past `SANDBOX_GIT_MAX` refuses at once.** It read the identity of
   every directory it had found first, and a tree with 20,000 planted ones
   took over a minute and a half to be refused (bugs review GIT-84).

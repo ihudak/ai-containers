@@ -2174,7 +2174,7 @@ _ro_fifo_search() {
     printf '       The agent could still write into it, and what reads it on the host would get that.\n' >&2
     h="${fx##*/}"
     if [[ "${h,,}" == commondir ]]; then _cd_way_out "${fx%/*}"
-    else printf '       Remove it on the host (rm %s).\n' "$(_q "$fx")" >&2; fi
+    else printf '       Remove it on the host (rm %s).\n' "$(_q "$fx")" >&2; _ptr_say "$fx"; fi
     rm -f "$ferr"; exit 1
   done
   rm -f "$ferr"
@@ -3601,9 +3601,36 @@ _rd_fail() {
       _cd_way_out "${1%/*}"
     else
       printf '       git writes one path and a newline there. If you did not make it, remove it on the host.\n' >&"${_rd_errfd:-2}"
+      _ptr_say "$1"
     fi
   fi
   kill -s USR1 "$$" 2>/dev/null || true
+}
+# _ptr_say <file>: what a gitdir or a .git file that a refusal says to remove is
+# for, and for a gitdir what to write in its place. No command, of git's or the
+# shell's: one that reads the repository does what the agent's files choose
+# (`git worktree repair` wrote a .git file wherever a planted worktrees/*/gitdir
+# pointed, `git submodule update` ran a planted submodule.<name>.update: the
+# first fix of this, withdrawn). For a .git file nothing to write either: the
+# git directory you would name by hand can be one the agent planted beside the
+# real one, whose config.worktree your git then runs in your own checkout (run
+# by the plan's reviewer). A gitdir holds only a path, and nothing in it runs.
+# By the file's name and place alone (bugs review GIT-82; G198).
+_ptr_say() {
+  local _ps_b="${1##*/}"
+  case "${_ps_b,,}" in
+    gitdir)
+      _cd_wt_loc "${1%/*}" || return 0
+      printf '       If this is a linked worktree'\''s directory, as its place says: with the gitdir gone, git gc\n'
+      printf '       removes the directory, its HEAD, index and own refs with it (unless the worktree is locked).\n'
+      printf '       If the worktree is yours, stop every container on this tree and write the file again as\n'
+      printf '       soon as it is removed, one line:\n'
+      printf '       the full path of the .git file in the checkout you made for that worktree (not one found\n'
+      printf '       by searching for a .git file that names this directory: a decoy names it too).\n' ;;
+    .git)
+      printf '       If this directory is a checkout of yours (a linked worktree'\''s, or a submodule'\''s), git\n'
+      printf '       finds its repository through that file: once it is removed, the checkout is detached from it.\n' ;;
+  esac >&"${_rd_errfd:-2}"
 }
 
 # _cd_phys <out-var> <dir> [<path>]: the physical path of <dir>, or of <path>

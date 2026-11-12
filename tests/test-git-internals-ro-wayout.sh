@@ -452,5 +452,50 @@ refused && has "ERROR: $R/.git/hooks/sub/commondir is a FIFO or device inside wh
   || fail "G186 a FIFO the search finds ($(why))"
 rm -rf "$R" "$TMP/co-wo186"
 
+# ── G198: what a gitdir or a .git file to remove is for ───────────────────────
+# The refusals over one said only to remove it. With its gitdir gone, git gc
+# removes a linked worktree's directory, its HEAD, index and own refs with it;
+# with its .git file gone a checkout is detached. They now say so, and for a
+# gitdir what to write in its place, by hand: no command is printed, since one
+# that reads the repository does what the agent's files choose (bugs review
+# GIT-82, whose first fix advised `git worktree repair` and was withdrawn).
+nocmd198() { ! grep -qF '`' "$ERR" && ! has '(cd -P' && ! grep -qE 'git (worktree|submodule) ' "$ERR"; }
+D198="$TMP/d198"; mkdir -p "$D198" && "${G[@]}" init -q "$D198/r" && "${G[@]}" -C "$D198/r" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$D198/r" worktree add -q "$D198/co" -b wb 2>/dev/null || { printf 'SCAFFOLD-FAILED: G198\n'; exit 1; }
+w198="$D198/r/.git/worktrees/co"
+printf 'x\0y\n' > "$w198/gitdir"
+EXTRA_MOUNTS="$D198" launch_timed 120 "$TMP/app"
+refused && has "ERROR: $w198/gitdir holds what git reads otherwise" && has "If you did not make it, remove it on the host." \
+  && has "with the gitdir gone, git gc" && has "removes the directory, its HEAD, index and own refs with it (unless the worktree is locked)." \
+  && has "the full path of the .git file in the checkout you made for that worktree" && nocmd198 && ! grep -qw rm "$ERR" \
+  && pass "G198 a gitdir this launcher cannot read: what removing it costs, and what to write in its place, with no command" \
+  || fail "G198 odd gitdir ($(why))"
+# Doing that by hand: the file removed, the path written.
+rm -f "$w198/gitdir" && printf '%s\n' "$D198/co/.git" > "$w198/gitdir"
+EXTRA_MOUNTS="$D198" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -z "$("${G[@]}" -C "$D198/r" worktree prune -n 2>&1)" ]] && quiet "$D198/co" \
+  && pass "G198 …and with it written by hand the launch starts, nothing is to be pruned, and the checkout works" \
+  || fail "G198 after writing it (rc=$LAUNCH_RC; prune: $("${G[@]}" -C "$D198/r" worktree prune -n 2>&1 | head -1))"
+rm -f "$w198/gitdir" && mkfifo "$w198/gitdir"
+EXTRA_MOUNTS="$D198" launch_timed 120 "$TMP/app"
+refused && has "ERROR: $w198/gitdir" && has "with the gitdir gone, git gc" && nocmd198 \
+  && pass "G198 a FIFO for a gitdir: the same" \
+  || fail "G198 FIFO gitdir ($(why))"
+rm -f "$w198/gitdir" && printf '%s\n' "$D198/co/.git" > "$w198/gitdir"
+# A FIFO by that name where git keeps no worktree's directory gets none of it.
+mkfifo "$D198/r/.git/hooks/gitdir"
+EXTRA_MOUNTS="$D198" launch_timed 120 "$TMP/app"
+refused && has "ERROR: $D198/r/.git/hooks/gitdir is a FIFO or device" && ! has "git gc" && ! has "checkout" \
+  && pass "G198 a FIFO named gitdir in a hooks/ gets nothing added" \
+  || fail "G198 FIFO in hooks/ ($(why))"
+rm -f "$D198/r/.git/hooks/gitdir"
+printf 'gitdir: x\0y\n' > "$D198/co/.git"
+EXTRA_MOUNTS="$D198" launch_timed 120 "$TMP/app"
+refused && has "ERROR: $D198/co/.git holds what git reads otherwise" && has "If this directory is a checkout of yours" \
+  && has "once it is removed, the checkout is detached from it." && ! grep -qE 'write (it|the file)' "$ERR" && nocmd198 && ! grep -qw rm "$ERR" \
+  && pass "G198 a .git file this launcher cannot read: what it is for, and nothing to write or run" \
+  || fail "G198 odd .git file ($(why))"
+rm -rf "$D198"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
