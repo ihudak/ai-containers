@@ -3,3 +3,6 @@ cli.github.com
 uploads.github.com
 api.mcp.github.com
 scanning-api.github.com
+# gh calls this host (the name is in the gh 2.103.3 binary); it serves nothing at
+# its root, and what gh asks of it was not looked into. Seen blocked 2026-11-12.
+cafe.github.com

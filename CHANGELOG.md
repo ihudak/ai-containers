@@ -141,6 +141,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **In restricted mode, a `git clone` from GitHub is no longer blocked on first
+  contact in an image without Copilot.** GitHub answers from several addresses,
+  and the ranges it publishes for them were allowed only when `copilot=ON`;
+  every other image knew `github.com` by whatever address DNS had last given,
+  so a Claude Code plugin install could fail on its first connection. The
+  web, API and git ranges are now in the base list for every image, refreshed
+  from `api.github.com/meta`. Every GitHub service that answers from those
+  ranges is thereby reachable from every image, the Copilot API and
+  `*.github.io` among them. `cafe.github.com`, which `gh` calls, is named in
+  the GitHub CLI fragment. **Rebuild the image** to get them (bugs review
+  BLD-11).
+
 - **A repository whose `config` sets `core.worktree` keeps its work tree.**
   The `commondir` placeholder the launch makes in every repository it protects
   had git ignore that setting, so `git --git-dir=…` (a "dotfiles" repository,
