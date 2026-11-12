@@ -379,7 +379,7 @@ launcher_ro_overlay() {
   local -A _gdi_wt_read=() _gdi_nowt_gone=()
   local -A gpv=() gfprot=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir gown gmade ocfg ocd k2 nocd first ik ip ib rep al rk rh hk
+  local g base what gmax gn gitmax cfg cdir gown gmade ocfg ocd k2 nocd wcd first ik ip ib rep al rk rh hk
   local -a hgro=() hgpre=() wkc=() hgv=()
   # The include walk's read of a config (_git_walk_keys), kept from the binding
   # pass, which takes core.hooksPath from it: one read a file (G120).
@@ -1034,10 +1034,21 @@ launcher_ro_overlay() {
           elif [[ -f "$g/commondir" ]] && _git_wt_cfg "$g"; then
             # One an earlier launch made: it stays (a sibling container may have
             # it bound), and is named until you remove it.
+            # Removing ./ leaves git reading the same config and hooks/, this
+            # directory's; the command enters it physically and removes only a
+            # ./ (_cd_cmd(), as GIT-70's refusals do), so a link the agent
+            # repointed cannot send it to a commondir git wrote.
             printf 'WARNING: %s, which an earlier launch made, has git ignore the core.worktree\n' "$(_term "$g/commondir")" >&2
             printf '         this repository'\''s config sets: used with --git-dir, git takes the current\n' >&2
-            printf '         directory for its work tree. Once no container uses the repository, remove it\n' >&2
-            printf '         on the host (rm %s); later launches make none there.\n' "$(_q "$g/commondir")" >&2
+            printf '         directory for its work tree. Later launches make none there. Once no container\n' >&2
+            wcd=""
+            if _cd_bash wcd "$g" && [[ -n "$wcd" && "$wcd" != *$'\n' ]]; then
+              printf '         uses the repository, remove it on the host, in bash or zsh:\n' >&2
+              _cd_cmd "$wcd" '[ "$(cat commondir)" = ./ ] && rm commondir'
+            else
+              printf '         uses the repository, remove it on the host: %s cannot be entered by a\n' "$(_term "$g")" >&2
+              printf '         command printed here, so look at it there first.\n' >&2
+            fi
           fi
           # Freezing the config read-only freezes whatever is in it. The launch
           # that first protects a repository — the one that just made its

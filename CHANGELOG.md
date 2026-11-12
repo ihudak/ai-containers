@@ -146,7 +146,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   had git ignore that setting, so `git --git-dir=…` (a "dotfiles" repository,
   say) took the current directory for the work tree, where `add`, `checkout`
   or `reset --hard` would act on the wrong files. No placeholder is made there
-  now; one an earlier launch made is named, with the `rm` that removes it, and
+  now; one an earlier launch made is named, with the command that removes it, and
   a `commondir` the agent makes there is named when the container exits (bugs
   review GIT-73).
 
