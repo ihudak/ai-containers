@@ -1127,22 +1127,24 @@ rm -rf "$PROJ/r166"
 # ── G172: a worktree's ../.. naming a repository whose own commondir is wrong ─
 # A mount rooted at a repository's worktrees/ directory, the repository outside
 # every mount: its linked worktree's ../.. is git's own, and what is wrong is the
-# repository's own commondir, a link here. The refusal names that file to
-# remove, not git's ../.. (review of GIT-68's fix).
+# repository's own commondir, a link here. The refusal names that file as what
+# is wrong, to be removed, not git's ../.. (review of GIT-68's fix; what it
+# says to do is tests/test-git-internals-ro-wayout.sh's, G184).
 R172="$TMP/r172"; mkdir -p "$R172" && "${G[@]}" init -q "$R172" && "${G[@]}" -C "$R172" commit -q --allow-empty -m i \
   && "${G[@]}" -C "$R172" worktree add -q "$TMP/wt172" -b wt172 && printf './\n' > "$TMP/dot172" \
   && ln -s "$TMP/dot172" "$R172/.git/commondir" || { printf 'SCAFFOLD-FAILED: G172\n'; exit 1; }
 EXTRA_MOUNTS="$R172/.git/worktrees" launch ..
 [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
   && grep -qF "ERROR: $R172/.git/worktrees/wt172/commondir names $R172/.git, which is no repository's own git directory" "$ERR" \
-  && grep -qF "(rm $R172/.git/commondir)" "$ERR" && ! grep -qF "(rm $R172/.git/worktrees/wt172/commondir)" "$ERR" \
+  && grep -qF "$R172/.git/commondir is what is wrong." "$ERR" && grep -qF "(cd -P -- $R172/.git && " "$ERR" \
+  && ! grep -qF "(cd -P -- $R172/.git/worktrees/wt172 " "$ERR" && ! grep -qE '\(rm [^)]*\)' "$ERR" \
   && pass "G172 a worktree whose repository's own commondir is wrong: the refusal names that commondir" \
   || fail "G172 the grandparent's commondir (rc=$LAUNCH_RC; $(grep -A4 -m1 ERROR "$ERR" | tr '\n' ' '))"
 rm -rf "$R172" "$TMP/wt172" "$TMP/dot172"
 # …and where that repository is a real linked worktree's directory in a writable
-# mount, its ../.. git's own, the planted worktree inside it is what is named:
-# removing git's ../.. handed the host's git the agent's config there (final
-# review of GIT-68's fix).
+# mount, its ../.. git's own, the planted worktree inside it is what is named,
+# to be moved out: removing git's ../.. handed the host's git the agent's
+# config there (final review of GIT-68's fix; GIT-70).
 A172="$PROJ/.git/worktrees/wta172"; W172="$A172/worktrees/w"
 "${G[@]}" -C "$PROJ" worktree add -q "$TMP/wta172" -b wta172 && mkdir -p "$A172/objects" "$A172/refs" "$W172" \
   && printf 'ref: refs/heads/main\n' > "$W172/HEAD" && printf '../..\n' > "$W172/commondir" \
@@ -1150,7 +1152,7 @@ A172="$PROJ/.git/worktrees/wta172"; W172="$A172/worktrees/w"
 launch ..
 [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
   && grep -qF "ERROR: $W172/commondir names $A172, which is no repository's own git directory" "$ERR" \
-  && grep -qF "(rm $W172/commondir)" "$ERR" && ! grep -qF "(rm $A172/commondir)" "$ERR" \
+  && grep -qF "Move $W172 (mv) to a directory you never mount." "$ERR" && ! grep -qw rm "$ERR" \
   && pass "G172 a worktree planted in a real linked worktree's directory: the refusal names the planted commondir" \
   || fail "G172 nested in a real worktree (rc=$LAUNCH_RC; $(grep -A4 -m1 ERROR "$ERR" | tr '\n' ' '))"
 rm -rf "$W172" "$A172/worktrees" "$A172/objects"

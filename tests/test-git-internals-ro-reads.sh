@@ -305,8 +305,16 @@ mk111() {  # $1 = repository, $2 = commondir bytes (printf format): a hidden com
     && printf '[core]\n\tfsmonitor = run-me-111\n' >> "$1/.git/"$'\n'/config && rm -rf "$TMP/t111"
 }
 odd111() {  # $1 = label, $2 = the file the refusal names
+  # A commondir is never said to be removed there: where a linked worktree's
+  # directory lies ../.. is put back, and what git reads without one is said
+  # (GIT-70; tests/test-git-internals-ro-wayout.sh).
+  local say111='git writes one path and a newline there. If you did not make it, remove it on the host.'
+  if [[ "$2" == */commondir ]]; then
+    say111="If ${2%/commondir} is not yours, move it (mv) to a directory you never mount"
+    if grep -qF 'remove it on the host.' "$ERR"; then say111="no removal of a commondir"; fi
+  fi
   [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $2 holds what git reads otherwise than this launcher" "$ERR" \
-    && grep -qF 'git writes one path and a newline there. If you did not make it, remove it on the host.' "$ERR" \
+    && grep -qF 'git writes one path and a newline there.' "$ERR" && grep -qF -- "$say111" "$ERR" \
     && pass "G111 $1 refuses the launch, naming it" \
     || fail "G111 $1 (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR|111' "$ERR" | head -2 | tr '\n' ' '))"
 }

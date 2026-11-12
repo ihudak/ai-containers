@@ -1812,9 +1812,23 @@ mkdir -p "$B171/co" "$O171/wt" && "${G[@]}" init -q "$B171/node_modules/x" \
 EXTRA_MOUNTS="$B171" launch "$TMP/app"
 [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
   && grep -qF "ERROR: $O171/wt/commondir names $V171, which is no repository's own git directory" "$ERR" \
-  && grep -qF "(rm $V171/commondir)" "$ERR" \
-  && pass "G171 an outside commondir naming a linked worktree's directory in a writable mount refuses the launch" \
+  && grep -qF "the agent could write them. Point $O171/wt/commondir at its repository's" "$ERR" \
+  && grep -qF "If $V171 is not yours, move it (mv) to a directory you never mount. Do not remove" "$ERR" \
+  && grep -qF "$V171/commondir: git would read $V171/config for that checkout all the same." "$ERR" \
+  && ! grep -qw rm "$ERR" \
+  && pass "G171 an outside commondir naming a linked worktree's directory in a writable mount refuses the launch, its commondir not to be removed" \
   || fail "G171 an outside commondir naming no repository's own (rc=$LAUNCH_RC; $(grep -m1 -E 'ERROR' "$ERR"); config bound: $(mounts | grep -cF "$V171/config"))"
+# The same directory under a refs/: nothing there is said to be moved or
+# removed, since a branch can be a file by that name (GIT-70).
+F171="$B171/node_modules/x/.git/refs/heads/worktrees/v"
+mkdir -p "${F171%/*}" && cp -R "$V171" "$F171" && printf '%s\n' "$F171" > "$O171/wt/commondir" || { printf 'SCAFFOLD-FAILED: G171 refs\n'; exit 1; }
+EXTRA_MOUNTS="$B171" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $O171/wt/commondir names $F171, which is no repository's own git directory" "$ERR" \
+  && grep -qF "Do not remove it: that deletes the branch." "$ERR" && ! grep -qwE 'rm|mv' "$ERR" \
+  && pass "G171 one whose target lies under a refs/: nothing is to be moved or removed" \
+  || fail "G171 a target under refs/ (rc=$LAUNCH_RC; $(grep -A6 -m1 -E 'ERROR' "$ERR" | tr '\n' ' '))"
+rm -rf "$B171/node_modules/x/.git/refs/heads/worktrees" && printf '%s\n' "$V171" > "$O171/wt/commondir" || { printf 'SCAFFOLD-FAILED: G171 refs back\n'; exit 1; }
 # …and so does one whose target lies under ANOTHER writable mount's node_modules.
 C171="$TMP/c171"; mkdir -p "$C171/node_modules" && mv "$B171/node_modules/x" "$C171/node_modules/x" \
   && printf '%s\n' "$C171/node_modules/x/.git/worktrees/v" > "$O171/wt/commondir" \

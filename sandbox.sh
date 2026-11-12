@@ -384,6 +384,9 @@ launcher_ro_overlay() {
   # The include walk's read of a config (_git_walk_keys), kept from the binding
   # pass, which takes core.hooksPath from it: one read a file (G120).
   local -A wkc_at=() wkc_n=() wkc_cut=() rodone=()
+  # Set once every mount is scanned: from there on ro_dsts holds every overlay
+  # above the git directory being checked (_cd_under_ro()).
+  local _cd_ro_known=""
   local -a inc pgd=() pga=() pgc=() pgo=() pgx=()
   local -A seen=() tried=() scanned=() pinned=()
   # Included git config files read: each once per protected config, keyed by
@@ -888,6 +891,7 @@ launcher_ro_overlay() {
     printf '       if every one of them is yours.\n' >&2
     exit 1
   fi
+  _cd_ro_known=1
   for (( depth = 0; depth <= gmax; depth++ )); do
     for k in ${ug[@]+"${!ug[@]}"}; do
       if (( udep[k] != depth )); then continue; fi
@@ -981,7 +985,14 @@ launcher_ro_overlay() {
           [[ -e "$g/$f" && ! -L "$g/$f" ]] || continue
           if [[ "$f" == hooks && -d "$g/$f" ]] || [[ "$f" != hooks && -f "$g/$f" ]]; then continue; fi
           printf 'ERROR: %s is not a %s; refusing the launch.\n' "$(_term "$g/$f")" "$([[ "$f" == hooks ]] && printf directory || printf 'regular file')" >&2
-          if [[ "$f" == HEAD ]]; then
+          if _cd_refs_loc "$g"; then
+            # Among a git directory's refs these are branches (GIT-70; G181).
+            _cd_refs_say "$f"
+          elif [[ "$f" == commondir ]]; then
+            printf '       Through a read-only bind the agent could still write into it, and your host'\''s git\n' >&2
+            printf '       would read what it writes.\n' >&2
+            _cd_way_out "$g"
+          elif [[ "$f" == HEAD ]]; then
             printf '       The agent could write into it, and your host'\''s git would read what it writes.\n' >&2
             printf '       Replace it on the host with a regular file, e.g. printf '\''ref: refs/heads/main\\n'\'' > %s\n' "$(_q "$g/$f")" >&2
           else
@@ -2115,7 +2126,9 @@ _ro_fifo_search() {
     [[ -n "$fx" ]] || continue
     printf 'ERROR: %s is a FIFO or device inside what this launch binds read-only; refusing the launch.\n' "$(_term "$fx")" >&2
     printf '       The agent could still write into it, and what reads it on the host would get that.\n' >&2
-    printf '       Remove it on the host (rm %s).\n' "$(_q "$fx")" >&2
+    h="${fx##*/}"
+    if [[ "${h,,}" == commondir ]]; then _cd_way_out "${fx%/*}"
+    else printf '       Remove it on the host (rm %s).\n' "$(_q "$fx")" >&2; fi
     rm -f "$ferr"; exit 1
   done
   rm -f "$ferr"
@@ -3061,6 +3074,110 @@ _cd_own() {
   [[ ! -e "$1/commondir" && ! -L "$1/commondir" ]] && return 0
   [[ -f "$1/commondir" && ! -L "$1/commondir" ]] && _git_ptr_read "$1/commondir" _co && [[ "$_co" == ./ ]]
 }
+# What a refusal over a commondir tells you to do (_cd_way_out(), bugs review
+# GIT-70). It used to print one `rm`, of a file chosen by what the directories
+# held, and the agent writes what they hold: following it removed the ../.. git
+# wrote in a linked worktree's directory, after which git read the config the
+# agent had planted beside it, and the next launch started. So the advice is
+# built from a few fixed parts, chosen by WHERE the directory lies and by which
+# check failed, never by what is in it, each safe if what it says of the
+# directory is true, which you know and the launcher cannot:
+#   - where git keeps a linked worktree's directory (worktrees/<name>), ../.. is
+#     written back, never removed: git then reads the config of the directory it
+#     names, which the next launch holds to _git_cd_check()'s rule;
+#   - elsewhere git writes no commondir, and it is removed: the directory is
+#     then what it was without one, which the agent could make it whenever it
+#     could write that file. Not under a read-only overlay, where no launch
+#     names what its config sets, nor where the overlays are not all known;
+#   - under a refs/ or logs/ nothing is printed to run: a branch named commondir
+#     is such a file, and the `rm` deleted it (run by the plan's reviewer);
+#   - a directory is moved out, never removed.
+# Any narrower advice is safe too, so a fix here takes a part away.
+#
+# _cd_wt_loc <dir>: by its place alone, where git keeps a linked worktree's
+# directory, and the one place a commondir of ../.. is taken (_git_cd_check()).
+_cd_wt_loc() { local _wl="${1,,}"; [[ "${_wl%/*}" == */worktrees && "$_wl" != */.git ]]; }
+# _cd_refs_loc <path>: under a directory named refs or logs.
+_cd_refs_loc() { local _rl="/${1,,}/"; [[ "$_rl" == */refs/* || "$_rl" == */logs/* ]]; }
+# _cd_refs_say <name>: what is said there instead of any command.
+_cd_refs_say() {
+  local _fd="${_rd_errfd:-2}"
+  printf '       It lies under a refs or logs directory: where that is a git directory'\''s, a branch or a tag\n' >&"$_fd"
+  printf '       whose name ends in %s, or its log, is such a file, and this launcher cannot tell it from\n' "$(_term "$1")" >&"$_fd"
+  printf '       git'\''s own. Do not remove it: that deletes the branch. Rename it (a branch: git branch -m),\n' >&"$_fd"
+  printf '       or keep that repository out of the writable mounts. No command is printed here.\n' >&"$_fd"
+}
+# _cd_under_ro <dir>: 0 where a read-only overlay covers it in a writable
+# mount's view, 1 where none does, 2 where that is not known: outside the
+# overlay pass, and in it until the mounts are scanned, since the binds a
+# repository adds (its hooks/) are decided after (_cd_ro_known).
+_cd_under_ro() {
+  [[ -n "${_cd_ro_known:-}" ]] && declare -p ro_dsts bsrc bdst >/dev/null 2>&1 || return 2
+  local _ur_i _ur_r _ur_at
+  for _ur_i in ${bsrc[@]+"${!bsrc[@]}"}; do
+    [[ "$1" == "${bsrc[_ur_i]}" || "$1" == "${bsrc[_ur_i]}"/* ]] || continue
+    _ur_at="${bdst[_ur_i]}${1#"${bsrc[_ur_i]}"}"
+    for _ur_r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do
+      if [[ "$_ur_at" == "$_ur_r" || "$_ur_at" == "$_ur_r"/* ]]; then return 0; fi
+    done
+  done
+  return 1
+}
+# _cd_cmd <dir> <what to run there>: a command that enters <dir> physically
+# and runs only if that is where it is: a container still running on the tree
+# can swap the directory, or one above it, for a link, and `rm <dir>/commondir`
+# followed it. The first test says the path holds no link, the second that the
+# shell is in it (bash's pwd -P resolves the path again; review of the plan).
+_cd_cmd() {
+  printf '         (cd -P -- %s && [ "$(pwd -P)" = %s ] && [ . -ef %s ] && %s)\n' "$(_q "$1")" "$(_q "$1")" "$(_q "$1")" "$2" >&"${_rd_errfd:-2}"
+}
+# _cd_way_out <git dir>: what to do about its commondir, one git does not
+# write: a link, no regular file, one this launcher cannot read as git does, or
+# any value but git's.
+_cd_way_out() {
+  local _wo_d="" _wo_ro=0 _wo_fd="${_rd_errfd:-2}" _wo_t
+  # Under refs/ or logs/ as spelled, whether or not it can be entered.
+  if _cd_refs_loc "$1"; then _cd_refs_say commondir; return 0; fi
+  # By its physical path: a .git file's text reached here spelled /. at its end.
+  # A name ending in a newline no $(pwd -P) gives back.
+  if ! _cd_bash _wo_d "$1" || [[ -z "$_wo_d" || "$_wo_d" == *$'\n' ]]; then
+    printf '       %s cannot be entered by a command printed here, so none is: look at it on the host\n' "$(_term "$1")" >&"$_wo_fd"
+    printf '       before you remove anything there.\n' >&"$_wo_fd"
+    return 0
+  fi
+  _wo_t="$(_term "$_wo_d")"
+  if _cd_refs_loc "$_wo_d"; then _cd_refs_say commondir; return 0; fi
+  _cd_under_ro "$_wo_d" || _wo_ro=$?
+  if (( _wo_ro == 0 )) || { (( _wo_ro == 2 )) && ! _cd_wt_loc "$_wo_d"; }; then
+    printf '       If %s is not yours, move it (mv) to a directory you never mount.\n' "$_wo_t" >&"$_wo_fd"
+    if _cd_wt_loc "$_wo_d"; then
+      printf '       In a linked worktree'\''s directory git writes ../.. there: write that back by hand.\n' >&"$_wo_fd"
+      printf '       A file of yours that only shares the name: rename it.\n' >&"$_wo_fd"
+    else
+      printf '       If it is a repository of yours, it holds no commondir: git reads %s/config and\n' "$_wo_t" >&"$_wo_fd"
+      printf '       %s/hooks once that is gone, and no launch names what they set there: read them\n' "$_wo_t" >&"$_wo_fd"
+      printf '       before you remove it. A file of yours that only shares the name: rename it.\n' >&"$_wo_fd"
+    fi
+  elif _cd_wt_loc "$_wo_d"; then
+    printf '       git writes ../.. there, in a linked worktree'\''s directory. To put that back, stop every\n' >&"$_wo_fd"
+    printf '       container running on this tree, read %s/config.worktree if there is one, and run,\n' "$_wo_t" >&"$_wo_fd"
+    printf '       in bash or zsh:\n' >&"$_wo_fd"
+    _cd_cmd "$_wo_d" "rm -rf commondir && (set -C; printf '../..\\n' > commondir)"
+    printf '       If %s is not yours, move it (mv) to a directory you never mount instead.\n' "$_wo_t" >&"$_wo_fd"
+    _wo_t="${_wo_d,,}"; _wo_t="${_wo_t%/*/*}"
+    if [[ "$_wo_t" != */.git ]]; then
+      printf '       If it is a bare repository of yours that only lies in a directory named worktrees, move\n' >&"$_wo_fd"
+      printf '       it out of there instead, and launch again.\n' >&"$_wo_fd"
+    fi
+    printf '       A file of yours that only shares the name: rename it instead; the command overwrites it.\n' >&"$_wo_fd"
+  else
+    printf '       If you did not make it, stop every container running on this tree and remove it on the\n' >&"$_wo_fd"
+    printf '       host, in bash or zsh:\n' >&"$_wo_fd"
+    _cd_cmd "$_wo_d" "rm commondir"
+    printf '       git then reads %s/config and %s/hooks: read them first. A directory is not removed by\n' "$_wo_t" "$_wo_t" >&"$_wo_fd"
+    printf '       that: move it out. A file of yours that only shares the name: rename it.\n' >&"$_wo_fd"
+  fi
+}
 # _in_writable <path>: inside one of launcher_ro_overlay's writable binds (bsrc).
 _in_writable() {
   local _w
@@ -3139,49 +3256,63 @@ _git_cd_check() {
   if [[ -L "$1/commondir" ]]; then
     printf 'ERROR: %s is a symlink; refusing the launch. git takes this repository'\''s\n' "$(_term "$1/commondir")" >&2
     printf '       configuration and hooks from the directory it names, or from this one when it\n' >&2
-    printf '       leads nowhere, and the agent could repoint it. git never makes one. If you did\n' >&2
-    printf '       not make it, remove it on the host (rm %s) and launch again.\n' "$(_q "$1/commondir")" >&2
+    printf '       leads nowhere, and the agent could repoint it. git never makes one.\n' >&2
+    _cd_way_out "$1"
     exit 1
   fi
   if [[ ! -e "$1/commondir" ]]; then _gcc_own=1; return 0; fi
   if [[ ! -f "$1/commondir" ]]; then
     printf 'ERROR: %s is not a regular file; refusing the launch.\n' "$(_term "$1/commondir")" >&2
     printf '       The agent could write into it, and your host'\''s git would read what it writes.\n' >&2
-    printf '       Remove it on the host (rm %s).\n' "$(_q "$1/commondir")" >&2
+    _cd_way_out "$1"
     exit 1
   fi
   _git_ptr_read "$1/commondir" _gcc_c || true
   if [[ "$_gcc_c" == ./ ]]; then _gcc_own=1; return 0; fi
-  if [[ "${_gcc_p,,}" == */worktrees && "${1,,}" != */.git ]]; then
+  if _cd_wt_loc "$1"; then
     _gcc_gp="${_gcc_p%/*}"
     if [[ "$_gcc_c" == ../.. || "$_gcc_c" == "$_gcc_gp" || "$_gcc_c" == "$_gcc_gp"/ ]]; then
       if _is_common_dir "$_gcc_gp" && _cd_own "$_gcc_gp"; then
         return 0
       fi
-      # What is wrong may be the repository's own commondir, not git's ../..
-      # (a mount rooted at its worktrees/; review of GIT-68's fix): where the
-      # agent cannot have made it, or it is a link or no regular file. In a
-      # writable mount it may be git's own ../.. of a linked worktree the agent
-      # planted this one in, and removing that handed git the agent's config
-      # (final review of the same; G172).
-      local _gcc_at="$1/commondir"
-      if _is_common_dir "$_gcc_gp" \
-         && { ! _in_writable "$_gcc_gp" || [[ -L "$_gcc_gp/commondir" || ! -f "$_gcc_gp/commondir" ]]; }; then
-        _gcc_at="$_gcc_gp/commondir"
-      fi
-      printf 'ERROR: %s names %s, which is no repository'\''s own git directory\n' "$(_term "$1/commondir")" "$(_term "$_gcc_gp")" >&2
+      # What to do is said by which of the two failed and by where the two
+      # directories lie, never by what they hold: this commondir is what git
+      # writes, and the `rm` printed for it here handed git the config the agent
+      # had planted beside it (GIT-70; G183, G184).
+      local _gcc_t _gcc_g
+      _gcc_t="$(_term "$1")"; _gcc_g="$(_term "$_gcc_gp")"
+      printf 'ERROR: %s names %s, which is no repository'\''s own git directory\n' "$(_term "$1/commondir")" "$_gcc_g" >&2
       printf '       (one holding objects and refs, with no commondir but ./); refusing the\n' >&2
-      printf '       launch. git takes its configuration and hooks for this worktree, and the agent could\n' >&2
-      printf '       write them there. If you did not make %s, remove it on the host\n' "$(_term "$_gcc_at")" >&2
-      printf '       (rm %s) and launch again.\n' "$(_q "$_gcc_at")" >&2
+      printf '       launch. git takes its configuration and hooks for this worktree from there, and\n' >&2
+      printf '       this launch cannot bind them read-only.\n' >&2
+      if _cd_refs_loc "$1"; then
+        _cd_refs_say commondir
+      elif ! _is_common_dir "$_gcc_gp"; then
+        printf '       %s holds no objects or no refs. If it is your repository'\''s git directory, put them back, or\n' "$_gcc_g" >&2
+        printf '       clone the repository again. If %s is not a linked worktree of yours, move it (mv) to a\n' "$_gcc_t" >&2
+        printf '       directory you never mount. Do not remove %s/commondir: git would then read %s/config.\n' "$_gcc_t" "$_gcc_t" >&2
+        _gcc_g="${_gcc_gp,,}"
+        if [[ "$_gcc_g" != */.git ]]; then
+          printf '       If it is a bare repository of yours that only lies in a directory named worktrees, move\n' >&2
+          printf '       it out of there instead, and launch again.\n' >&2
+        fi
+      elif _cd_wt_loc "$_gcc_gp"; then
+        printf '       %s has a commondir of its own. If it is a linked worktree'\''s directory,\n' "$_gcc_g" >&2
+        printf '       %s does not belong in it: git keeps none inside another'\''s.\n' "$_gcc_t" >&2
+        printf '       Move %s (mv) to a directory you never mount.\n' "$_gcc_t" >&2
+      else
+        printf '       %s has a commondir of its own. No linked worktree'\''s directory lies there, so\n' "$_gcc_g" >&2
+        printf '       %s/commondir is what is wrong.\n' "$_gcc_g" >&2
+        _cd_way_out "$_gcc_gp"
+      fi
       exit 1
     fi
   fi
   printf 'ERROR: %s sends git to %s for this repository'\''s\n' "$(_term "$1/commondir")" "$(_q "${_gcc_c:0:200}")" >&2
-  printf '       configuration and hooks. git writes a commondir only in a linked worktree'\''s\n' >&2
-  printf '       directory, as ../.. (libgit2: that directory'\''s full path), naming the repository'\''s\n' >&2
-  printf '       git directory. If you did not make it, remove it on the host (rm %s) and\n' "$(_q "$1/commondir")" >&2
-  printf '       launch again.\n' >&2
+  printf '       configuration and hooks; refusing the launch. git writes a commondir only in a linked\n' >&2
+  printf '       worktree'\''s directory, as ../.. (libgit2: that directory'\''s full path), naming the\n' >&2
+  printf '       repository'\''s git directory.\n' >&2
+  _cd_way_out "$1"
   exit 1
 }
 
@@ -3347,7 +3478,13 @@ _rd_fail() {
   if [[ "${2:-}" == slow || "${2:-}" == spent ]]; then
     printf '       The host may be busy: launch again.\n' >&"${_rd_errfd:-2}"
   elif [[ "${2:-}" == odd ]]; then
-    printf '       git writes one path and a newline there. If you did not make it, remove it on the host.\n' >&"${_rd_errfd:-2}"
+    why="${1##*/}"
+    if [[ "${why,,}" == commondir ]]; then
+      printf '       git writes one path and a newline there.\n' >&"${_rd_errfd:-2}"
+      _cd_way_out "${1%/*}"
+    else
+      printf '       git writes one path and a newline there. If you did not make it, remove it on the host.\n' >&"${_rd_errfd:-2}"
+    fi
   fi
   kill -s USR1 "$$" 2>/dev/null || true
 }
@@ -3906,9 +4043,16 @@ _gdi_follow() {
     printf 'ERROR: %s names %s, which is no repository'\''s own git directory\n' "$(_term "$4")" "$(_term "$t")" >&2
     printf '       (one with no commondir but ./); refusing the launch. git takes its\n' >&2
     printf '       configuration and hooks from there for a checkout in a writable mount, and\n' >&2
-    printf '       the agent could write them. If you did not make %s, remove it on\n' "$(_term "$t/commondir")" >&2
-    printf '       the host (rm %s); otherwise point %s at the repository'\''s own\n' "$(_q "$t/commondir")" "$(_term "$4")" >&2
-    printf '       git directory. Then launch again.\n' >&2
+    printf '       the agent could write them. Point %s at its repository'\''s\n' "$(_term "$4")" >&2
+    printf '       own git directory, and launch again.\n' >&2
+    # Never the target's commondir removed: git reads the target's config for
+    # that checkout with it or without (GIT-70).
+    if _cd_refs_loc "$t"; then
+      _cd_refs_say commondir
+    else
+      printf '       If %s is not yours, move it (mv) to a directory you never mount. Do not remove\n' "$(_term "$t")" >&2
+      printf '       %s/commondir: git would read %s/config for that checkout all the same.\n' "$(_term "$t")" "$(_term "$t")" >&2
+    fi
     exit 1
   fi
   # Inside ANOTHER writable bind: recorded, and protected in that bind's view by

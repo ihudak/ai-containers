@@ -176,7 +176,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ran that config at the next `git status`. git writes a `commondir` only in a
   linked worktree's directory, as `../..` (libgit2: that directory's full
   path), naming the repository's git directory. Anything else, and any link,
-  now refuses the launch, naming the file and the `rm` that removes it.
+  now refuses the launch, naming the file and what to do about it.
   Linked worktrees, submodules and separate git directories as git makes
   them are unaffected, and so is libgit2's form of a worktree's `commondir`;
   a libgit2 worktree whose repository has moved is refused (bugs review
@@ -188,8 +188,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own), let the launch go ahead with that directory's `config` neither made
   nor bound, and git took it as the common directory: your host's git read
   the config the agent wrote there. Such a `commondir` now refuses the launch,
-  naming the planted `commondir` to remove, or the outside one to point at the
-  repository's own git directory (bugs review GIT-68).
+  saying to point the outside one at its repository's own git directory
+  (bugs review GIT-68).
 
 - **A git directory whose `objects` or `refs` is a file is protected.** git
   takes a directory for a git directory when it can reach `objects` and
@@ -197,9 +197,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repository works with `refs` one. The launcher wanted directories, so a bare
   repository or a separate git directory so made in a writable mount was
   neither protected nor named, and your host's git ran the config the agent
-  wrote there. They now count as git counts them, and the check after the
-  session reads the config git reads for a directory a `commondir` names
-  (bugs review GIT-69).
+  wrote there. They are now taken whatever they are, which is more than git
+  takes, and the check after the session reads the config git reads for a
+  directory a `commondir` names (bugs review GIT-69).
+
+- **A refusal over a `commondir` no longer tells you to remove one git wrote.**
+  The launch refused, rightly, a layout the agent had shaped, and printed an
+  `rm` of a file chosen by what the directories held, which the agent writes.
+  With `objects` and a `config` planted in a linked worktree's directory and
+  the repository's own `objects/` moved aside, that file was the `../..` git
+  itself wrote there: once removed, your host's git read the planted config,
+  and the next launch started. What a refusal says to do is now built from a
+  few fixed parts, chosen by where the directory lies and by which check
+  failed, never by what it holds. In a `worktrees/<name>` directory the
+  command printed writes `../..` back and removes nothing else. Elsewhere,
+  where the launch knows that no read-only overlay covers the directory, it
+  removes the `commondir`, and says that git then reads the `config` and
+  `hooks/` beside it. A git directory is only ever to be moved out, never
+  removed.
+  Under a `refs/` or `logs/` directory no command is printed: a branch named
+  `commondir` in a bare repository is such a file, and the old `rm` deleted
+  the branch. None is printed under a read-only overlay either. Each command
+  enters the directory physically and runs only there, so a link swapped in
+  by a container still running is not followed; it needs bash or zsh (bugs
+  review GIT-70).
 
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read
