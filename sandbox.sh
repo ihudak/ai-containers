@@ -772,9 +772,14 @@ launcher_ro_overlay() {
     gdirs=(); gfiles=(); glinks=(); gunr=()
     git_dirs_in gdirs gfiles glinks gunr "$src"
     _git_scan_srcs+=("$src"); _git_bsrc=(${bsrc[@]+"${bsrc[@]}"})
-    for f in ${gdirs[@]+"${gdirs[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${glinks[@]+"${glinks[@]}"} ${gunr[@]+"${gunr[@]}"}; do
-      _git_launch_seen[$f]="$(_git_ident "$f")"
-    done
+    # Not once a scan stopped past SANDBOX_GIT_MAX: the launch is refused below,
+    # and a stat for each of 20,000 planted directories took it over a minute
+    # and a half to say so (bugs review GIT-84; G197).
+    if (( ${#_gdi_over[@]} == 0 )); then
+      for f in ${gdirs[@]+"${gdirs[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${glinks[@]+"${glinks[@]}"} ${gunr[@]+"${gunr[@]}"}; do
+        _git_launch_seen[$f]="$(_git_ident "$f")"
+      done
+    fi
     for f in ${glinks[@]+"${glinks[@]}"}; do
       at="$dst${f#"$src"}"; skip=""
       for r in ${ro_dsts[@]+"${ro_dsts[@]}"}; do

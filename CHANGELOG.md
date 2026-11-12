@@ -273,6 +273,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   aside: the next launch bound nothing of it, and the session could write its
   `config`. It is now found by the `config` and `hooks/` the launch binds
   there (bugs review GIT-85).
+- **A launch past `SANDBOX_GIT_MAX` refuses at once.** It read the identity of
+  every directory it had found first, and a tree with 20,000 planted ones
+  took over a minute and a half to be refused (bugs review GIT-84).
 - **A `.git` file that names a directory in another writable mount which is
   no git directory is now named at launch**, and looked at again when the
   container exits; it was passed in silence, and a session that made that

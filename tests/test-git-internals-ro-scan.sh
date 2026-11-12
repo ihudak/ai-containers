@@ -1906,5 +1906,31 @@ SANDBOX_GIT_MAX=4 EXTRA_MOUNTS="$D196/d" launch "$TMP/app"
   || fail "G196 uncounted (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 rm -rf "$D196"
 
+# ── G197: a launch past SANDBOX_GIT_MAX refuses without reading what it found ──
+# Every directory the scan took had its identity read (a stat each) before the
+# refusal, so 20,000 planted ones took the launch over a minute and a half to
+# say no (bugs review GIT-84). A scan that stopped past the limit records none.
+D197="$TMP/d197"; mkdir -p "$D197" "$TMP/bin197" && "${G[@]}" init -q --bare "$D197/b.git" \
+  && mkdir -p "$D197/b.git/worktrees"/p{1..40} || { printf 'SCAFFOLD-FAILED: G197\n'; exit 1; }
+s197="$(command -v stat)"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$TMP/stat197.log" "$s197" > "$TMP/bin197/stat" && chmod +x "$TMP/bin197/stat"
+: > "$TMP/stat197.log"
+PATH="$TMP/bin197:$PATH" SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$D197" launch "$TMP/app"
+# The identity read alone: a stat for the birth time (_git_ident's format, GNU
+# or BSD) whose last argument is the directory itself.
+n197="$(grep -cE -- "(%\.9W|%\.9FB) -- $D197/b.git/worktrees/p[0-9]+\$" "$TMP/stat197.log")"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "more than 5 git directories" "$ERR" && [[ -s "$TMP/stat197.log" && "$n197" == 0 ]] \
+  && pass "G197 past SANDBOX_GIT_MAX the launch refuses without a stat of each directory it took" \
+  || fail "G197 stats before the refusal (rc=$LAUNCH_RC; $n197 of 40; log lines: $(wc -l < "$TMP/stat197.log" | tr -d ' '))"
+# Within the limit each is still recorded, for the check after the session: a
+# repository that was there at launch, its config running a program, is not
+# taken for one the session made.
+"${G[@]}" init -q "$D197/pre" && "${G[@]}" -C "$D197/pre" config core.fsmonitor /bin/true || { printf 'SCAFFOLD-FAILED: G197 pre\n'; exit 1; }
+SANDBOX_GIT_MAX=100 EXTRA_MOUNTS="$D197" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "WARNING: the session made git repositories" "$ERR" \
+  && pass "G197 …and within it what was there at launch is still known when the container exits" \
+  || fail "G197 within the limit (rc=$LAUNCH_RC; $(grep -A2 -F 'WARNING: the session' "$ERR" | tr '\n' ' '))"
+rm -rf "$D197" "$TMP/bin197" "$TMP/stat197.log"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
