@@ -75,6 +75,9 @@ Both GraalVM variants also install the `native-image` toolchain.
 | `pnpm` | ON / OFF | pnpm package manager |
 | `bun` | ON / OFF | Bun runtime and package manager |
 | `angular-cli` | ON / version / OFF | Angular CLI, **single version only**. Adds ~300–500 MB |
+| `npm` | ON / version / OFF | npm for the **default** Node, replaced at build time (e.g. `npm=12.2.2`); `OFF` keeps the npm Node ships with. Versions from `node=` keep their own |
+
+`npm` is a build-time key because npm cannot update itself inside the container: Node belongs to root and the agent shell never is root, so `npm install -g npm@…` fails with `EACCES`. The image turns off npm's "new major version available" notice, which asks for exactly that. For one command with another npm, `npx -y npm@12.2.2 …` needs no root. Only the default Node gets the configured npm, because a newer npm may refuse an older Node: npm 12 needs Node 22 or later.
 
 `pnpm=ON` installs pnpm globally via npm at build time rather than through corepack: Node 24 and earlier bundle corepack and Node 26 does not, and the sandbox user could not enable it at runtime anyway because the nvm directory is root-owned.
 

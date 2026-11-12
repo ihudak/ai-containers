@@ -40,6 +40,13 @@ for b in rg fd tree file column bc make sqlite3 zstd xxd less node npm npx; do
   assert_runs "$cid" "$b"
 done
 
+# npm's "new major version available" notice says to run `npm install -g npm@…`,
+# which always fails here: the image's npm is root's and the agent shell never
+# is. The image turns the notice off. That is mutation 313-npm-update-notifier-on.
+out="$(docker exec "$cid" npm config get update-notifier 2>&1)"
+[[ "$out" == false ]] && pass "npm's update notice is off" \
+  || fail "npm's update notice is on: $out"
+
 # /etc/profile sources /etc/profile.d/*.sh in whatever shell reads it. A
 # function named npm-agent-tools is a syntax error to dash, so a POSIX `sh -l`
 # stopped there, the rest of /etc/profile unread (bugs review RT-12); bash must

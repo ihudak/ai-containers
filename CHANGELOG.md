@@ -28,6 +28,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SANDBOX_MODE=restricted ./runme.sh` hint into `./sandbox.sh` in every synced
   project (feature gaps review GAP-6).
 
+- **`npm=` in `sandbox.conf` sets the default Node's npm.** npm could not be
+  updated in a container at all: Node belongs to root and the agent shell never
+  is root, so `npm install -g npm@…` failed with `EACCES`. `npm=12.2.2` (or
+  `npm=ON` for the newest at build time) now replaces the default Node's npm in
+  the image; a pinned version that npm does not then report fails the build.
+  `OFF`, the default that sync adds to every project, keeps the npm Node ships
+  with. Versions from `node=` keep their own npm, since a newer npm may refuse
+  an older Node (npm 12 needs Node 22 or later).
+
 - **A list in `sandbox.local.env` can be written one entry per line.** A long
   `EXTRA_MOUNTS` or `REPOS` had to sit on a single line, because the loader
   read the file a line at a time: a value broken over lines arrived as a bare
@@ -404,6 +413,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   runs on its own, retried for ~3 min (a `UV_HTTP_RETRIES` you set wins), and the
   `.deb` for 256 s with exponential backoff. The wkhtmltopdf change makes the next
   `./build.sh` rebuild from that layer on.
+
+- **npm no longer tells you to run a command that fails.** Its "New major
+  version of npm available! … run `npm install -g npm@…`" notice asked for what
+  nobody in the container can do (see `npm=` above). The image sets
+  `NPM_CONFIG_UPDATE_NOTIFIER=false`; a value in `container.env` wins. Last in
+  the Dockerfile, so the next `./build.sh` rebuilds only that.
 
 - **Installing graphify or mkdocs at container start no longer warns
   `Failed to hardlink files`.** uv's download cache is in the container and

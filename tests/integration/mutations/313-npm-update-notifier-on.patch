@@ -1,0 +1,23 @@
+# case: 310-agent-utilities-delivered
+# what: the image no longer turns npm's update notice off, so every npm command
+#       may end with "New major version of npm available! … To update run: npm
+#       install -g npm@…" -- a command that always fails in the container with
+#       EACCES, because the image's npm belongs to root and the agent shell never
+#       is root.
+#
+#       Expected: exactly ONE assertion fails, `npm's update notice is off`
+#       (npm config get update-notifier prints `true`); every tool and the
+#       npm-agent-tools assertions still pass.
+#
+#       NEEDS A REBUILD: it changes the Dockerfile.
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1087,7 +1087,6 @@ RUN chmod +x /usr/local/bin/refresh-ipset-allowlist.sh \
+ # npm it ships, belong to root, and the agent shell never is root, so the command
+ # fails with EACCES. The notice is off for every Node version; a value in
+ # container.env wins. Last in the file, so changing it rebuilds no other layer.
+-ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+ 
+ WORKDIR /workspace
+ ENTRYPOINT ["/entrypoint.sh"]

@@ -239,6 +239,10 @@ case_meta() {  # $1=file $2=key → the header value, or empty
 # calls case_meta, and keeping producer and consumer together beats matching the
 # top-of-file variable block this would otherwise sit in.
 IT_RUBY_VERSIONS="${IT_RUBY_VERSIONS:-3.3.6,3.4.5}"
+# npm= for the agents variant: an OLDER npm than the default Node ships (Node 26
+# has 11.20.0), so a layer that did nothing can never pass for one that worked as
+# bundled npm moves forward, and one npm 11 still supports on the default Node.
+IT_NPM_VERSION="${IT_NPM_VERSION:-11.6.2}"
 
 # This function is the actual authority on which variant names are valid —
 # KNOWN_VARIANTS (top of file) is a flat name list for two user-facing
@@ -249,7 +253,7 @@ IT_RUBY_VERSIONS="${IT_RUBY_VERSIONS:-3.3.6,3.4.5}"
 variant_overrides() {  # $1=variant → space-separated key=value; rc 1 if unknown
   case "$1" in
     default) printf '' ;;
-    agents)  printf 'copilot=ON claude-code=ON codex=ON gemini=ON kiro=ON graphify=ON vale=ON mkdocs=ON node=22,20 yarn=ON pnpm=ON bun=ON qmd=ON' ;;
+    agents)  printf 'copilot=ON claude-code=ON codex=ON gemini=ON kiro=ON graphify=ON vale=ON mkdocs=ON node=22,20 yarn=ON pnpm=ON bun=ON qmd=ON npm=%s' "$IT_NPM_VERSION" ;;
     native)  printf 'db-clients=pg,mysql,mongo imagemagick=ON wkhtmltopdf=ON playwright=ON postgres=ON ruby=%s' "$IT_RUBY_VERSIONS" ;;
     services) printf 'redis=ON mysql=ON mongo=ON' ;;
     mariadb) printf 'mariadb=11.4 db-clients=mysql' ;;
@@ -1028,7 +1032,7 @@ if [[ "$do_dry_run" -eq 0 ]]; then
   resolve_selinux_opt
   export IT_RUN_ID IT_LABEL IT_SCRATCH IT_IMAGE IT_NET IT_DNS_IMAGE \
          IT_CONNECT_TIMEOUT IT_SETTLE IT_GENERATED_ALLOWLIST_DIR IT_REAL_DOCKER \
-         IT_DOCKER_HOST IT_RUBY_VERSIONS IT_SELINUX_OPT
+         IT_DOCKER_HOST IT_RUBY_VERSIONS IT_NPM_VERSION IT_SELINUX_OPT
 fi  # do_dry_run -eq 0
 
 # --variant is validated HERE, once, rather than left to fall through to the

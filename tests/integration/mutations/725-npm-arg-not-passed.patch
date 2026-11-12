@@ -1,0 +1,22 @@
+# case: 725-npm-pinned-default-node
+# what: build.sh drops the build arg for a pinned npm= value, so the Dockerfile's
+#       npm layer sees an empty NPM_VERSION and skips: the image builds, with the
+#       npm the default Node ships, and `npm=11.6.2` in sandbox.conf did nothing.
+#
+#       Expected: exactly ONE assertion fails, `the default Node's npm is
+#       npm=11.6.2` (npm reports the bundled version instead); `after nvm use 20,
+#       Node … keeps its own npm` still passes, since that Node was never touched.
+#
+#       NEEDS A REBUILD: it changes build.sh, which builds the image.
+diff --git a/build.sh b/build.sh
+--- a/build.sh
++++ b/build.sh
+@@ -393,7 +393,7 @@ build_args_from_config() {
+   if [[ "$npm_raw" == "ON" ]]; then
+     _args+=(--build-arg "NPM_VERSION=latest")
+   elif [[ -n "$npm_raw" && "$npm_raw" != "OFF" ]]; then
+-    _args+=(--build-arg "NPM_VERSION=${npm_raw}")
++    :  # the pinned value never reaches the build
+   fi
+ 
+   # PostgreSQL server major for the in-container test cluster (PGDG). ON becomes

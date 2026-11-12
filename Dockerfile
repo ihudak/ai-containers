@@ -1003,6 +1003,26 @@ RUN if [ "$INSTALL_QMD" = "1" ]; then \
 ARG INSTALL_BUN=0
 RUN if [ "$INSTALL_BUN" = "1" ]; then npm install -g bun; fi
 
+# ── npm= in sandbox.conf: the default Node's npm ────────────────────────────────
+# Nothing in the container can replace it later: the Node install is root's and
+# the agent shell never is root. Only the default Node: a version from node= keeps
+# the npm it ships with, which a newer npm may not support (npm 12 refuses Node
+# 20). Empty skips the layer. A pinned x.y.z must be what npm then reports, or the
+# build fails rather than ship another version under that name. The last
+# `npm install -g` layer, so changing the key rebuilds only what follows; it stays
+# before link-node-globals.sh like the rest, which links no command of npm's own.
+ARG NPM_VERSION=""
+RUN if [ -n "$NPM_VERSION" ]; then \
+      npm install -g "npm@${NPM_VERSION}" && \
+      got="$(npm --version)" && \
+      echo "npm ${got} for the default Node (npm=${NPM_VERSION})" && \
+      case "$NPM_VERSION" in \
+        *[!0-9.]*) ;; \
+        *.*.*) [ "$got" = "$NPM_VERSION" ] || { echo "ERROR: npm=${NPM_VERSION} installed npm ${got}" >&2; exit 1; } ;; \
+      esac && \
+      { npm cache clean --force >/dev/null 2>&1 || true; }; \
+    fi
+
 # ── The commands the npm-global layers above installed, on PATH for every shell ──
 # They land in the default node's bin directory, which only nvm puts on PATH:
 # not in a non-interactive `docker exec … bash -c`, and not after `nvm use` to
@@ -1061,6 +1081,13 @@ RUN chmod +x /usr/local/bin/refresh-ipset-allowlist.sh \
   /usr/local/bin/capture-agent-destinations.sh \
   /usr/local/bin/capture-blocked-traffic.sh \
   /entrypoint.sh
+
+# npm's "New major version of npm available! … To update run: npm install -g
+# npm@…" asks for what nobody in the container can do: the image's Node, and the
+# npm it ships, belong to root, and the agent shell never is root, so the command
+# fails with EACCES. The notice is off for every Node version; a value in
+# container.env wins. Last in the file, so changing it rebuilds no other layer.
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
 WORKDIR /workspace
 ENTRYPOINT ["/entrypoint.sh"]

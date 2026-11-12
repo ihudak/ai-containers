@@ -513,8 +513,8 @@ fi
 # broken.
 out="$(bash "$TMP/callfn.sh" variant_overrides agents)"
 case "$out" in
-  *copilot=ON*claude-code=ON*codex=ON*gemini=ON*graphify=ON*vale=ON*mkdocs=ON*node=22,20*yarn=ON*pnpm=ON*bun=ON*qmd=ON*)
-    pass "variant agents turns on all seven agent-tier keys, multi-version node and the npm-global tools" ;;
+  *copilot=ON*claude-code=ON*codex=ON*gemini=ON*graphify=ON*vale=ON*mkdocs=ON*node=22,20*yarn=ON*pnpm=ON*bun=ON*qmd=ON*npm=11.6.2*)
+    pass "variant agents turns on all seven agent-tier keys, multi-version node, the npm-global tools and a pinned npm" ;;
   *) fail "variant agents overrides — got: $out" ;;
 esac
 

@@ -78,6 +78,15 @@ validate_config() {
   fi
   # A lowercase on/off (read as a version, `npx playwright@on`) is refused by
   # check_config, which build_image runs first, for every key (BLD-8).
+  # npm names ONE version for the default Node's npm, installed by a single
+  # `npm install -g npm@<ver>`; a list would reach npm as a package named
+  # "npm@11.6.2,12.2.2".
+  local npm_val; npm_val=$(get_versions npm)
+  if [[ "$npm_val" == *,* ]]; then
+    printf 'ERROR: npm only supports a single version (got: "%s").\n' "$npm_val" >&2
+    printf '       Use ON (newest at build time), a single version (e.g. 12.2.2), or OFF.\n' >&2
+    exit 1
+  fi
   # postgres names ONE server major (spec D6/D7). Checked here because every
   # mistake below otherwise surfaces as an apt error inside the build — "Unable to
   # locate package postgresql-on" — which names neither this key nor this file.
@@ -374,6 +383,17 @@ build_args_from_config() {
     _args+=(--build-arg "PLAYWRIGHT_VERSION=${pw_raw}")
   else
     _args+=(--build-arg "PLAYWRIGHT_VERSION=")
+  fi
+
+  # The default Node's npm. ON becomes `latest` (npm would read the literal as a
+  # dist-tag named ON); a pinned version passes verbatim. OFF and empty emit
+  # NOTHING, so the config digest of a project that leaves the key alone does
+  # not move because the key exists.
+  local npm_raw; npm_raw=$(get_versions npm)
+  if [[ "$npm_raw" == "ON" ]]; then
+    _args+=(--build-arg "NPM_VERSION=latest")
+  elif [[ -n "$npm_raw" && "$npm_raw" != "OFF" ]]; then
+    _args+=(--build-arg "NPM_VERSION=${npm_raw}")
   fi
 
   # PostgreSQL server major for the in-container test cluster (PGDG). ON becomes
