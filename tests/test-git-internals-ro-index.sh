@@ -1893,5 +1893,96 @@ grep -qF "$N174 (config: core.fsmonitor" < <(grep -A3 -F 'WARNING: the session m
   || fail "G174 both ways (rc=$LAUNCH_RC; $(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
 rm -rf "$B174" "$C174" "$O174"
 
+# ── G175: a linked worktree's directory is no frozen common directory ───────
+# A .git file names a linked worktree's directory that is not there (named at
+# launch). The session gives the real linked worktree's directory objects/,
+# refs/ and a config that runs a program, and makes the named one with a
+# commondir leading to it: git takes that directory for the checkout's common
+# one. The launch bound no config there, so after the session it is read and
+# named. A worktree the session adds to a protected repository, whose config the
+# launch bound, is not named for it (bugs review GIT-71).
+B175="$TMP/b175"; R175="$B175/r"; W175="$R175/.git/worktrees"
+mkdir -p "$B175/nco" && "${G[@]}" init -q "$R175" && "${G[@]}" -C "$R175" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$R175" config core.fsmonitor ./fsm \
+  && "${G[@]}" -C "$R175" worktree add -q "$B175/w1co" -b w1 \
+  && printf 'gitdir: %s\n' "$W175/n" > "$B175/nco/.git" \
+  || { printf 'SCAFFOLD-FAILED: G175\n'; exit 1; }
+sess175="mkdir -p '$W175/w1co/objects' '$W175/w1co/refs' '$W175/n' && git config --file '$W175/w1co/config' core.fsmonitor ./fsm2"
+sess175+=" && printf 'ref: refs/heads/main\n' > '$W175/n/HEAD' && printf '../w1co\n' > '$W175/n/commondir'"
+sess175+=" && git -C '$R175' worktree add -q '$B175/w2co' -b w2"
+FAKE_SESSION="$sess175" EXTRA_MOUNTS="$B175" launch "$TMP/app"
+a175="$(grep -A6 -F 'WARNING: the session made git repositories in a writable mount' "$ERR")"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "$W175/n (config: core.fsmonitor" <<<"$a175" \
+  && pass "G175 a linked worktree's directory made a common one in the session is read after it" \
+  || fail "G175 frozen worktree directory (rc=$LAUNCH_RC; $(tr '\n' ' ' <<<"$a175"); $(grep -F 'worktrees/n' "$ERR" | head -2 | tr '\n' ' '))"
+[[ "$("${G[@]}" -C "$B175/nco" rev-parse --git-common-dir 2>/dev/null)" == "$W175/w1co" ]] \
+  && ! grep -qF "$W175/w2" <<<"$a175" \
+  && pass "G175 git takes it so; a worktree added to a protected repository is not named for its config" \
+  || fail "G175 controls (common dir: $("${G[@]}" -C "$B175/nco" rev-parse --git-common-dir 2>&1); $(tr '\n' ' ' <<<"$a175"))"
+rm -rf "$B175"
+# A repository under the launcher's read-only overlay has its config frozen as
+# well: a git directory the session makes that names it for its common one is
+# not named for that config.
+"${G[@]}" init -q "$LAUNCHER/sub175" && "${G[@]}" -C "$LAUNCHER/sub175" config core.fsmonitor ./fsm \
+  || { printf 'SCAFFOLD-FAILED: G175 overlay\n'; exit 1; }
+FAKE_SESSION="mkdir -p '$PROJ/z175' && printf 'ref: refs/heads/main\n' > '$PROJ/z175/HEAD' && printf '%s\n' '$LAUNCHER/sub175/.git' > '$PROJ/z175/commondir'" \
+  launch ..
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$PROJ/z175 (config" "$ERR" \
+  && pass "G175 a common directory under a read-only overlay is not named for its config after the session" \
+  || fail "G175 overlay (rc=$LAUNCH_RC; $(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
+rm -rf "$LAUNCHER/sub175" "$PROJ/z175"
+
+# ── G176: a bare repository on the way up from a mount ──────────────────────
+# git's discovery asks of each directory, after its .git, whether it is itself a
+# git directory. Two writable mounts, the inner one in a bare repository under
+# the outer one's pruned node_modules: git in the inner mount reads that
+# repository's config, so it is protected in the outer mount's view. One outside
+# every mount is judged: a core.hooksPath there that leads into the mount is
+# named (bugs review GIT-72).
+M176="$TMP/m176"; A176="$M176/node_modules/a"
+mkdir -p "$M176" && "${G[@]}" init -q --bare "$A176" && mkdir -p "$A176/b" \
+  && "${G[@]}" --git-dir="$A176" config core.worktree "$A176/b" \
+  && "${G[@]}" --git-dir="$A176" config core.fsmonitor ./fsm \
+  && [[ "$("${G[@]}" -C "$A176/b" rev-parse --absolute-git-dir 2>/dev/null)" == "$A176" ]] \
+  || { printf 'SCAFFOLD-FAILED: G176\n'; exit 1; }
+EXTRA_MOUNTS="$M176 $A176/b" launch "$TMP/app"
+m176="$(mounts)"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$A176/config:/workspace/m176/node_modules/a/config:ro" <<<"$m176" \
+  && grep -qxF -- "$A176/hooks:/workspace/m176/node_modules/a/hooks:ro" <<<"$m176" \
+  && pass "G176 a bare repository an inner mount lies in, under the outer one's node_modules, is protected there" \
+  || fail "G176 bare repository on the way up (rc=$LAUNCH_RC; $(grep -F 'node_modules/a/' <<<"$m176" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+# A .git there that is no repository: git passes over it, and asks the
+# directory itself.
+mkdir "$A176/.git" || { printf 'SCAFFOLD-FAILED: G176 .git\n'; exit 1; }
+EXTRA_MOUNTS="$M176 $A176/b" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$A176/config:/workspace/m176/node_modules/a/config:ro" \
+  && pass "G176 so is one with a .git in it that is no repository" \
+  || fail "G176 bare repository past a .git (rc=$LAUNCH_RC; $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+rmdir "$A176/.git"
+# Its index is read against its core.worktree, as a .git directory's is: a
+# repository it records under the inner mount's pruned vendor/ is protected.
+# A fresh one, core.bare off as a work tree needs (git finds it on the way up
+# all the same), made before any launch: the ./ placeholder a launch makes has
+# git ignore its core.worktree (bugs review GIT-73).
+C176="$M176/node_modules/c"
+"${G[@]}" init -q --bare "$C176" && mkdir -p "$C176/b" && "${G[@]}" --git-dir="$C176" config core.bare false \
+  && "${G[@]}" --git-dir="$C176" config core.worktree "$C176/b" \
+  && "${G[@]}" init -q "$C176/b/vendor/s" && "${G[@]}" -C "$C176/b/vendor/s" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$C176/b" add vendor/s 2>/dev/null \
+  && grep -q '^160000' < <("${G[@]}" -C "$C176/b" ls-files -s vendor/s) \
+  || { printf 'SCAFFOLD-FAILED: G176 gitlink\n'; exit 1; }
+EXTRA_MOUNTS="$M176 $C176/b" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$C176/b/vendor/s/.git/config:/workspace/b/vendor/s/.git/config:ro" \
+  && pass "G176 a repository its index records in the inner mount is protected" \
+  || fail "G176 gitlink of a bare repository (rc=$LAUNCH_RC; $(grep -F 'vendor/s' <<<"$(mounts)" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+O176="$TMP/o176.git"
+"${G[@]}" init -q --bare "$O176" && mkdir -p "$O176/w/h" && "${G[@]}" --git-dir="$O176" config core.hooksPath w/h \
+  || { printf 'SCAFFOLD-FAILED: G176 outside\n'; exit 1; }
+EXTRA_MOUNTS="$O176/w" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "$O176" < <(grep -F 'core.hooksPath' "$ERR") \
+  && pass "G176 a bare repository outside every mount that a mount lies in is judged" \
+  || fail "G176 outside bare repository (rc=$LAUNCH_RC; $(grep -E 'NOTE|WARNING|ERROR' "$ERR" | head -3 | tr '\n' ' '))"
+rm -rf "$M176" "$O176"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
