@@ -141,6 +141,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A repository whose `config` sets `core.worktree` keeps its work tree.**
+  The `commondir` placeholder the launch makes in every repository it protects
+  had git ignore that setting, so `git --git-dir=…` (a "dotfiles" repository,
+  say) took the current directory for the work tree, where `add`, `checkout`
+  or `reset --hard` would act on the wrong files. No placeholder is made there
+  now; one an earlier launch made is named, with the `rm` that removes it, and
+  a `commondir` the agent makes there is named when the container exits (bugs
+  review GIT-73).
+
 - **A bare repository a mount lies in is protected, and a common directory a
   session makes of a linked worktree's directory is named.** git finds the
   repository a mount lies in by asking each directory on the way up whether its

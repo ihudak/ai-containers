@@ -1256,5 +1256,54 @@ grep -qF "$PROJ/s173 (config: core.fsmonitor" < <(grep -A3 -F 'WARNING: the sess
   || fail "G173 made during the session ($(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
 rm -rf "$PROJ/s173"
 
+# ── G177: no placeholder where git would then ignore core.worktree ───────────
+# git takes a git directory with a commondir for a linked worktree's, and reads
+# core.worktree for one only from config.worktree: a ./ placeholder made git
+# take the current directory for the work tree of one whose config sets it
+# (a "dotfiles" repository used with --git-dir). There none is made; its config
+# and hooks are still read-only; a commondir the session makes there is named
+# after it; one an earlier launch made is named, with the rm that removes it. A
+# submodule's git directory, which git reaches through the .git file in its
+# checkout, keeps the placeholder (bugs review GIT-73).
+D177="$TMP/d177"; mkdir -p "$D177/wt" "$D177/elsewhere" && "${G[@]}" init -q --bare "$D177/dot.git" \
+  && "${G[@]}" --git-dir="$D177/dot.git" config core.bare false \
+  && "${G[@]}" --git-dir="$D177/dot.git" config core.worktree "$D177/wt" && printf 'x\n' > "$D177/wt/f177" \
+  || { printf 'SCAFFOLD-FAILED: G177\n'; exit 1; }
+EXTRA_MOUNTS="$D177" launch "$TMP/app"
+m177="$(mounts)"
+[[ "$LAUNCH_RC" == 0 && ! -e "$D177/dot.git/commondir" ]] \
+  && grep -qxF -- "$D177/dot.git/config:/workspace/d177/dot.git/config:ro" <<<"$m177" \
+  && grep -qxF -- "$D177/dot.git/hooks:/workspace/d177/dot.git/hooks:ro" <<<"$m177" \
+  && grep -qF "NOTE: /workspace/d177/dot.git sets core.worktree in its config" "$ERR" \
+  && ! grep -qF "has no commondir and one could not be made" "$ERR" \
+  && pass "G177 a git directory whose config sets core.worktree gets no placeholder, and is protected" \
+  || fail "G177 core.worktree (rc=$LAUNCH_RC; commondir: $(cat "$D177/dot.git/commondir" 2>&1); $(grep -F 'dot.git' "$ERR" | head -3 | tr '\n' ' '))"
+[[ "$(cd "$D177/elsewhere" && "${G[@]}" --git-dir="$D177/dot.git" rev-parse --show-toplevel 2>/dev/null)" == "$D177/wt" ]] \
+  && pass "G177 git still takes its core.worktree after the launch" \
+  || fail "G177 git's work tree ($(cd "$D177/elsewhere" && "${G[@]}" --git-dir="$D177/dot.git" rev-parse --show-toplevel 2>&1))"
+FAKE_SESSION="printf '%s\n' '$D177/elsewhere' > '$D177/dot.git/commondir'" EXTRA_MOUNTS="$D177" launch "$TMP/app"
+grep -qF "$D177/dot.git/commondir" < <(grep -A3 -F 'WARNING: the session made .git files or links in a writable mount' "$ERR") \
+  && pass "G177 a commondir the session makes there is named after it" \
+  || fail "G177 commondir made in the session ($(grep -A3 -F 'WARNING: the session' "$ERR" | tr '\n' ' '))"
+EXTRA_MOUNTS="$D177" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $D177/dot.git/commondir sends git to" "$ERR" \
+  && pass "G177 and refuses the next launch" \
+  || fail "G177 next launch (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+printf './\n' > "$D177/dot.git/commondir"
+EXTRA_MOUNTS="$D177" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "rm $D177/dot.git/commondir" < <(grep -A4 -F "WARNING: $D177/dot.git/commondir" "$ERR") \
+  && pass "G177 a placeholder an earlier launch made there is named, with the rm that removes it" \
+  || fail "G177 earlier placeholder (rc=$LAUNCH_RC; $(grep -A4 -F 'dot.git/commondir' "$ERR" | head -5 | tr '\n' ' '))"
+rm -f "$D177/dot.git/commondir"
+"${G[@]}" init -q "$D177/up" && "${G[@]}" -C "$D177/up" commit -q --allow-empty -m i && "${G[@]}" init -q "$D177/sup" \
+  && "${G[@]}" -C "$D177/sup" -c protocol.file.allow=always submodule add -q "$D177/up" s 2>/dev/null \
+  && [[ -n "$("${G[@]}" --git-dir="$D177/sup/.git/modules/s" config core.worktree)" ]] \
+  || { printf 'SCAFFOLD-FAILED: G177 submodule\n'; exit 1; }
+EXTRA_MOUNTS="$D177" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(cat "$D177/sup/.git/modules/s/commondir" 2>/dev/null)" == ./ ]] \
+  && pass "G177 a submodule's git directory keeps the placeholder" \
+  || fail "G177 submodule (rc=$LAUNCH_RC; commondir: $(cat "$D177/sup/.git/modules/s/commondir" 2>&1))"
+rm -rf "$D177"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
