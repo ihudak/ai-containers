@@ -379,7 +379,7 @@ launcher_ro_overlay() {
   local -A _gdi_wt_read=() _gdi_nowt_gone=()
   local -A gpv=() gfprot=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
-  local g base what gmax gn gitmax cfg cdir gown gmade ocfg ocd k2 first ik ip ib rep al rk rh hk
+  local g base what gmax gn gitmax cfg cdir gown gmade ocfg ocd k2 nocd wcd first ik ip ib rep al rk rh hk
   local -a hgro=() hgpre=() wkc=() hgv=()
   # The include walk's read of a config (_git_walk_keys), kept from the binding
   # pass, which takes core.hooksPath from it: one read a file (G120).
@@ -1015,9 +1015,40 @@ launcher_ro_overlay() {
           # git makes hooks/ at init, but a repository can lack it — and then the
           # agent could make it.
           if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || _git_cant_make "$g" hooks; fi
+          # Not where its config sets core.worktree: git takes a git directory
+          # with any commondir for a linked worktree's, reads core.worktree for
+          # one only from config.worktree, and so took the current directory for
+          # the work tree of one used with --git-dir. With none, the agent can
+          # make one; the check after the session names it, and the next launch
+          # refuses it (bugs review GIT-73; G187).
+          nocd=""
+          if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] && _git_wt_cfg "$g"; then nocd=1; fi
           first=""
-          if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
+          if [[ -n "$nocd" ]]; then
+            _git_nocd+=("$g")
+            printf 'NOTE: %s sets core.worktree in its config, which git ignores beside a commondir,\n' "$(_term "$at")" >&2
+            printf '      so this launch makes none there; one the agent makes is named when the container\n' >&2
+            printf '      exits, and refuses the next launch.\n' >&2
+          elif [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]]; then
             if ( set -C; printf './\n' > "$g/commondir" ) 2>/dev/null; then first=1; else _git_cant_make "$g" commondir; fi
+          elif [[ -f "$g/commondir" ]] && _git_wt_cfg "$g"; then
+            # One an earlier launch made: it stays (a sibling container may have
+            # it bound), and is named until you remove it.
+            # Removing ./ leaves git reading the same config and hooks/, this
+            # directory's; the command enters it physically and removes only a
+            # ./ (_cd_cmd(), as GIT-70's refusals do), so a link the agent
+            # repointed cannot send it to a commondir git wrote.
+            printf 'WARNING: %s, which an earlier launch made, has git ignore the core.worktree\n' "$(_term "$g/commondir")" >&2
+            printf '         this repository'\''s config sets: used with --git-dir, git takes the current\n' >&2
+            printf '         directory for its work tree. Later launches make none there. Once no container\n' >&2
+            wcd=""
+            if _cd_bash wcd "$g" && [[ -n "$wcd" && "$wcd" != *$'\n' ]]; then
+              printf '         uses the repository, remove it on the host, in bash or zsh:\n' >&2
+              _cd_cmd "$wcd" '[ "$(cat commondir)" = ./ ] && rm commondir'
+            else
+              printf '         uses the repository, remove it on the host: %s cannot be entered by a\n' "$(_term "$g")" >&2
+              printf '         command printed here, so look at it there first.\n' >&2
+            fi
           fi
           # Freezing the config read-only freezes whatever is in it. The launch
           # that first protects a repository — the one that just made its
@@ -1142,7 +1173,7 @@ launcher_ro_overlay() {
           # Only where this launch tried to make one: elsewhere the commondir names
           # another repository's git directory, whose hooks/ git takes, and the
           # warning was false (GIT-64).
-          elif [[ "$f" == hooks || "$f" == commondir ]] && [[ -n "$gmade" && -z "${_gcm_seen[$g/$f]:-}" ]]; then
+          elif [[ "$f" == hooks || ( "$f" == commondir && -z "$nocd" ) ]] && [[ -n "$gmade" && -z "${_gcm_seen[$g/$f]:-}" ]]; then
             printf 'WARNING: %s has no %s and one could not be made; the agent could make it.\n' "$(_term "$g")" "$(_term "$f")" >&2
           fi
         done
@@ -5384,6 +5415,12 @@ _git_after_session() {
       if ! _git_usable; then k="${k:-not read, git does not run on this host}"; fi
       if [[ -n "$k$h" ]]; then printf 'R\0%s\0%s\0' "$w" "${k:+config: $k}${k:+${h:+; }}${h:+hooks: $h}"; fi
     done
+    # A repository protected with no placeholder (GIT-73): a commondir made there
+    # sends git elsewhere for its config and hooks.
+    for w in ${_git_nocd[@]+"${_git_nocd[@]}"}; do
+      if (( SECONDS >= deadline )); then printf 'C\0\0\0'; break; fi
+      if [[ -e "$w/commondir" || -L "$w/commondir" ]]; then printf 'A\0%s\0%s\0' "$w/commondir" "a commondir, where the launch made none"; fi
+    done
   ) || true
   trap 'exit 1' USR1
   for (( i = 0; i + 2 < ${#recs[@]}; i += 3 )); do
@@ -5767,6 +5804,18 @@ _git_bsrc=()               # every writable bind source of the launch (bsrc), fo
 # counts toward SANDBOX_GIT_MAX, and the look is inside the rescan's deadline.
 _git_watch=()
 declare -A _git_watch_had=() _git_watch_cd=()
+# The git directories protected with no commondir placeholder, their config
+# setting core.worktree (GIT-73): _git_after_session names one made in the session.
+_git_nocd=()
+# _git_wt_cfg <git directory>: its config sets core.worktree, which git reads only
+# where there is no commondir. Not for a submodule's under .git/modules: git
+# reaches it through the .git file in its checkout and takes that directory for
+# the work tree either way, and the placeholder keeps the agent from making one.
+_git_wt_cfg() {
+  local _gw=""
+  [[ "${1,,}" != */.git/modules/* ]] || return 1
+  _git_config_get _gw "$1/config" core.worktree && [[ -n "$_gw" ]]
+}
 # The git directories whose config this launch bound read-only, or that lie under
 # a read-only overlay: their own common directory, config included (_git_runs).
 declare -A _git_cfg_frozen=()

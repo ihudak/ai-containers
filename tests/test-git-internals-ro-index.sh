@@ -1976,8 +1976,7 @@ rmdir "$A176/.git"
 # Its index is read against its core.worktree, as a .git directory's is: a
 # repository it records under the inner mount's pruned vendor/ is protected.
 # A fresh one, core.bare off as a work tree needs (git finds it on the way up
-# all the same), made before any launch: the ./ placeholder a launch makes has
-# git ignore its core.worktree (bugs review GIT-73).
+# all the same).
 C176="$M176/node_modules/c"
 "${G[@]}" init -q --bare "$C176" && mkdir -p "$C176/b" && "${G[@]}" --git-dir="$C176" config core.bare false \
   && "${G[@]}" --git-dir="$C176" config core.worktree "$C176/b" \

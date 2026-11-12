@@ -1256,5 +1256,62 @@ grep -qF "$PROJ/s173 (config: core.fsmonitor" < <(grep -A3 -F 'WARNING: the sess
   || fail "G173 made during the session ($(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
 rm -rf "$PROJ/s173"
 
+# ── G187: no placeholder where git would then ignore core.worktree ───────────
+# git takes a git directory with a commondir for a linked worktree's, and reads
+# core.worktree for one only from config.worktree: a ./ placeholder made git
+# take the current directory for the work tree of one whose config sets it
+# (a "dotfiles" repository used with --git-dir). There none is made; its config
+# and hooks are still read-only; a commondir the session makes there is named
+# after it; one an earlier launch made is named, with the rm that removes it. A
+# submodule's git directory, which git reaches through the .git file in its
+# checkout, keeps the placeholder (bugs review GIT-73).
+D187="$TMP/d187"; mkdir -p "$D187/wt" "$D187/elsewhere" && "${G[@]}" init -q --bare "$D187/dot.git" \
+  && "${G[@]}" --git-dir="$D187/dot.git" config core.bare false \
+  && "${G[@]}" --git-dir="$D187/dot.git" config core.worktree "$D187/wt" && printf 'x\n' > "$D187/wt/f177" \
+  || { printf 'SCAFFOLD-FAILED: G187\n'; exit 1; }
+EXTRA_MOUNTS="$D187" launch "$TMP/app"
+m187="$(mounts)"
+[[ "$LAUNCH_RC" == 0 && ! -e "$D187/dot.git/commondir" ]] \
+  && grep -qxF -- "$D187/dot.git/config:/workspace/d187/dot.git/config:ro" <<<"$m187" \
+  && grep -qxF -- "$D187/dot.git/hooks:/workspace/d187/dot.git/hooks:ro" <<<"$m187" \
+  && grep -qF "NOTE: /workspace/d187/dot.git sets core.worktree in its config" "$ERR" \
+  && ! grep -qF "has no commondir and one could not be made" "$ERR" \
+  && pass "G187 a git directory whose config sets core.worktree gets no placeholder, and is protected" \
+  || fail "G187 core.worktree (rc=$LAUNCH_RC; commondir: $(cat "$D187/dot.git/commondir" 2>&1); $(grep -F 'dot.git' "$ERR" | head -3 | tr '\n' ' '))"
+[[ "$(cd "$D187/elsewhere" && "${G[@]}" --git-dir="$D187/dot.git" rev-parse --show-toplevel 2>/dev/null)" == "$D187/wt" ]] \
+  && pass "G187 git still takes its core.worktree after the launch" \
+  || fail "G187 git's work tree ($(cd "$D187/elsewhere" && "${G[@]}" --git-dir="$D187/dot.git" rev-parse --show-toplevel 2>&1))"
+FAKE_SESSION="printf '%s\n' '$D187/elsewhere' > '$D187/dot.git/commondir'" EXTRA_MOUNTS="$D187" launch "$TMP/app"
+grep -qF "$D187/dot.git/commondir" < <(grep -A3 -F 'WARNING: the session made .git files or links in a writable mount' "$ERR") \
+  && pass "G187 a commondir the session makes there is named after it" \
+  || fail "G187 commondir made in the session ($(grep -A3 -F 'WARNING: the session' "$ERR" | tr '\n' ' '))"
+EXTRA_MOUNTS="$D187" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $D187/dot.git/commondir sends git to" "$ERR" \
+  && pass "G187 and refuses the next launch" \
+  || fail "G187 next launch (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+printf './\n' > "$D187/dot.git/commondir"
+EXTRA_MOUNTS="$D187" launch "$TMP/app"
+w187="$(grep -A5 -F "WARNING: $D187/dot.git/commondir" "$ERR")"
+c187="$(grep -F '&& rm commondir)' <<<"$w187" | sed 's/^ *//')"
+[[ "$LAUNCH_RC" == 0 && "$c187" == "(cd -P -- $D187/dot.git "* ]] && ( cd "$D187/elsewhere" && bash -c "$c187" ) \
+  && [[ ! -e "$D187/dot.git/commondir" ]] \
+  && pass "G187 a placeholder an earlier launch made there is named, with the command that removes it" \
+  || fail "G187 earlier placeholder (rc=$LAUNCH_RC; $(tr '\n' ' ' <<<"$w187"))"
+# The command removes nothing but our ./.
+printf '%s\n' "$D187/elsewhere" > "$D187/dot.git/commondir"
+( cd "$D187/elsewhere" && bash -c "$c187" ) 2>/dev/null
+[[ -f "$D187/dot.git/commondir" ]] && pass "G187 …and removes no commondir but ./" \
+  || fail "G187 the command removed another commondir"
+rm -f "$D187/dot.git/commondir"
+"${G[@]}" init -q "$D187/up" && "${G[@]}" -C "$D187/up" commit -q --allow-empty -m i && "${G[@]}" init -q "$D187/sup" \
+  && "${G[@]}" -C "$D187/sup" -c protocol.file.allow=always submodule add -q "$D187/up" s 2>/dev/null \
+  && [[ -n "$("${G[@]}" --git-dir="$D187/sup/.git/modules/s" config core.worktree)" ]] \
+  || { printf 'SCAFFOLD-FAILED: G187 submodule\n'; exit 1; }
+EXTRA_MOUNTS="$D187" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(cat "$D187/sup/.git/modules/s/commondir" 2>/dev/null)" == ./ ]] \
+  && pass "G187 a submodule's git directory keeps the placeholder" \
+  || fail "G187 submodule (rc=$LAUNCH_RC; commondir: $(cat "$D187/sup/.git/modules/s/commondir" 2>&1))"
+rm -rf "$D187"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
