@@ -3044,6 +3044,14 @@ _is_git_dir() {
 # — objects/ and refs/; a HEAD is a worktree's, not needed here (automated
 # security review of 236d347).
 _is_common_dir() { [[ -d "$1/objects" && -d "$1/refs" ]]; }
+# _cd_own <git directory>: it has no commondir, or the ./ placeholder as a
+# regular file, so git takes it as its own common directory and the protection
+# loop makes and binds its config and hooks there (_git_cd_check(), GIT-67, GIT-68).
+_cd_own() {
+  local _co=""
+  [[ ! -e "$1/commondir" && ! -L "$1/commondir" ]] && return 0
+  [[ -f "$1/commondir" && ! -L "$1/commondir" ]] && _git_ptr_read "$1/commondir" _co && [[ "$_co" == ./ ]]
+}
 # _in_writable <path>: inside one of launcher_ro_overlay's writable binds (bsrc).
 _in_writable() {
   local _w
@@ -3105,9 +3113,11 @@ _gd_resolve() {
 # followed to wherever it lies (a bare one the agent filled later was not; second
 # review), its name aside, as git takes no other for a common directory, with no
 # commondir but our ./ (a worktree's directory nested in another's had its config
-# read and not bound; third review). A link there is refused by that directory's
-# own check. A commondir that is a link refuses the launch too, in any git
-# directory: the agent can repoint it, and git takes a dangling one for none
+# read and not bound; third review). A link there is refused here, or by that
+# directory's own check, whichever comes first (_cd_own()); the refusal names that
+# commondir when it is what is wrong. A commondir that is a link refuses the
+# launch too, in any git directory: the agent can repoint it, and git takes a
+# dangling one for none
 # (measured with git 2.56; G166). One that is no regular file is refused unread,
 # here as before the protection loop calls this, since a FIFO blocked the read
 # (G65; third review, for the overlay's caller); a regular one is read as git
@@ -3115,7 +3125,7 @@ _gd_resolve() {
 # GIT-30).
 _git_cd_check() {
   local -n _gcc_own=$2
-  local _gcc_c="" _gcc_c2="" _gcc_p="${1%/*}" _gcc_gp
+  local _gcc_c="" _gcc_p="${1%/*}" _gcc_gp
   _gcc_own=""
   if [[ -L "$1/commondir" ]]; then
     printf 'ERROR: %s is a symlink; refusing the launch. git takes this repository'\''s\n' "$(_term "$1/commondir")" >&2
@@ -3136,16 +3146,25 @@ _git_cd_check() {
   if [[ "${_gcc_p,,}" == */worktrees && "${1,,}" != */.git ]]; then
     _gcc_gp="${_gcc_p%/*}"
     if [[ "$_gcc_c" == ../.. || "$_gcc_c" == "$_gcc_gp" || "$_gcc_c" == "$_gcc_gp"/ ]]; then
-      if _is_common_dir "$_gcc_gp" \
-         && { [[ ! -e "$_gcc_gp/commondir" ]] \
-              || { [[ -f "$_gcc_gp/commondir" ]] && _git_ptr_read "$_gcc_gp/commondir" _gcc_c2 && [[ "$_gcc_c2" == ./ ]]; }; }; then
+      if _is_common_dir "$_gcc_gp" && _cd_own "$_gcc_gp"; then
         return 0
+      fi
+      # What is wrong may be the repository's own commondir, not git's ../..
+      # (a mount rooted at its worktrees/; review of GIT-68's fix): where the
+      # agent cannot have made it, or it is a link or no regular file. In a
+      # writable mount it may be git's own ../.. of a linked worktree the agent
+      # planted this one in, and removing that handed git the agent's config
+      # (final review of the same; G172).
+      local _gcc_at="$1/commondir"
+      if _is_common_dir "$_gcc_gp" \
+         && { ! _in_writable "$_gcc_gp" || [[ -L "$_gcc_gp/commondir" || ! -f "$_gcc_gp/commondir" ]]; }; then
+        _gcc_at="$_gcc_gp/commondir"
       fi
       printf 'ERROR: %s names %s, which is no repository'\''s own git directory\n' "$(_term "$1/commondir")" "$(_term "$_gcc_gp")" >&2
       printf '       (one holding objects/ and refs/, with no commondir but ./); refusing the\n' >&2
       printf '       launch. git takes its configuration and hooks for this worktree, and the agent could\n' >&2
-      printf '       write them there. If you did not make it, remove it on the host (rm %s) and\n' "$(_q "$1/commondir")" >&2
-      printf '       launch again.\n' >&2
+      printf '       write them there. If you did not make %s, remove it on the host\n' "$(_term "$_gcc_at")" >&2
+      printf '       (rm %s) and launch again.\n' "$(_q "$_gcc_at")" >&2
       exit 1
     fi
   fi
@@ -3826,12 +3845,13 @@ _lex_norm() {
   printf '/%s' "${out[*]}"
 }
 
-# _gdi_follow <dir> <path> <mount root> <named by>: called from git_dirs_in, whose
+# _gdi_follow <dir> <path> <mount root> <named by> [own]: called from git_dirs_in, whose
 # _gdi_dirs and had it extends. <path>, relative to <dir> unless absolute, is
 # resolved physically, as git resolves a gitdir: or commondir; a git directory it
 # leads to inside <mount root> joins the queue. One that is not a git directory
 # there gets nothing made in it, and is named: git would refuse it, but an agent
-# could make it one by the next launch.
+# could make it one by the next launch. With a fifth argument (_gdi_out_cd), a
+# common directory it leads to in a writable mount must be a repository's own.
 _gdi_follow() {
   local t
   _gd_resolve "$1" "$2" "$4" t || return 0
@@ -3867,6 +3887,21 @@ _gdi_follow() {
   # HEAD or objects/ were moved aside, was marked seen and only warned about, and
   # the gitdir that names its checkout then skipped it (bugs review GIT-61; G154).
   if [[ -z "$_ok" && "${t,,}" == */.git && -d "$t" && ! -L "$t" ]]; then _ok=1; fi
+  # Named by the commondir of a git directory outside every writable mount: git
+  # takes it as the common directory whatever its own commondir says, and the
+  # protection loop makes and binds its config and hooks only where it has none
+  # but ./ (_git_cd_check()). A linked worktree's directory there passed as one,
+  # its config neither made nor bound; refused, as a worktree's ../.. naming one
+  # is (bugs review GIT-68; G171).
+  if [[ -n "${5:-}" && -n "$_ok" ]] && _in_writable "$t" && ! _cd_own "$t"; then
+    printf 'ERROR: %s names %s, which is no repository'\''s own git directory\n' "$(_term "$4")" "$(_term "$t")" >&2
+    printf '       (one with no commondir but ./); refusing the launch. git takes its\n' >&2
+    printf '       configuration and hooks from there for a checkout in a writable mount, and\n' >&2
+    printf '       the agent could write them. If you did not make %s, remove it on\n' "$(_term "$t/commondir")" >&2
+    printf '       the host (rm %s); otherwise point %s at the repository'\''s own\n' "$(_q "$t/commondir")" "$(_term "$4")" >&2
+    printf '       git directory. Then launch again.\n' >&2
+    exit 1
+  fi
   # Inside ANOTHER writable bind: recorded, and protected in that bind's view by
   # launcher_ro_overlay once every mount is scanned (reviews of dcf7dab, 4e7da47).
   local _j
@@ -3919,7 +3954,7 @@ _gdi_out_cd() {
   [[ -f "$1/commondir" ]] || return 0
   _git_ptr_read "$1/commondir" c || return 0
   [[ -n "$c" && "$c" != ./ && "$c" != . ]] || return 0
-  _gdi_follow "$1" "$c" "$2" "$1/commondir"
+  _gdi_follow "$1" "$c" "$2" "$1/commondir" own
 }
 
 git_dirs_in() {

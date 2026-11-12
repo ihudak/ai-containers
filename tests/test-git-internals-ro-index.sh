@@ -1793,5 +1793,63 @@ EXTRA_MOUNTS="$B169" launch ..
 "${G[@]}" -C "$B169/node_modules/r" worktree remove --force "$PROJ/wt169" 2>/dev/null
 rm -rf "$B169" "$PROJ/wt169"
 
+# ── G171: a common directory named from outside must be a repository's own ───
+# An outside worktree's commondir that names, under a writable mount's pruned
+# node_modules, a directory holding objects/ and refs/ with a commondir of its
+# own (`../..`, a linked worktree's): that directory passes as a linked
+# worktree's, so its config is neither made nor bound, and git takes it as the
+# common directory, reading the config the agent writes there. Refused, as a
+# worktree's `../..` naming one is (bugs review GIT-68).
+B171="$TMP/b171"; O171="$TMP/o171"; V171="$B171/node_modules/x/.git/worktrees/v"
+mkdir -p "$B171/co" "$O171/wt" && "${G[@]}" init -q "$B171/node_modules/x" \
+  && "${G[@]}" -C "$B171/node_modules/x" commit -q --allow-empty -m i \
+  && mkdir -p "$V171/objects" "$V171/refs" && printf 'ref: refs/heads/main\n' > "$V171/HEAD" \
+  && printf '../..\n' > "$V171/commondir" \
+  && printf 'ref: refs/heads/main\n' > "$O171/wt/HEAD" && printf '%s\n' "$V171" > "$O171/wt/commondir" \
+  && printf '%s\n' "$B171/co/.git" > "$O171/wt/gitdir" && printf 'gitdir: %s\n' "$O171/wt" > "$B171/co/.git" \
+  && [[ "$("${G[@]}" -C "$B171/co" rev-parse --git-common-dir 2>/dev/null)" == "$V171" ]] \
+  || { printf 'SCAFFOLD-FAILED: G171\n'; exit 1; }
+EXTRA_MOUNTS="$B171" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $O171/wt/commondir names $V171, which is no repository's own git directory" "$ERR" \
+  && grep -qF "(rm $V171/commondir)" "$ERR" \
+  && pass "G171 an outside commondir naming a linked worktree's directory in a writable mount refuses the launch" \
+  || fail "G171 an outside commondir naming no repository's own (rc=$LAUNCH_RC; $(grep -m1 -E 'ERROR' "$ERR"); config bound: $(mounts | grep -cF "$V171/config"))"
+# …and so does one whose target lies under ANOTHER writable mount's node_modules.
+C171="$TMP/c171"; mkdir -p "$C171/node_modules" && mv "$B171/node_modules/x" "$C171/node_modules/x" \
+  && printf '%s\n' "$C171/node_modules/x/.git/worktrees/v" > "$O171/wt/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G171 two mounts\n'; exit 1; }
+EXTRA_MOUNTS="$B171 $C171" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $O171/wt/commondir names $C171/node_modules/x/.git/worktrees/v, which is no repository's own git directory" "$ERR" \
+  && pass "G171 one whose target lies in another writable mount refuses the launch too" \
+  || fail "G171 a target in another mount (rc=$LAUNCH_RC; $(grep -m1 -E 'ERROR' "$ERR"))"
+mv "$C171/node_modules/x" "$B171/node_modules/x" && rm -rf "$C171" && printf '%s\n' "$V171" > "$O171/wt/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G171 back\n'; exit 1; }
+# …and so does the repository a mount lies in, outside every mount, naming one.
+R171="$TMP/r171"; mkdir -p "$R171/.git" "$R171/s" && printf 'ref: refs/heads/main\n' > "$R171/.git/HEAD" \
+  && mv "$B171/node_modules" "$R171/s/node_modules" \
+  && printf '%s\n' "$R171/s/node_modules/x/.git/worktrees/v" > "$R171/.git/commondir" \
+  && [[ "$("${G[@]}" -C "$R171/s" rev-parse --git-common-dir 2>/dev/null)" == "$R171/s/node_modules/x/.git/worktrees/v" ]] \
+  || { printf 'SCAFFOLD-FAILED: G171 the repository a mount lies in\n'; exit 1; }
+EXTRA_MOUNTS="$R171/s" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $R171/.git/commondir names $R171/s/node_modules/x/.git/worktrees/v, which is no repository's own git directory" "$ERR" \
+  && pass "G171 the repository a mount lies in, naming one, refuses the launch" \
+  || fail "G171 the repository a mount lies in (rc=$LAUNCH_RC; $(grep -m1 -E 'ERROR' "$ERR"))"
+mv "$R171/s/node_modules" "$B171/node_modules" && rm -rf "$R171" || { printf 'SCAFFOLD-FAILED: G171 back\n'; exit 1; }
+# …and one naming a repository's own, under the same node_modules, still launches,
+# its config made and bound there (G168), and again once it holds the ./ placeholder.
+printf '%s\n' "$B171/node_modules/x/.git" > "$O171/wt/commondir" || { printf 'SCAFFOLD-FAILED: G171 own\n'; exit 1; }
+for n171 in first second; do
+  EXTRA_MOUNTS="$B171" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$B171/node_modules/x/.git/config:/workspace/b171/node_modules/x/.git/config:ro" \
+    && pass "G171 an outside commondir naming a repository's own git directory launches, its config bound ($n171 launch)" \
+    || fail "G171 a repository's own ($n171 launch; rc=$LAUNCH_RC; $(grep -m1 -E 'ERROR' "$ERR"))"
+done
+[[ "$(cat "$B171/node_modules/x/.git/commondir" 2>/dev/null)" == ./ ]] \
+  || fail "G171 the second launch did not run with the ./ placeholder ($(cat "$B171/node_modules/x/.git/commondir" 2>&1))"
+rm -rf "$B171" "$O171"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

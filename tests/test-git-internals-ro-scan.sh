@@ -1121,6 +1121,40 @@ for k166 in ./ dangling ../..; do
 done
 rm -rf "$PROJ/r166"
 
+# ── G172: a worktree's ../.. naming a repository whose own commondir is wrong ─
+# A mount rooted at a repository's worktrees/ directory, the repository outside
+# every mount: its linked worktree's ../.. is git's own, and what is wrong is the
+# repository's own commondir, a link here. The refusal names that file to
+# remove, not git's ../.. (review of GIT-68's fix).
+R172="$TMP/r172"; mkdir -p "$R172" && "${G[@]}" init -q "$R172" && "${G[@]}" -C "$R172" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$R172" worktree add -q "$TMP/wt172" -b wt172 && printf './\n' > "$TMP/dot172" \
+  && ln -s "$TMP/dot172" "$R172/.git/commondir" || { printf 'SCAFFOLD-FAILED: G172\n'; exit 1; }
+EXTRA_MOUNTS="$R172/.git/worktrees" launch ..
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $R172/.git/worktrees/wt172/commondir names $R172/.git, which is no repository's own git directory" "$ERR" \
+  && grep -qF "(rm $R172/.git/commondir)" "$ERR" && ! grep -qF "(rm $R172/.git/worktrees/wt172/commondir)" "$ERR" \
+  && pass "G172 a worktree whose repository's own commondir is wrong: the refusal names that commondir" \
+  || fail "G172 the grandparent's commondir (rc=$LAUNCH_RC; $(grep -A4 -m1 ERROR "$ERR" | tr '\n' ' '))"
+rm -rf "$R172" "$TMP/wt172" "$TMP/dot172"
+# …and where that repository is a real linked worktree's directory in a writable
+# mount, its ../.. git's own, the planted worktree inside it is what is named:
+# removing git's ../.. handed the host's git the agent's config there (final
+# review of GIT-68's fix).
+A172="$PROJ/.git/worktrees/wta172"; W172="$A172/worktrees/w"
+"${G[@]}" -C "$PROJ" worktree add -q "$TMP/wta172" -b wta172 && mkdir -p "$A172/objects" "$A172/refs" "$W172" \
+  && printf 'ref: refs/heads/main\n' > "$W172/HEAD" && printf '../..\n' > "$W172/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G172 nested\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $W172/commondir names $A172, which is no repository's own git directory" "$ERR" \
+  && grep -qF "(rm $W172/commondir)" "$ERR" && ! grep -qF "(rm $A172/commondir)" "$ERR" \
+  && pass "G172 a worktree planted in a real linked worktree's directory: the refusal names the planted commondir" \
+  || fail "G172 nested in a real worktree (rc=$LAUNCH_RC; $(grep -A4 -m1 ERROR "$ERR" | tr '\n' ' '))"
+rm -rf "$W172" "$A172/worktrees" "$A172/objects"
+"${G[@]}" -C "$PROJ" worktree remove --force "$TMP/wta172" 2>/dev/null || { rm -rf "$TMP/wta172"; "${G[@]}" -C "$PROJ" worktree prune; }
+"${G[@]}" -C "$PROJ" branch -q -D wta172 2>/dev/null
+[[ ! -e "$A172" ]] || { rm -rf "$A172"; "${G[@]}" -C "$PROJ" worktree prune; }
+
 # ── G161: under a launcher's read-only overlay, a second name still counts ───
 # A repository inside a launcher another mount exposes gets no binds of its
 # own, but a .git file, or a hook, with a second hard link in a writable mount

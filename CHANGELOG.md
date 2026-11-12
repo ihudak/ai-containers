@@ -171,6 +171,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a libgit2 worktree whose repository has moved is refused (bugs review
   GIT-62, GIT-64, GIT-67).
 
+- **A common directory named from outside the mounts must be a repository's
+  own.** A git directory outside every writable mount whose `commondir` named,
+  inside one, a linked worktree's directory (one with a `commondir` of its
+  own), let the launch go ahead with that directory's `config` neither made
+  nor bound, and git took it as the common directory: your host's git read
+  the config the agent wrote there. Such a `commondir` now refuses the launch,
+  naming the planted `commondir` to remove, or the outside one to point at the
+  repository's own git directory (bugs review GIT-68).
+
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read
   the launcher bounds came back empty for a directory named with such a byte,
