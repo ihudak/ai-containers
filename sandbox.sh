@@ -1020,7 +1020,7 @@ launcher_ro_overlay() {
           # one only from config.worktree, and so took the current directory for
           # the work tree of one used with --git-dir. With none, the agent can
           # make one; the check after the session names it, and the next launch
-          # refuses it (bugs review GIT-73; G177).
+          # refuses it (bugs review GIT-73; G187).
           nocd=""
           if [[ ! -e "$g/commondir" && ! -L "$g/commondir" ]] && _git_wt_cfg "$g"; then nocd=1; fi
           first=""
