@@ -297,6 +297,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no git directory is now named at launch**, and looked at again when the
   container exits; it was passed in silence, and a session that made that
   directory a repository went unnamed (bugs review GIT-86).
+- **`config.worktree` is made empty and bound read-only in every repository,
+  whatever `extensions.worktreeConfig` says.** It was made only where the
+  extension was on, so with it off a session could write one, setting
+  `core.fsmonitor` say; the next launch bound it as it was and named nothing,
+  and the host's git ran it once anything turned the extension on — a
+  `git sparse-checkout set` of yours does. It is now walked whatever the
+  extension says, and in a repository an earlier engine protected, one that
+  holds something is named once. Upgrading: a project that tracks a bare
+  fixture repository gets `<fixture>.git/config.worktree` too, so add it to the
+  `.gitignore` lines `commondir` and `config` already have there; a `.git` of
+  yours made read-only, which launched before, is refused until it is writable
+  for you (as for the other files the launch makes, GIT-48); each repository
+  costs one more bind mount, about 50 ms of every start on Docker Desktop
+  (bugs review GIT-81).
 
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read

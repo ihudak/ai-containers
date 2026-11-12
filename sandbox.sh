@@ -380,7 +380,7 @@ launcher_ro_overlay() {
   local -A gpv=() gfprot=()
   local -a scan links walk gdirs gfiles glinks gunr gro ug usrc udst udep ukind
   local g base what gmax gn gitmax cfg cdir gown gmade ocfg ocd k2 nocd wcd first ik ip ib rep al rk rh hk
-  local -a hgro=() hgpre=() wkc=() hgv=()
+  local -a hgro=() hgpre=() wkc=() hgv=() ek=()
   # The include walk's read of a config (_git_walk_keys), kept from the binding
   # pass, which takes core.hooksPath from it: one read a file (G120).
   local -A wkc_at=() wkc_n=() wkc_cut=() rodone=()
@@ -732,8 +732,9 @@ launcher_ro_overlay() {
   # stash, worktrees, gc, fsck and submodules; only `git rev-parse
   # --git-common-dir` prints the path absolute), as do libgit2 1.7 and 1.9,
   # dulwich and gitoxide; NOT `.`, which libgit2 refuses ("Repository not
-  # found") — and config.worktree, made empty, where extensions.worktreeConfig
-  # is on, and everywhere when git does not run (GIT-24). They stay: removing
+  # found") — and config.worktree, made empty in every one, whatever
+  # extensions.worktreeConfig says, which anything of yours can turn on (GIT-81).
+  # They stay: removing
   # one at exit would detach it in any other container still running on that
   # repository. A commondir that is not `./` in a repository's own git directory
   # refuses the launch: git never writes one there, and it sends the host's git
@@ -1107,7 +1108,14 @@ launcher_ro_overlay() {
             # Not as reported where git does not run: no key was read, and the
             # launch with git that its WARNING asks for must still name them
             # (review of the GIT-24 fix, M1).
-            if _git_usable; then _git_report_record "$g"; else _git_report_record "$g" hooks; fi
+            # A config.worktree whose keys that read named is recorded too
+            # (`wt:`, below); one that named none is not, so what is written
+            # into it later is named (final review of the GIT-81 fix).
+            if _git_usable; then
+              _git_report_record "$g"
+              ek=(); mapfile -d '' -t ek < <(_git_exec_keys "$g/config.worktree")
+              if (( ${#ek[@]} )); then _git_report_record "$g" wt; fi
+            else _git_report_record "$g" hooks; fi
           fi
         elif [[ -f "$g/commondir" ]]; then
           # Physically, as git resolves it (strbuf_add_real_path), and without the
@@ -1123,12 +1131,34 @@ launcher_ro_overlay() {
           # extension is off (security review of the commondir fix): a host path nothing makes.
           cfg="${cfg:-/nonexistent/ai-launcher-unresolved-commondir}/config"
         fi
-        # A common config that cannot be read cannot say the extension is off, so
-        # the placeholder is made, and config.worktree walked below, as if it were on.
-        # Nor can one read where git does not run (GIT-24; G98).
+        # config.worktree, empty, in every one, whatever extensions.worktreeConfig
+        # says: git reads it from the moment anything turns that on (a git
+        # sparse-checkout set of yours), and where none was made the agent could
+        # write one, which the next launch bound as it was (bugs review GIT-81;
+        # G199).
         if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
-          if [[ ! -f "$cfg" ]] || ! _git_usable || _git_config_bool "$cfg" extensions.worktreeConfig; then
-            ( set -C; : > "$g/config.worktree" ) 2>/dev/null || _git_cant_make "$g" config.worktree
+          ( set -C; : > "$g/config.worktree" ) 2>/dev/null || _git_cant_make "$g" config.worktree
+        fi
+        # One that holds something no launch has named: an earlier engine made
+        # none while the extension was off, so a session could write it. Its keys
+        # are named once, where git runs (_git_exec_keys reads none where it does
+        # not), and recorded only once some are named
+        # (`wt:`): one that sets none, empty or not, is not recorded, so what a
+        # container an earlier engine started writes into it later is still named
+        # (G200; final review of the fix).
+        if [[ -s "$g/config.worktree" ]] && ! _git_reported "$g" wt; then
+          ek=(); mapfile -d '' -t ek < <(_git_exec_keys "$g/config.worktree")
+          if (( ${#ek[@]} )); then
+            rk=""; for e in "${ek[@]:0:10}"; do rk+="${rk:+, }$e"; done
+            if (( ${#ek[@]} > 10 )); then rk+=", and $(( ${#ek[@]} - 10 )) more"; fi
+            x="off here"; if _git_config_bool "$cfg" extensions.worktreeConfig; then x="on here"; fi
+            printf 'NOTE: %s, which no launch has named before, sets\n' "$(_term "$at/config.worktree")" >&2
+            printf '      what makes your host'\''s git run programs: %s.\n' "$(_term "$rk")" >&2
+            printf '      git reads it while extensions.worktreeConfig is on (it is %s), and an earlier\n' "$x" >&2
+            printf '      launch made none where that was off, so a session could write one.\n' >&2
+            printf '      If you did not set them yourself, review them on the host:\n' >&2
+            printf '        git config --file %s --list\n' "$(_q "$g/config.worktree")" >&2
+            _git_report_record "$g" wt
           fi
         fi
         # Where a relative core.hooksPath has git look for the hooks a push runs:
@@ -1459,7 +1489,7 @@ launcher_ro_overlay() {
     # the agent can reach is named, not read (tests/test-git-internals-ro-config.sh G29).
     # Bounded per LAUNCH as well as per config: two configs per git directory and
     # up to SANDBOX_GIT_MAX planted git directories made 150 repos take 81 s (review
-    # of the batch 1 hotfix; GIT-2). config.worktree only where git reads it.
+    # of the batch 1 hotfix; GIT-2). config.worktree whatever the extension says (GIT-81).
     local -A iseen=() hkp=() hkw=() hkr=() hkc=() icnd=() hxr=()
     local -a hcf=() hcfw=() hxf=() hxk=() hxv=() gpo=()
     local hxcut="" hxnew="" hxn=0 e2
@@ -1468,10 +1498,18 @@ launcher_ro_overlay() {
       # judged above, and what it leads to is what git reads (review of the
       # GIT-44 fix).
       if [[ ! -f "$f" ]] || { [[ -L "$f" ]] && [[ -z "${pgx[k]:-}" ]]; }; then continue; fi
-      # From the config git reads extensions from: the common one, for a linked
-      # worktree's git directory, which has none of its own (security review of
-      # 1978dff). One that is not a readable file cannot say it is off: walked.
-      if [[ "$f" == */config.worktree && -f "$cfg" ]] && ! _git_config_bool "$cfg" extensions.worktreeConfig; then continue; fi
+      # Walked whatever extensions.worktreeConfig says: anything of yours can
+      # turn it on while the file stays bound as it is (bugs review GIT-81; G42).
+      # While the config git reads extensions from says it is off (the common
+      # one, for a linked worktree's git directory, which has none of its own;
+      # security review of 1978dff), what it sets is taken as git may not use
+      # it, as an includeIf's is: a core.hooksPath there does not stop hooks/,
+      # which git then runs, from being walked, and its core.worktree is no
+      # checkout to judge from (G201).
+      if [[ "$f" == */config.worktree && -f "$cfg" ]] && ! _git_config_bool "$cfg" extensions.worktreeConfig; then icnd[$f]=1; fi
+      # An empty one, which every repository now has, sets nothing: not read,
+      # which every launch would otherwise do once more for each repository.
+      if [[ "$f" == */config.worktree && ! -s "$f" ]]; then continue; fi
       local -a ifile=("$f") idep=(0)
       local ii=0 icur itgt ikey inr=0 ient=0 icut="" icomp
       iseen=()
@@ -1595,7 +1633,7 @@ launcher_ro_overlay() {
     # overlay leaves writable — and hook managers keep the scripts they run
     # gitignored (husky's .husky/_), so a change need not show in git status.
     # The key is read where git reads it: the config, the files it includes that
-    # the agent cannot reach, and config.worktree where git reads that — the
+    # the agent cannot reach, and config.worktree, whatever the extension says — the
     # files the include walk above read, which gave their keys too — the last
     # value of each, since git takes the last of them all. A relative one is
     # judged from each worktree git may run hooks in: where the .git lies, and
@@ -1616,8 +1654,9 @@ launcher_ro_overlay() {
       # A linked worktree's git directory: git takes core.hooksPath from the
       # common config, whose own judging collected what it and its includes
       # set (and judged it from the common config's core.worktree, and walked
-      # the common hooks/ it runs), and from this one's config.worktree where
-      # git reads that — never from a config of its own (GIT-44).
+      # the common hooks/ it runs), and from this one's config.worktree, its
+      # values taken as git may not use them while the extension is off
+      # (GIT-81) — never from a config of its own (GIT-44).
       hfl=(${hcfw[@]+"${hcfw[@]}"})
       for i in ${_hpv_g[@]+"${!_hpv_g[@]}"}; do
         [[ "${_hpv_g[i]}" == "${cfg%/config}" ]] || continue
@@ -1635,15 +1674,18 @@ launcher_ro_overlay() {
         [[ -z "${hseen[f:$f]:-}" ]] || continue
         hseen[f:$f]=1
         # core.worktree from the config and config.worktree alone: git never
-        # takes it from a file they include (re-review of the GIT-35 fix).
-        x=""
+        # takes it from a file they include (re-review of the GIT-35 fix), nor
+        # from config.worktree while the extension is off: taken as a checkout,
+        # it hid that a linked worktree's is not known (review of the GIT-81 plan).
+        x=""; y=""
+        if [[ "$f" == "$g/config" ]] || [[ "$f" == "$g/config.worktree" && -z "${icnd[$f]:-}" ]]; then y=1; fi
         if [[ -n "${hkr[$f]:-}" && -z "${hkc[$f]:-}" ]]; then
           v="${hkp[$f]:-}"
-          if [[ "$f" == "$g/config" || "$f" == "$g/config.worktree" ]]; then x="${hkw[$f]:-}"; fi
+          if [[ -n "$y" ]]; then x="${hkw[$f]:-}"; fi
         else
           # Not read by the walk: a config that is a link, or one past a cut.
           _git_config_get v "$f" core.hooksPath || v=""
-          if [[ "$f" == "$g/config" || "$f" == "$g/config.worktree" ]]; then _git_config_get x "$f" core.worktree || x=""; fi
+          if [[ -n "$y" ]]; then _git_config_get x "$f" core.worktree || x=""; fi
         fi
         if [[ -n "$v" ]]; then
           # From an includeIf, git may not use it, and run what hooks/ holds.
@@ -4614,6 +4656,8 @@ git_dirs_in() {
     # after a link steps out of where the link leads, and a relative one goes
     # through ./, or cd takes `-` for its previous directory (GIT-32, GIT-33; G113).
     for wcf in "$g/config" "$g/config.worktree"; do
+      # An empty one, which every repository now has, sets none (GIT-81).
+      [[ -s "$wcf" ]] || continue
       _git_config_get wt "$wcf" core.worktree || continue
       if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"
       elif [[ -n "$wt" ]]; then

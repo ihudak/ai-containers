@@ -4,8 +4,10 @@
 #
 #       Expected: "the agent cannot write .git/hooks/pre-commit", "the host has
 #       no pre-commit hook", "the agent cannot change .git/config", "the agent
-#       cannot write .git/commondir" and "the host's git still takes its config
-#       and hooks from .git itself" FAIL, and so do both rename assertions
+#       cannot write .git/commondir", "the host's git still takes its config
+#       and hooks from .git itself", "the agent cannot write
+#       .git/config.worktree" and "the host's .git/config.worktree holds
+#       nothing the agent wrote" FAIL, and so do both rename assertions
 #       (nothing is mounted on .git). The
 #       project's writability and the agent's commit still PASS; a FAIL there
 #       first would mean the case measures something other than the overlay.

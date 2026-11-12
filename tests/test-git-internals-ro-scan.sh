@@ -29,17 +29,17 @@ has_mount "$PROJ/.git/config:/workspace/proj/.git/config:ro" && has_mount "$PROJ
 [[ "$(cat "$PROJ/.git/commondir" 2>/dev/null)" == ./ ]] && has_mount "$PROJ/.git/commondir:/workspace/proj/.git/commondir:ro" \
   && pass "G1 a commondir holding './' is made and mounted read-only, so the agent cannot make one" \
   || fail "G1 commondir placeholder (content: '$(cat "$PROJ/.git/commondir" 2>/dev/null)'; git mounts: $(git_mounts | tr '\n' ' '))"
-[[ "$(git_mounts | wc -l | tr -d ' ')" == 4 ]] \
-  && pass "G1 and nothing else of .git: objects, refs and the index stay writable" \
-  || fail "G1 exactly four git mounts (got: $(git_mounts | tr '\n' ' '))"
+[[ "$(git_mounts | wc -l | tr -d ' ')" == 5 ]] && has_mount "$PROJ/.git/config.worktree:/workspace/proj/.git/config.worktree:ro" \
+  && pass "G1 and config.worktree, and nothing else of .git: objects, refs and the index stay writable" \
+  || fail "G1 exactly five git mounts (got: $(git_mounts | tr '\n' ' '))"
 [[ "$("${G[@]}" -C "$PROJ" rev-parse --git-common-dir)" == "$PROJ/.git" && "$("${G[@]}" -C "$PROJ" log -1 --format=%s)" == init ]] \
   && pass "G1 git on the host still reads the repository as before (common dir = .git)" \
   || fail "G1 host git with the placeholder (common dir: $("${G[@]}" -C "$PROJ" rev-parse --git-common-dir 2>&1))"
-grep -qF 'READ-ONLY: /workspace/proj/.git: config, commondir, hooks' "$ERR" \
+grep -qF 'READ-ONLY: /workspace/proj/.git: config, config.worktree, commondir, hooks' "$ERR" \
   && pass "G1 the launch says what it made read-only" \
   || fail "G1 READ-ONLY line (stderr: $(grep -E 'READ-ONLY|WARNING' "$ERR" | tr '\n' ' '))"
-# In a .git the launch makes placeholders in, the absence of config.worktree
-# (the extension off) and gitdir, which it does not make, draws no warning.
+# In a .git the launch makes placeholders in, the absence of gitdir, which it
+# does not make, draws no warning.
 ! grep -qF 'could not be made' "$ERR" \
   && pass "G1 a plain repository draws no 'could not be made' warning" \
   || fail "G1 false 'could not be made' warning ($(grep -F 'could not be made' "$ERR" | head -2 | tr '\n' ' '))"
@@ -54,10 +54,15 @@ launch ..
   || fail "G2 missing hooks/ (exists: $([[ -d "$PROJ/.git/hooks" ]] && echo y || echo n); git mounts: $(git_mounts | tr '\n' ' '))"
 
 # ── G3: config.worktree, which git reads with extensions.worktreeConfig ───────
-# Off (the default): git ignores the file, so none is made.
+# Off (the default): git ignores the file, but reads it from the moment anything
+# turns the extension on (git sparse-checkout set), so an empty one is made and
+# mounted all the same: none left for the agent to write (bugs review GIT-81).
+rm -f "$PROJ/.git/config.worktree"
 launch ..
-[[ ! -e "$PROJ/.git/config.worktree" ]] && pass "G3 with extensions.worktreeConfig off, no config.worktree is made" \
-  || fail "G3 config.worktree made with the extension off"
+[[ -f "$PROJ/.git/config.worktree" && ! -s "$PROJ/.git/config.worktree" ]] \
+  && has_mount "$PROJ/.git/config.worktree:/workspace/proj/.git/config.worktree:ro" \
+  && pass "G3 with extensions.worktreeConfig off, an empty config.worktree is made and mounted read-only too" \
+  || fail "G3 no config.worktree with the extension off (exists: $([[ -e "$PROJ/.git/config.worktree" ]] && echo y || echo n); git mounts: $(git_mounts | tr '\n' ' '))"
 # On: git would read one the agent made, so an empty one is made and mounted.
 "${G[@]}" -C "$PROJ" config extensions.worktreeConfig true
 launch ..
@@ -401,12 +406,13 @@ rm -rf "$U78" "$M78" "$PROJ/w78" "$PROJ/b78.git" "$PROJ/bw78"
 
 # ── G79: a tracked bare fixture gets its placeholders; .gitignore keeps it clean
 # A project that tracks a config-less fixture (testdata/fixture.git) gets config,
-# commondir and hooks/ written into it at its first protected launch (GIT-11).
+# commondir, config.worktree (GIT-81) and hooks/ written into it at its first
+# protected launch (GIT-11).
 # Nothing can exempt one: the SANDBOX_GIT_FIXTURES list that did was dropped,
 # because a committed list could name a bare repository you push to, which the
 # host's git runs (LNCH-16, GIT-21; the user's choice). Two fixtures, one
 # config-less and one as `git init --bare` left it, minus its config; the old
-# key, set anyway, changes nothing. The empty hooks/ is not shown by git, so two
+# key, set anyway, changes nothing. The empty hooks/ is not shown by git, so three
 # .gitignore lines leave the project's status clean.
 mkdir -p "$PROJ/td79" && "${G[@]}" init -q --bare "$PROJ/td79/fx.git" \
   && rm -rf "$PROJ/td79/fx.git/config" "$PROJ/td79/fx.git/hooks" "$PROJ/td79/fx.git/description" "$PROJ/td79/fx.git/info" \
@@ -420,9 +426,9 @@ for r in fx full; do
 done
 [[ -n "$ok79" ]] && pass "G79 a tracked bare fixture gets its placeholders, SANDBOX_GIT_FIXTURES or not" \
   || fail "G79 a fixture was left without placeholders ($(git_mounts | grep td79 | tr '\n' ' '))"
-printf 'td79/*.git/commondir\ntd79/*.git/config\n' > "$PROJ/td79/.gitignore.79"
+printf 'td79/*.git/commondir\ntd79/*.git/config\ntd79/*.git/config.worktree\n' > "$PROJ/td79/.gitignore.79"
 st79="$("${G[@]}" -C "$PROJ" -c core.excludesFile="$PROJ/td79/.gitignore.79" status --porcelain --untracked-files=all -- td79 2>&1)"
-[[ "$st79" == "?? td79/.gitignore.79" ]] && pass "G79 two .gitignore lines leave the fixtures' status clean" \
+[[ "$st79" == "?? td79/.gitignore.79" ]] && pass "G79 three .gitignore lines leave the fixtures' status clean" \
   || fail "G79 status with the ignore lines: $(tr '\n' ' ' <<<"$st79")"
 "${G[@]}" -C "$PROJ" rm -rq --cached td79 && "${G[@]}" -C "$PROJ" commit -q -m unfixtures79; rm -rf "$PROJ/td79"
 
@@ -1350,8 +1356,8 @@ m188="$(mounts | grep -F '/worktrees/' | LC_ALL=C sort)"
   || fail "G188 control (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1); $(tr '\n' ' ' <<<"$m188"))"
 # A second launch changes nothing of what a real worktree gets.
 EXTRA_MOUNTS="$D188" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 && "$(mounts | grep -F '/worktrees/' | LC_ALL=C sort)" == "$m188" && "$(wc -l <<<"$m188" | tr -d ' ')" == 6 ]] \
-  && pass "G188 …and get the same six mounts at every launch" \
+[[ "$LAUNCH_RC" == 0 && "$(mounts | grep -F '/worktrees/' | LC_ALL=C sort)" == "$m188" && "$(wc -l <<<"$m188" | tr -d ' ')" == 8 ]] \
+  && pass "G188 …and get the same eight mounts at every launch" \
   || fail "G188 mounts changed (rc=$LAUNCH_RC; $(wc -l <<<"$m188") before; now: $(mounts | grep -F '/worktrees/' | LC_ALL=C sort | tr '\n' ' '))"
 # The bare repository's: its commondir replaced by a dangling link, then a FIFO.
 rm -f "$wb188/commondir" && ln -s ../../../cdfile "$wb188/commondir"

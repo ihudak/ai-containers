@@ -69,6 +69,18 @@ fi
   && pass "the host's git still takes its config and hooks from .git itself" \
   || fail "the host's git still takes its config and hooks from .git itself — common dir: $(hostgit rev-parse --git-common-dir)"
 
+# config.worktree: git reads it once extensions.worktreeConfig is on, which
+# anything of the host's can turn on (git sparse-checkout set), so with the
+# extension off it is made empty and mounted read-only all the same: written by
+# the agent, it would wait unread for that moment (bugs review GIT-81).
+if agent_exec "$IT_CID" 'printf "[core]\n\tfsmonitor = /workspace/proj/fsm\n" > /workspace/proj/.git/config.worktree' >/dev/null 2>&1; then
+  fail "the agent cannot write .git/config.worktree — the write SUCCEEDED"
+else
+  pass "the agent cannot write .git/config.worktree"
+fi
+[[ ! -s "$proj/.git/config.worktree" ]] && pass "the host's .git/config.worktree holds nothing the agent wrote" \
+  || fail "the host's .git/config.worktree holds nothing the agent wrote — it holds: $(head -c 200 "$proj/.git/config.worktree")"
+
 # The overlays are mounts on .git's entries; without the pin, renaming .git
 # would carry them away and leave room for a .git of the agent's own.
 if agent_exec "$IT_CID" 'mv /workspace/proj/.git /workspace/proj/.git-away' >/dev/null 2>&1; then

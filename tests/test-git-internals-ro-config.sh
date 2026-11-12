@@ -265,14 +265,15 @@ launch_timed 60
   && pass "G41 a 600-component include path is not walked, and the config is named (${LAUNCH_S}s)" \
   || fail "G41 deep include path (rc=$LAUNCH_RC; ${LAUNCH_S}s; stderr: $(grep -F d41 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/d41"
-# G42: git reads config.worktree only with extensions.worktreeConfig on, so an
-# include there is not the host's git's input otherwise — and not walked.
+# G42: git reads config.worktree only with extensions.worktreeConfig on, but
+# anything of yours can turn that on (git sparse-checkout set) while the file
+# stays bound as it is, so it is walked either way (bugs review GIT-81).
 mkdir -p "$PROJ/w42" && "${G[@]}" -C "$PROJ/w42" init -q
 "${G[@]}" config --file "$PROJ/w42/.git/config.worktree" include.path "$PROJ/w42-evil.gitconfig"
 launch ..
-! grep -qF "w42/.git/config.worktree includes" "$ERR" \
-  && pass "G42 config.worktree is not walked while extensions.worktreeConfig is off" \
-  || fail "G42 config.worktree walked with worktreeConfig off"
+grep -qF "w42/.git/config.worktree includes" "$ERR" \
+  && pass "G42 config.worktree is walked while extensions.worktreeConfig is off too" \
+  || fail "G42 config.worktree not walked with worktreeConfig off (stderr: $(grep -F w42 "$ERR" | head -2 | tr '\n' ' '))"
 "${G[@]}" -C "$PROJ/w42" config extensions.worktreeConfig true
 launch ..
 grep -qF "w42/.git/config.worktree includes" "$ERR" \
@@ -433,6 +434,95 @@ EXTRA_MOUNTS="$TMP/r98d" PATH="$nogit98" launch "$TMP/app"
 grep -qF 'protected here (1): includes' "$ERR" \
   && pass "G98 with no git, the WARNING counts a protected .git file too" \
   || fail "G98 no WARNING for a lone .git file (rc=$LAUNCH_RC; stderr: $(grep -A2 -F 'WARNING' "$ERR" | tr '\n' ' '))"
+# ── G200 (GIT-81): a config.worktree an earlier engine left is named once ─────
+# An earlier engine made config.worktree only where extensions.worktreeConfig
+# was on, so in a repository it protected with the extension off a session
+# could write one, and the next launch bound it as it was, named by nothing;
+# the host's git runs it once the extension is turned on. One with no `wt:`
+# record has its keys named once, by the first launch where git runs, and is
+# recorded only once some are named: one that sets none — empty, a comment, a
+# key that runs nothing — is not, so what a container an earlier engine started
+# writes into it later is named too (reviews of the fix). A first protection
+# names them in its own NOTE, once.
+rec200="$HOME/.ai-containers/git-reported.conf"
+strip200() {  # the record as an earlier engine left it: no wt: lines
+  if [[ -f "$rec200" ]]; then grep -v ' wt:' "$rec200" > "$rec200.n"; cat "$rec200.n" > "$rec200"; rm -f "$rec200.n"; fi
+}
+wtn200() {  # <path under /workspace/r200>: the line of keys of its config.worktree NOTE
+  grep -A1 -F "NOTE: /workspace/r200/$1/config.worktree, which no launch has named before, sets" "$ERR" | tail -1
+}
+wte200() {  # <path under /workspace/r200>: the line of that NOTE that says the extension's state
+  grep -A2 -F "NOTE: /workspace/r200/$1/config.worktree, which no launch has named before, sets" "$ERR" | tail -1
+}
+fsm200() { printf '[core]\n\tfsmonitor = %s\n' "$R200/fsm200.sh" >> "$R200/$1/config.worktree"; }
+R200="$TMP/r200"; mkdir -p "$R200" && "${G[@]}" init -q "$R200/n" && "${G[@]}" init -q "$R200/c" && "${G[@]}" init -q "$R200/e" \
+  && "${G[@]}" init -q "$R200/r" \
+  && "${G[@]}" -C "$R200/r" commit -q --allow-empty -m i && "${G[@]}" -C "$R200/r" worktree add -q "$R200/wt" \
+  && "${G[@]}" -C "$R200/e" config extensions.worktreeConfig true \
+  || { printf 'SCAFFOLD-FAILED: G200\n'; exit 1; }
+EXTRA_MOUNTS="$R200" launch "$TMP/app"
+# Written after a launch made it empty, as a container an earlier engine started
+# can: an empty one is not recorded (review of the plan).
+for d in r/.git r/.git/worktrees/wt n/.git e/.git; do fsm200 "$d"; done
+printf '# 200\n' > "$R200/c/.git/config.worktree"
+EXTRA_MOUNTS="$R200" launch "$TMP/app"
+# The value is not in the NOTE; the walk names the program where it lies.
+[[ "$LAUNCH_RC" == 0 && "$(wtn200 r/.git)" == *core.fsmonitor* && "$(wtn200 r/.git)" != *fsm200* ]] \
+  && grep -qF "git config --file $R200/r/.git/config.worktree --list" "$ERR" \
+  && grep -qF "has your host's git run /workspace/r200/fsm200.sh (core.fsmonitor)" "$ERR" \
+  && pass "G200 a config.worktree a repository reported before held is named, its keys and the file to review" \
+  || fail "G200 config.worktree of an earlier engine (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'r200/r/.git' "$ERR" | head -4 | tr '\n' ' '))"
+[[ "$(wtn200 r/.git/worktrees/wt)" == *core.fsmonitor* ]] \
+  && pass "G200 … a linked worktree's too" \
+  || fail "G200 linked worktree's config.worktree (stderr: $(grep -A1 -F 'worktrees/wt' "$ERR" | head -2 | tr '\n' ' '))"
+[[ "$(wte200 r/.git)" == *'(it is off here)'* && "$(wte200 e/.git)" == *'(it is on here)'* ]] \
+  && pass "G200 … saying whether the extension is on" \
+  || fail "G200 the extension's state (off: $(wte200 r/.git); on: $(wte200 e/.git))"
+EXTRA_MOUNTS="$R200" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'which no launch has named before' "$ERR" \
+  && pass "G200 … once: the next launch says nothing, nor of one that sets no such key" \
+  || fail "G200 named again (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'which no launch has named' "$ERR" | head -2 | tr '\n' ' '))"
+fsm200 c/.git
+EXTRA_MOUNTS="$R200" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(wtn200 c/.git)" == *core.fsmonitor* ]] \
+  && pass "G200 one that set none is named once something is written into it" \
+  || fail "G200 a key written after a comment (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'r200/c/.git' "$ERR" | head -2 | tr '\n' ' '))"
+# Where git does not run its keys cannot be read: the launch with git after it
+# names them.
+printf '[core]\n\tsshCommand = ssh-200\n' > "$R200/n/.git/config.worktree"; strip200
+EXTRA_MOUNTS="$R200" PATH="$nogit98" launch "$TMP/app"
+EXTRA_MOUNTS="$R200" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(wtn200 n/.git)" == *core.sshcommand* ]] \
+  && pass "G200 a launch where git does not run leaves them to the next launch with git" \
+  || fail "G200 after a no-git launch (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'r200/n/.git' "$ERR" | head -2 | tr '\n' ' '))"
+# A first protection names them in its own NOTE, and not a second time; one
+# whose config.worktree sets none is not recorded for it.
+"${G[@]}" init -q "$R200/f" && printf '[core]\n\tsshCommand = ssh-200\n' > "$R200/f/.git/config.worktree" \
+  && "${G[@]}" init -q "$R200/s" && printf '[core]\n\tsparseCheckout = true\n' > "$R200/s/.git/config.worktree" \
+  || { printf 'SCAFFOLD-FAILED: G200 first\n'; exit 1; }
+EXTRA_MOUNTS="$R200" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(grep -cF "git config --file $R200/f/.git/config.worktree --list" "$ERR")" == 1 ]] \
+  && grep -qF 'NOTE: /workspace/r200/f/.git is protected for the first time' "$ERR" && [[ -z "$(wtn200 f/.git)" ]] \
+  && pass "G200 a first protection names config.worktree's keys once, in its own NOTE" \
+  || fail "G200 first protection (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'r200/f/.git' "$ERR" | head -6 | tr '\n' ' '))"
+fsm200 s/.git
+EXTRA_MOUNTS="$R200" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(wtn200 s/.git)" == *core.fsmonitor* ]] \
+  && pass "G200 … and one whose config.worktree set none then is named once it does" \
+  || fail "G200 first protection of a config.worktree with no such key (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'r200/s/.git' "$ERR" | head -2 | tr '\n' ' '))"
+# An empty one, which every repository now has, is not read at every launch:
+# a git that logs what it is asked runs nothing on it.
+"${G[@]}" init -q "$R200/z" || { printf 'SCAFFOLD-FAILED: G200 empty\n'; exit 1; }
+EXTRA_MOUNTS="$R200" launch "$TMP/app"
+mkdir -p "$TMP/gl200" && rg200="$(command -v git)" && rm -f "$TMP/gl200.log" \
+  && printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\nexec %s "$@"\n' "'$TMP/gl200.log'" "'$rg200'" > "$TMP/gl200/git" \
+  && chmod +x "$TMP/gl200/git" || { printf 'SCAFFOLD-FAILED: G200 git log\n'; exit 1; }
+EXTRA_MOUNTS="$R200" PATH="$TMP/gl200:$PATH" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -s "$TMP/gl200.log" && -f "$R200/z/.git/config.worktree" && ! -s "$R200/z/.git/config.worktree" ]] \
+  && ! grep -qF "$R200/z/.git/config.worktree" "$TMP/gl200.log" \
+  && pass "G200 an empty config.worktree is not read at every launch" \
+  || fail "G200 an empty config.worktree read (rc=$LAUNCH_RC; $(grep -cF "$R200/z/.git/config.worktree" "$TMP/gl200.log" 2>/dev/null) reads; log: $(wc -l < "$TMP/gl200.log" 2>/dev/null) lines)"
+rm -rf "$R200" "$TMP/gl200" "$TMP/gl200.log"
 rm -rf "$R98" "$TMP/r98b" "$TMP/r98c" "$TMP/r98d" "$TMP/out98" "$TMP/nogit98" "$TMP/brokengit98" "$TMP/brokengit98.log" "$TMP/mutegit98"
 
 # ── G120: a core.hooksPath is judged as git takes it (GIT-35) ─────────────────
@@ -1126,8 +1216,9 @@ else
 fi
 rm -rf "$TMP/cs132"
 # Through one of git's own files (a Rails-style config/git-hooks): nothing is
-# made or bound there, and the launch goes on; config.worktree/x, where the
-# extension is off and git keeps no such file, is not made a directory either.
+# made or bound there, and the launch goes on; config.worktree/x, through
+# another file git keeps there (made in every repository, GIT-81), is not made
+# a directory either.
 mk132 config/git-hooks
 launch "$R132"
 [[ "$LAUNCH_RC" == 0 && -f "$R132/r/.git/config" ]] && ! grep -qF ":/workspace/p132/r/.git/config/" < <(mounts) \
@@ -1136,7 +1227,7 @@ launch "$R132"
 mk132 config.worktree/x
 launch "$R132"
 [[ "$LAUNCH_RC" == 0 && ! -d "$R132/r/.git/config.worktree" ]] \
-  && pass "G132 one through config.worktree, where git keeps no such file, makes nothing there" \
+  && pass "G132 one through config.worktree, a file git keeps there, makes nothing there" \
   || fail "G132 config.worktree/x (rc=$LAUNCH_RC; dir: $([[ -d "$R132/r/.git/config.worktree" ]] && echo yes || echo no); $(grep -aF 'ERROR' "$ERR" | head -1))"
 # The git directory itself (.) cannot be bound: it is named, for a push.
 mk132 .
@@ -1253,7 +1344,7 @@ rm -rf "$R132" "$TMP/e132"
 
 # ── G133: what the launch must make in a git directory of yours, and cannot ──
 # The launch makes what git would honour but a repository lacks — config,
-# hooks/, the ./ commondir, config.worktree where the extension is on — so
+# hooks/, the ./ commondir, config.worktree — so
 # there is something to bind read-only. The agent, running as you, can make
 # .git read-only in one session, so none of them can be made at the next
 # launch, and make it writable again in that session to write one. So one that
@@ -1282,7 +1373,7 @@ if (( EUID != 0 )); then
   if mk133; then rm -rf "$R133/r/.git/hooks"; refused133 hooks "a hooks/"; fi
   rm -rf "$R133"; mkdir -p "$R133" && "${G[@]}" init -q "$R133/r" || { printf 'SCAFFOLD-FAILED: G133\n'; exit 1; }
   refused133 commondir "the ./ commondir of a repository launched for the first time"
-  if mk133; then "${G[@]}" -C "$R133/r" config extensions.worktreeConfig true; refused133 config.worktree "a config.worktree, where the extension is on,"; fi
+  if mk133; then rm -f "$R133/r/.git/config.worktree"; refused133 config.worktree "a config.worktree"; fi
   if mk133; then rm -f "$R133/r/.git/config"; refused133 config "a config"; fi
   # objects/ moved aside: the .git still counts (review of the GIT-48 fix).
   rm -rf "$R133"; mkdir -p "$R133" && "${G[@]}" init -q "$R133/r" && mv "$R133/r/.git/objects" "$R133/r/.git/o" \
@@ -1690,6 +1781,66 @@ o140="$(bash -c 'set -euo pipefail; source "$1"; g="$2"; hgro=(); hgpre=()
   && pass "G140 each push-hooks directory once, both readings of :(optional), and what is there named once" \
   || fail "G140 push hooks (got: $o140)"
 rm -rf "$TMP/g140" "$fns140"
+
+# ── G199 (GIT-81): config.worktree is made in every git directory ─────────────
+# git reads it from the moment anything turns extensions.worktreeConfig on — a
+# `git sparse-checkout set` of yours on the host does — so where a launch made
+# none, the agent could write one, and the next launch bound it as it was (G200).
+# An empty one is made and bound read-only in every git directory: a
+# repository's, a linked worktree's, and one whose config sets core.worktree,
+# which still gets no placeholder (GIT-73) and keeps its work tree.
+R199="$TMP/r199"; mkdir -p "$R199/cw" "$R199/elsewhere" && "${G[@]}" init -q "$R199/r" \
+  && printf 'x\n' > "$R199/r/f" && "${G[@]}" -C "$R199/r" add f && "${G[@]}" -C "$R199/r" commit -qm i \
+  && "${G[@]}" -C "$R199/r" worktree add -q "$R199/wt" \
+  && "${G[@]}" init -q --bare "$R199/dot.git" && "${G[@]}" --git-dir="$R199/dot.git" config core.bare false \
+  && "${G[@]}" --git-dir="$R199/dot.git" config core.worktree "$R199/cw" \
+  || { printf 'SCAFFOLD-FAILED: G199\n'; exit 1; }
+EXTRA_MOUNTS="$R199" launch "$TMP/app"
+m199="$(mounts)"; bad199=""
+for d in r/.git r/.git/worktrees/wt dot.git; do
+  [[ -f "$R199/$d/config.worktree" && ! -s "$R199/$d/config.worktree" ]] \
+    && grep -qxF -- "$R199/$d/config.worktree:/workspace/r199/$d/config.worktree:ro" <<<"$m199" || bad199+=" $d"
+done
+[[ "$LAUNCH_RC" == 0 && -z "$bad199" && ! -e "$R199/dot.git/commondir" ]] \
+  && pass "G199 with extensions.worktreeConfig off, every git directory gets an empty config.worktree, read-only" \
+  || fail "G199 config.worktree not made or bound in:${bad199:- (none)} (rc=$LAUNCH_RC; dot.git/commondir: $(cat "$R199/dot.git/commondir" 2>&1))"
+[[ "$(cd "$R199/elsewhere" && "${G[@]}" --git-dir="$R199/dot.git" rev-parse --show-toplevel 2>/dev/null)" == "$R199/cw" ]] \
+  && [[ "$("${G[@]}" -C "$R199/wt" rev-parse --show-toplevel 2>/dev/null)" == "$R199/wt" ]] \
+  && "${G[@]}" -C "$R199/r" sparse-checkout set --no-cone /f >/dev/null 2>&1 \
+  && [[ "$("${G[@]}" -C "$R199/r" config --get extensions.worktreeConfig)" == true && -f "$R199/r/f" ]] \
+  && pass "G199 … and git on the host reads them as before: work trees, and a sparse checkout turned on" \
+  || fail "G199 host git after the launch (dot.git: $(cd "$R199/elsewhere" && "${G[@]}" --git-dir="$R199/dot.git" rev-parse --show-toplevel 2>&1); wt: $("${G[@]}" -C "$R199/wt" rev-parse --show-toplevel 2>&1))"
+rm -rf "$R199"
+
+# ── G201 (GIT-81): config.worktree is walked whatever the extension says ──────
+# (G42, its includes.) What it sets while the extension is off is taken as git
+# may not use it: git then runs hooks/, so a core.hooksPath there does not stop
+# hooks/ from being walked, and its core.worktree is no checkout to judge from.
+# Nor is the directory a push would run hooks from made for it (G132): a value
+# git does not read refused the launch, with a file in the way, and the next
+# launch after the extension is on makes and binds it (review of the plan).
+mk120; printf '#!/bin/sh\n' > "$TMP/h120/w.sh" && ln -s ../../../w.sh "$TMP/h120/r/.git/hooks/pre-commit" \
+  && "${G[@]}" config --file "$TMP/h120/r/.git/config.worktree" core.hooksPath "$TMP/o120/hooks" \
+  || { printf 'SCAFFOLD-FAILED: G201 hooks\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "NOTE: /workspace/h120/r/.git/hooks/pre-commit, a hook your host's git runs, is a link" "$ERR" \
+  && pass "G201 a core.hooksPath config.worktree sets with the extension off does not stop hooks/ from being walked" \
+  || fail "G201 hooks/ not walked (rc=$LAUNCH_RC; stderr: $(grep -F 'hooks' "$ERR" | head -2 | tr '\n' ' '))"
+mk120; "${G[@]}" -C "$TMP/h120/r" commit -q --allow-empty -m i && "${G[@]}" -C "$TMP/h120/r" worktree add -q "$TMP/o120/wt" \
+  && rm -f "$TMP/h120/r/.git/worktrees/wt/gitdir" && "${G[@]}" -C "$TMP/h120/r" config core.hooksPath .husky/_ \
+  && "${G[@]}" config --file "$TMP/h120/r/.git/worktrees/wt/config.worktree" core.worktree "$TMP/h120" \
+  || { printf 'SCAFFOLD-FAILED: G201 core.worktree\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "NOTE: /workspace/h120/r/.git/worktrees/wt takes its git hooks from .husky/_ (core.hooksPath) relative to a checkout this launch" "$ERR" \
+  && pass "G201 a core.worktree config.worktree sets with the extension off is no checkout: one not known is still said so" \
+  || fail "G201 core.worktree taken (rc=$LAUNCH_RC; stderr: $(grep -F 'worktrees/wt' "$ERR" | head -3 | tr '\n' ' '))"
+mk120; : > "$TMP/h120/r/.git/x" && "${G[@]}" config --file "$TMP/h120/r/.git/config.worktree" core.hooksPath x/hooks \
+  || { printf 'SCAFFOLD-FAILED: G201 push\n'; exit 1; }
+EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'ERROR' "$ERR" \
+  && pass "G201 a relative core.hooksPath config.worktree sets with the extension off makes nothing a push would run" \
+  || fail "G201 push hooks for a value git does not read (rc=$LAUNCH_RC; $(grep -aF -A1 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/h120" "$TMP/o120"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
