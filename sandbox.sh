@@ -908,6 +908,7 @@ launcher_ro_overlay() {
           # covers a link, not what it leads to, nor a directory a commondir names
           # (bugs review GIT-62, GIT-64, GIT-67).
           _git_cd_check "$g" gown
+          if [[ -n "$gown" ]]; then _git_cfg_frozen[$g]=1; fi
           # gitdir too, which names a linked worktree's checkout (final review of
           # the GIT-46 fix).
           for f in config config.worktree commondir gitdir; do
@@ -999,6 +1000,7 @@ launcher_ro_overlay() {
           # A repository git reads with no config of its own gets an empty one, as
           # commondir gets ./ — or the agent could add one after the launch (G49).
           if [[ ! -e "$g/config" && ! -L "$g/config" ]]; then ( set -C; : > "$g/config" ) 2>/dev/null || _git_cant_make "$g" config; fi
+          _git_cfg_frozen[$g]=1
           # git makes hooks/ at init, but a repository can lack it — and then the
           # agent could make it.
           if [[ ! -e "$g/hooks" && ! -L "$g/hooks" ]]; then mkdir "$g/hooks" 2>/dev/null || _git_cant_make "$g" hooks; fi
@@ -3964,6 +3966,29 @@ _gdi_out_cd() {
   _gdi_follow "$1" "$c" "$2" "$1/commondir" own
 }
 
+# _gdi_bare_up <dir> <mount root>: called from git_dirs_in's walk up from a mount.
+# git's discovery asks of each directory, after its .git, whether it is itself a
+# git directory, a bare repository, and stops there: git run in the mount then
+# reads its config, through core.worktree too. One is taken as the repository the
+# mount lies in, as a .git directory there is: judged out of every writable
+# mount, protected in another writable mount's view, where that mount's scan
+# stopped at a pruned node_modules (bugs review GIT-72; G176). Fails where <dir>
+# is no git directory.
+_gdi_bare_up() {
+  _is_git_dir "$1" || return 1
+  [[ -z "${ionly_had[$1]:-}" ]] || return 0
+  ionly_had[$1]=1; _gdi_ionly+=("$1")
+  if ! _in_writable "$1"; then
+    gquiet[$1]=1; _gref_add "$1" "$1"; _gdi_out_cd "$1" "$2"
+    return 0
+  fi
+  local _j
+  for _j in ${bsrc[@]+"${!bsrc[@]}"}; do
+    [[ "${bsrc[_j]}" != "$2" ]] || continue
+    if [[ "$1" == "${bsrc[_j]}"/* ]]; then _xm_t+=("$1"); _xm_by+=("$2"); _xm_j+=("$_j"); fi
+  done
+}
+
 git_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
@@ -4072,6 +4097,7 @@ git_dirs_in() {
     # included, GIT-69). A link the agent could repoint is still named.
     if [[ -d "$up/.git" ]] && ! { _cd_phys tgt "$up/.git" && _is_git_dir "$tgt"; }; then
       if [[ -L "$up/.git" ]] && _in_writable "$up/.git"; then _gdi_name_link "$up/.git"; fi
+      if _gdi_bare_up "$up" "$5"; then _in_writable "$up" || break; fi
       up="${up%/*}"; continue
     fi
     if [[ ( -d "$up/.git" || -f "$up/.git" ) && ! -L "$up/.git" ]]; then
@@ -4158,6 +4184,8 @@ git_dirs_in() {
           fi
         fi
       fi
+      _in_writable "$up" || break
+    elif [[ ! -e "$up/.git" && ! -L "$up/.git" ]] && _gdi_bare_up "$up" "$5"; then
       _in_writable "$up" || break
     fi
     up="${up%/*}"
@@ -4931,7 +4959,11 @@ _git_runs() {
     if [[ -n "$cd" && "$cd" != ./ ]]; then
       _cd_phys c "$g" "$cd" || c=""
       if [[ -z "$c" ]]; then _gr_k="commondir, which leads nowhere it can be checked"; return 0; fi
-      if [[ -n "${_git_launch_seen[$c]:-}" ]]; then own=""; fi
+      # Frozen only where the launch bound its config, or an overlay holds it
+      # read-only: a linked worktree's directory the launch saw has none bound,
+      # and the session can make it the common directory a new one names
+      # (bugs review GIT-71; G175).
+      if [[ -n "${_git_cfg_frozen[$c]:-}" ]]; then own=""; fi
     fi
   fi
   if [[ -n "$own" ]]; then cf+=("$c/config"); fi
@@ -5591,6 +5623,9 @@ _git_bsrc=()               # every writable bind source of the launch (bsrc), fo
 # counts toward SANDBOX_GIT_MAX, and the look is inside the rescan's deadline.
 _git_watch=()
 declare -A _git_watch_had=() _git_watch_cd=()
+# The git directories whose config this launch bound read-only, or that lie under
+# a read-only overlay: their own common directory, config included (_git_runs).
+declare -A _git_cfg_frozen=()
 # _git_watch_add <directory> [named by]: one a commondir names is git's common
 # directory as it is, its own commondir unread, so its own config is what the
 # check after the session reads there (GIT-69).

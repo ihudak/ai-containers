@@ -141,6 +141,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A bare repository a mount lies in is protected, and a common directory a
+  session makes of a linked worktree's directory is named.** git finds the
+  repository a mount lies in by asking each directory on the way up whether its
+  `.git` is one, and then whether the directory itself is one; the launch asked
+  only the first, so a bare repository there, under another mount's
+  `node_modules` say, was neither protected nor named, and git in the mount ran
+  what the agent wrote in its `config` (bugs review GIT-72). The check after a
+  session read no `config` of a common directory the launch had seen, though
+  the launch bound none for a linked worktree's directory: one the session made
+  the common directory of a new one ran a program with nothing named (GIT-71).
+
 - **A repository under a mount's `node_modules` that a linked worktree
   outside every mount takes for its common directory is read-only.** git
   takes that repository's `config` and hooks for the worktree's checkout in
