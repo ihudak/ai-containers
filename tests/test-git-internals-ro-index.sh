@@ -1838,6 +1838,29 @@ EXTRA_MOUNTS="$R171/s" launch "$TMP/app"
   && pass "G171 the repository a mount lies in, naming one, refuses the launch" \
   || fail "G171 the repository a mount lies in (rc=$LAUNCH_RC; $(grep -m1 -E 'ERROR' "$ERR"))"
 mv "$R171/s/node_modules" "$B171/node_modules" && rm -rf "$R171" || { printf 'SCAFFOLD-FAILED: G171 back\n'; exit 1; }
+# With its objects an executable file, which git takes as it takes a directory,
+# it is refused all the same (bugs review GIT-69).
+rmdir "$V171/objects" && : > "$V171/objects" && chmod +x "$V171/objects" \
+  && [[ "$("${G[@]}" -C "$B171/co" rev-parse --git-common-dir 2>/dev/null)" == "$V171" ]] \
+  || { printf 'SCAFFOLD-FAILED: G171 objects a file\n'; exit 1; }
+EXTRA_MOUNTS="$B171" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+  && grep -qF "ERROR: $O171/wt/commondir names $V171, which is no repository's own git directory" "$ERR" \
+  && pass "G171 one whose objects is an executable file refuses the launch too" \
+  || fail "G171 objects a file (rc=$LAUNCH_RC; $(grep -m1 -E 'ERROR|WARNING' "$ERR"))"
+rm -f "$V171/objects" && mkdir "$V171/objects" || { printf 'SCAFFOLD-FAILED: G171 objects back\n'; exit 1; }
+# Named at launch as not there, and made a worktree's directory by the session:
+# git reads ITS config for the outside worktree, so that is what is named after
+# the session, not the config its own ../.. names (GIT-69).
+N171="$B171/node_modules/x/.git/worktrees/nv"; printf '%s\n' "$N171" > "$O171/wt/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G171 not there\n'; exit 1; }
+FAKE_SESSION="mkdir -p '$N171/refs' '$N171/objects' && printf 'ref: refs/heads/main\n' > '$N171/HEAD' && printf '../..\n' > '$N171/commondir' && git config --file '$N171/config' core.fsmonitor ./fsm" \
+  EXTRA_MOUNTS="$B171" launch "$TMP/app"
+grep -qF "WARNING: $O171/wt/commondir names $N171, which does not exist" "$ERR" \
+  && grep -qF "$N171 (config: core.fsmonitor" < <(grep -A3 -F 'WARNING: the session made git repositories in a writable mount' "$ERR") \
+  && pass "G171 a worktree's directory the session makes where an outside commondir points is named, by its own config" \
+  || fail "G171 made during the session (rc=$LAUNCH_RC; $(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
+rm -rf "$N171" && printf '%s\n' "$V171" > "$O171/wt/commondir" || { printf 'SCAFFOLD-FAILED: G171 back\n'; exit 1; }
 # …and one naming a repository's own, under the same node_modules, still launches,
 # its config made and bound there (G168), and again once it holds the ./ placeholder.
 printf '%s\n' "$B171/node_modules/x/.git" > "$O171/wt/commondir" || { printf 'SCAFFOLD-FAILED: G171 own\n'; exit 1; }
@@ -1850,6 +1873,25 @@ done
 [[ "$(cat "$B171/node_modules/x/.git/commondir" 2>/dev/null)" == ./ ]] \
   || fail "G171 the second launch did not run with the ./ placeholder ($(cat "$B171/node_modules/x/.git/commondir" 2>&1))"
 rm -rf "$B171" "$O171"
+
+# ── G174: a watched directory a commondir and a .git file both name ──────────
+# Named at launch as not there by an outside worktree's commondir and by a .git
+# file in another writable mount. The session makes it a worktree's directory
+# whose commondir names a common directory with a config that runs a program:
+# git reads that config for the .git file's checkout, so after the session it is
+# named, though the outside commondir's reading (its own config) finds nothing
+# (review of GIT-69's fix).
+B174="$TMP/b174"; C174="$TMP/c174"; O174="$TMP/o174"; N174="$B174/node_modules/n"; K174="$B174/node_modules/k"
+mkdir -p "$B174/co" "$C174/co2" "$O174/wt" && printf 'ref: refs/heads/main\n' > "$O174/wt/HEAD" \
+  && printf '%s\n' "$N174" > "$O174/wt/commondir" && printf '%s\n' "$B174/co/.git" > "$O174/wt/gitdir" \
+  && printf 'gitdir: %s\n' "$O174/wt" > "$B174/co/.git" && printf 'gitdir: %s\n' "$N174" > "$C174/co2/.git" \
+  || { printf 'SCAFFOLD-FAILED: G174\n'; exit 1; }
+FAKE_SESSION="mkdir -p '$N174' '$K174/objects' '$K174/refs' && printf 'ref: refs/heads/main\n' > '$N174/HEAD' && printf '%s\n' '$K174' > '$N174/commondir' && git config --file '$K174/config' core.fsmonitor ./fsm" \
+  EXTRA_MOUNTS="$B174 $C174" launch "$TMP/app"
+grep -qF "$N174 (config: core.fsmonitor" < <(grep -A3 -F 'WARNING: the session made git repositories in a writable mount' "$ERR") \
+  && pass "G174 a directory a commondir and a .git file both name is read both ways after the session" \
+  || fail "G174 both ways (rc=$LAUNCH_RC; $(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
+rm -rf "$B174" "$C174" "$O174"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

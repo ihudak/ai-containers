@@ -3019,8 +3019,8 @@ _git_index_read() {
   return 0
 }
 
-# _is_git_dir <dir>: what git takes for a git directory — HEAD, with objects/ and
-# refs/ or a commondir. Not a config: git needs none, and one without was not taken
+# _is_git_dir <dir>: what git takes for a git directory — HEAD, with objects and
+# refs (_git_has_store) or a commondir. Not a config: git needs none, and one without was not taken
 # for a git directory, so the agent could add a config the host's git then read
 # (automated security review of 4a4e30c).
 _is_git_dir() {
@@ -3038,12 +3038,19 @@ _is_git_dir() {
   # A FIFO counts as well, so that it is refused rather than hidden (G70).
   # A link counts whatever it leads to, a directory too (G71).
   [[ -L "$1/HEAD" ]] || [[ -e "$1/HEAD" && ! -d "$1/HEAD" ]] || return 1
-  { [[ -d "$1/objects" && -d "$1/refs" ]] || [[ -f "$1/commondir" ]]; }
+  { _git_has_store "$1" || [[ -f "$1/commondir" ]]; }
 }
+# _git_has_store <dir>: objects and refs, more than git asks of them: git takes
+# them by access(X_OK), an executable file as a directory, and a reftable
+# repository keeps working with refs one. Anything there, a link included,
+# counts, which only protects more: a directory so planted was no git
+# directory to the launcher, and the host's git ran its config (bugs review
+# GIT-69; G173).
+_git_has_store() { [[ -e "$1/objects" || -L "$1/objects" ]] && [[ -e "$1/refs" || -L "$1/refs" ]]; }
 # _is_common_dir <dir>: what git takes for the common directory a commondir names
-# — objects/ and refs/; a HEAD is a worktree's, not needed here (automated
-# security review of 236d347).
-_is_common_dir() { [[ -d "$1/objects" && -d "$1/refs" ]]; }
+# — objects and refs, whatever they are (_git_has_store; GIT-69); a HEAD is a
+# worktree's, not needed here (automated security review of 236d347).
+_is_common_dir() { _git_has_store "$1"; }
 # _cd_own <git directory>: it has no commondir, or the ./ placeholder as a
 # regular file, so git takes it as its own common directory and the protection
 # loop makes and binds its config and hooks there (_git_cd_check(), GIT-67, GIT-68).
@@ -3077,7 +3084,7 @@ _gd_resolve() {
     if _in_writable "$_gr_lex" || _in_writable "$_gr_c"; then
       # Looked at again after the session: the rescan does not look under a
       # pruned node_modules (GIT-65; G168).
-      _git_watch_add "$_gr_lex"
+      _git_watch_add "$_gr_lex" "$3"
       if (( ++_gdi_warned <= 5 )); then
         printf 'WARNING: %s names %s, which does not exist; if the agent makes it, your host'\''s git\n' "$(_term "$3")" "$(_term "$_gr_lex")" >&2
         printf '         reads it unprotected until the next launch.\n' >&2
@@ -3109,7 +3116,7 @@ _gd_resolve() {
 # reviews of the fix). ../.. steps out of two directories the launch pins, and a
 # full path holds no link or .. to swap; the directory it names must be a
 # repository's own git directory, so that the launch finds it and makes and binds
-# its config and hooks/: one holding objects/ and refs/, which a commondir is
+# its config and hooks/: one holding objects and refs, which a commondir is
 # followed to wherever it lies (a bare one the agent filled later was not; second
 # review), its name aside, as git takes no other for a common directory, with no
 # commondir but our ./ (a worktree's directory nested in another's had its config
@@ -3161,7 +3168,7 @@ _git_cd_check() {
         _gcc_at="$_gcc_gp/commondir"
       fi
       printf 'ERROR: %s names %s, which is no repository'\''s own git directory\n' "$(_term "$1/commondir")" "$(_term "$_gcc_gp")" >&2
-      printf '       (one holding objects/ and refs/, with no commondir but ./); refusing the\n' >&2
+      printf '       (one holding objects and refs, with no commondir but ./); refusing the\n' >&2
       printf '       launch. git takes its configuration and hooks for this worktree, and the agent could\n' >&2
       printf '       write them there. If you did not make %s, remove it on the host\n' "$(_term "$_gcc_at")" >&2
       printf '       (rm %s) and launch again.\n' "$(_q "$_gcc_at")" >&2
@@ -3930,7 +3937,7 @@ _gdi_follow() {
 # node_modules), and where a common directory with no HEAD is no git directory
 # to a scan by content (bugs review GIT-63; G169).
 _gdi_not_git() {
-  _git_watch_add "$2"
+  _git_watch_add "$2" "$1"
   if (( ++_gdi_warned <= 5 )); then
     printf 'WARNING: %s names %s, which is not a git directory; nothing there is protected.\n' "$(_term "$1")" "$(_term "$2")" >&2
     printf '         if the agent makes it one, your host'\''s git reads it unprotected until the next\n' >&2
@@ -4009,15 +4016,18 @@ git_dirs_in() {
       if [[ ! -r "$f" || ! -x "$f" ]]; then _gdi_unr+=("$f")
       # The git directories inside a .git count whatever their HEAD holds, as the
       # .git itself does: a linked worktree's (it has a commondir or a gitdir) and
-      # a submodule's (objects/ and refs/). One whose HEAD the agent removed was
+      # a submodule's (objects and refs). One whose HEAD the agent removed was
       # dropped (automated security review of 855d205, HIGH; G78).
       # A worktree's under any git directory (a bare repository's too) has a
       # commondir or a gitdir; a submodule's has any of what git keeps there.
       elif [[ -z "${had[$f]:-}" ]]; then
         if [[ "${lf%/*}" == */worktrees ]] && [[ -f "$f/commondir" || -f "$f/gitdir" ]]; then
           _gdi_dirs+=("$f"); had[$f]=1
-        elif [[ "$lf" == */.git/modules/* ]] && [[ -d "$f/objects" || -d "$f/refs" || -f "$f/config" \
-               || -d "$f/hooks" || -f "$f/index" || -f "$f/commondir" ]]; then
+        # Both objects and refs as git takes them (_git_has_store), or any one of
+        # these: git gc writes refs, a file, in every git directory's info/,
+        # which either alone took for one (review of GIT-69's fix).
+        elif [[ "$lf" == */.git/modules/* ]] && { _git_has_store "$f" || [[ -d "$f/objects" || -d "$f/refs" \
+               || -f "$f/config" || -d "$f/hooks" || -f "$f/index" || -f "$f/commondir" ]]; }; then
           _gdi_dirs+=("$f"); had[$f]=1
         fi
       fi
@@ -4058,8 +4068,8 @@ git_dirs_in() {
     # One that is no git directory, a link to one too, git passes over, and goes
     # on up: so does this walk, which stopped there and judged no repository
     # (bugs review GIT-52; G155). _is_git_dir takes more than git does, so it
-    # never passes over one git would use. A link the agent could repoint is
-    # still named.
+    # never passes over one git would use (an objects or refs that is a file
+    # included, GIT-69). A link the agent could repoint is still named.
     if [[ -d "$up/.git" ]] && ! { _cd_phys tgt "$up/.git" && _is_git_dir "$tgt"; }; then
       if [[ -L "$up/.git" ]] && _in_writable "$up/.git"; then _gdi_name_link "$up/.git"; fi
       up="${up%/*}"; continue
@@ -4903,16 +4913,20 @@ _git_exec_keys() {
 # reported, then, so only config.worktree counts (a linked worktree's, from
 # `git worktree add`), else that one's. A commondir or hooks/ that is a link, or
 # a commondir that leads nowhere, cannot be checked here and is named as such.
+# With a fourth argument the directory is read as a common directory a commondir
+# named, its own config, its commondir unread (GIT-69).
 _git_runs() {
   local -n _gr_k=$2 _gr_h=$3
   local g="$1" c="$1" cd="" e hp="" own=1 n=0
   local -a ek=() cf=()
   _gr_k=""; _gr_h=""
+  # With a fourth argument it is a common directory as a commondir named it:
+  # git reads its config, its own commondir unread (GIT-69).
+  if [[ -n "${4:-}" ]]; then :
   # git reads a commondir through a link (automated security review of 7121741).
-  if [[ -L "$g/commondir" ]] || [[ -e "$g/commondir" && ! -f "$g/commondir" ]]; then
+  elif [[ -L "$g/commondir" ]] || [[ -e "$g/commondir" && ! -f "$g/commondir" ]]; then
     _gr_k="commondir, a link or not a file: what git reads through it is not checked"; return 0
-  fi
-  if [[ -f "$g/commondir" ]]; then
+  elif [[ -f "$g/commondir" ]]; then
     _git_ptr_read "$g/commondir" cd || true
     if [[ -n "$cd" && "$cd" != ./ ]]; then
       _cd_phys c "$g" "$cd" || c=""
@@ -5184,6 +5198,13 @@ _git_after_session() {
       if [[ ! -r "$w" || ! -x "$w" ]]; then printf 'R\0%s\0%s\0' "$w" "cannot be listed, so it was not checked"; continue; fi
       _is_common_dir "$w" || _is_git_dir "$w" || continue
       k=""; h=""; _git_runs "$w" k h || true
+      # A commondir named it too: git reads its own config then (GIT-69). Both
+      # are read, since a .git file may name it as well (review of the fix).
+      if [[ -n "${_git_watch_cd[$w]:-}" ]]; then
+        k2=""; h2=""; _git_runs "$w" k2 h2 common || true
+        [[ -z "$k2" || ", $k, " == *", $k2, "* ]] || k+="${k:+, }$k2"
+        [[ -z "$h2" || ", $h, " == *", $h2, "* ]] || h+="${h:+, }$h2"
+      fi
       if ! _git_usable; then k="${k:-not read, git does not run on this host}"; fi
       if [[ -n "$k$h" ]]; then printf 'R\0%s\0%s\0' "$w" "${k:+config: $k}${k:+${h:+; }}${h:+hooks: $h}"; fi
     done
@@ -5569,8 +5590,12 @@ _git_bsrc=()               # every writable bind source of the launch (bsrc), fo
 # (GIT-63, GIT-65). Each is named by a .git file or a git directory the launch
 # counts toward SANDBOX_GIT_MAX, and the look is inside the rescan's deadline.
 _git_watch=()
-declare -A _git_watch_had=()
+declare -A _git_watch_had=() _git_watch_cd=()
+# _git_watch_add <directory> [named by]: one a commondir names is git's common
+# directory as it is, its own commondir unread, so its own config is what the
+# check after the session reads there (GIT-69).
 _git_watch_add() {
+  if [[ "${2:-}" == */commondir ]]; then _git_watch_cd[$1]=1; fi
   [[ -z "${_git_watch_had[$1]:-}" ]] || return 0
   _git_watch_had[$1]=1; _git_watch+=("$1")
 }

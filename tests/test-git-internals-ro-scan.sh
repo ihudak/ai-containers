@@ -875,15 +875,18 @@ launch ..
   || fail "G144 linked commondir (rc=$LAUNCH_RC; $(grep -F l144 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/.git/worktrees/l144" "$PROJ/.git/cd144"; rmdir "$PROJ/.git/worktrees" 2>/dev/null
 # A submodule's git directory with no HEAD is protected holding any one of
-# objects/, refs/, config, hooks/ or index; a plain directory inside one is not.
+# objects/, refs/, config, hooks/ or index; a plain directory inside one is not,
+# nor the info/ that git gc writes refs in, a file (review of GIT-69's fix).
 for x144 in objects refs config hooks index; do
   mkdir -p "$PROJ/.git/modules/m$x144"
   case "$x144" in objects|refs|hooks) mkdir -p "$PROJ/.git/modules/m$x144/$x144" ;; *) : > "$PROJ/.git/modules/m$x144/$x144" ;; esac
 done
-mkdir -p "$PROJ/.git/modules/mconfig/plain"
+mkdir -p "$PROJ/.git/modules/mconfig/plain" "$PROJ/.git/modules/mconfig/info" && : > "$PROJ/.git/modules/mconfig/info/refs" \
+  || { printf 'SCAFFOLD-FAILED: G144 info\n'; exit 1; }
 launch ..
 m144=""; for x144 in objects refs config hooks index; do has_mount "$PROJ/.git/modules/m$x144/config:/workspace/proj/.git/modules/m$x144/config:ro" || m144+=" $x144"; done
-[[ "$LAUNCH_RC" == 0 && -z "$m144" && ! -e "$PROJ/.git/modules/mconfig/plain/commondir" ]] \
+[[ "$LAUNCH_RC" == 0 && -z "$m144" && ! -e "$PROJ/.git/modules/mconfig/plain/commondir" && ! -e "$PROJ/.git/modules/mconfig/info/commondir" ]] \
+  && ! grep -qF "$PROJ/.git/modules/mconfig/info" < <(git_mounts) \
   && pass "G144 a submodule's git directory with no HEAD is protected holding any one of what git keeps there" \
   || fail "G144 module directories (rc=$LAUNCH_RC; not protected:$m144; in plain: $(ls "$PROJ/.git/modules/mconfig/plain" | tr '\n' ' '))"
 rm -rf "$PROJ/.git/modules"
@@ -1191,6 +1194,65 @@ launch ..
   && pass "G163 a repository in a group directory that links out of the group is protected there" \
   || fail "G163 group link out (rc=$LAUNCH_RC; $(git_mounts | grep -F x163 | tr '\n' ' '))"
 rm -f "$gs163"; mv "$TMP/ssh163" "$gs163"; rm -rf "$X163"
+
+# ── G173: a git directory whose objects or refs is a file (GIT-69) ───────────
+# git takes a directory for a git directory when it can reach objects and refs
+# (access X_OK), whatever they are: an executable file passes, and a reftable
+# repository keeps working with refs one. The launcher wanted directories, so a
+# bare repository planted in a writable mount, or a separate git directory, so
+# made was none to it: nothing bound, nothing named, and the host's git ran the
+# config the agent wrote there (bugs review GIT-69).
+mk173() {  # <dir> <objects|refs, the one made an executable file>
+  mkdir -p "$1" && printf 'ref: refs/heads/main\n' > "$1/HEAD" && printf '[core]\n\tbare = true\n' > "$1/config" \
+    && if [[ "$2" == objects ]]; then mkdir -p "$1/refs" && : > "$1/objects" && chmod +x "$1/objects"
+       else mkdir -p "$1/objects" && : > "$1/refs" && chmod +x "$1/refs"; fi
+}
+for k173 in objects refs; do
+  mk173 "$PROJ/b173" "$k173" && [[ "$("${G[@]}" -C "$PROJ/b173" rev-parse --absolute-git-dir 2>/dev/null)" == "$PROJ/b173" ]] \
+    || { printf 'SCAFFOLD-FAILED: G173 bare (%s)\n' "$k173"; exit 1; }
+  launch ..
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/b173/config:/workspace/proj/b173/config:ro" \
+    && [[ "$(cat "$PROJ/b173/commondir" 2>/dev/null)" == ./ ]] \
+    && pass "G173 a bare repository in a writable mount with $k173 a file is protected" \
+    || fail "G173 a bare repository with $k173 a file (rc=$LAUNCH_RC; $(git_mounts | grep -c b173) binds; $(grep -m1 -E 'ERROR|b173' "$ERR"))"
+  rm -rf "$PROJ/b173"
+done
+# More than git: objects a dangling link and refs a file that is not
+# executable, which git passes over, count too, since the agent can make either
+# what git takes later (review of the fix).
+mkdir -p "$PROJ/b173" && printf 'ref: refs/heads/main\n' > "$PROJ/b173/HEAD" && ln -s nowhere173 "$PROJ/b173/objects" \
+  && : > "$PROJ/b173/refs" && chmod -x "$PROJ/b173/refs" || { printf 'SCAFFOLD-FAILED: G173 more than git\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/b173/config:/workspace/proj/b173/config:ro" \
+  && pass "G173 one with objects a dangling link and refs a plain file is protected too" \
+  || fail "G173 more than git (rc=$LAUNCH_RC; $(git_mounts | grep -c b173) binds; $(grep -m1 -E 'ERROR|b173' "$ERR"))"
+rm -rf "$PROJ/b173"
+# A submodule's git directory under .git/modules whose HEAD a session moved
+# aside, its objects and refs files, counts as one does with directories (G78).
+M173="$PROJ/.git/modules/m173"; mkdir -p "$M173" && : > "$M173/objects" && : > "$M173/refs" \
+  && chmod +x "$M173/objects" "$M173/refs" || { printf 'SCAFFOLD-FAILED: G173 module\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$M173/config:/workspace/proj/.git/modules/m173/config:ro" \
+  && pass "G173 a module's git directory with no HEAD, objects and refs files, is protected" \
+  || fail "G173 a module's git directory with objects and refs files (rc=$LAUNCH_RC; $(git_mounts | grep -c m173) binds)"
+rm -rf "$M173"
+# A separate git directory so made, named by a checkout's .git file.
+mkdir -p "$PROJ/co173" && mk173 "$PROJ/gd173" objects && printf 'gitdir: %s\n' "$PROJ/gd173" > "$PROJ/co173/.git" \
+  && [[ "$("${G[@]}" -C "$PROJ/co173" rev-parse --absolute-git-dir 2>/dev/null)" == "$PROJ/gd173" ]] \
+  || { printf 'SCAFFOLD-FAILED: G173 separate\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/gd173/config:/workspace/proj/gd173/config:ro" \
+  && ! grep -qF "names $PROJ/gd173, which is not a git directory" "$ERR" \
+  && pass "G173 a separate git directory with objects a file is protected" \
+  || fail "G173 a separate git directory with objects a file (rc=$LAUNCH_RC; $(grep -m1 -F gd173 "$ERR"))"
+rm -rf "$PROJ/co173" "$PROJ/gd173"
+# Made during a session, it is named after it.
+FAKE_SESSION="mkdir -p '$PROJ/s173/refs' && printf 'ref: refs/heads/main\n' > '$PROJ/s173/HEAD' && : > '$PROJ/s173/objects' && chmod +x '$PROJ/s173/objects' && git config --file '$PROJ/s173/config' core.fsmonitor ./fsm" \
+  launch ..
+grep -qF "$PROJ/s173 (config: core.fsmonitor" < <(grep -A3 -F 'WARNING: the session made git repositories in a writable mount' "$ERR") \
+  && pass "G173 one the session makes with objects a file is named after it" \
+  || fail "G173 made during the session ($(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
+rm -rf "$PROJ/s173"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

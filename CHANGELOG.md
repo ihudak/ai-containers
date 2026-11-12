@@ -180,6 +180,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   naming the planted `commondir` to remove, or the outside one to point at the
   repository's own git directory (bugs review GIT-68).
 
+- **A git directory whose `objects` or `refs` is a file is protected.** git
+  takes a directory for a git directory when it can reach `objects` and
+  `refs`, an executable file as well as a directory, and a reftable
+  repository works with `refs` one. The launcher wanted directories, so a bare
+  repository or a separate git directory so made in a writable mount was
+  neither protected nor named, and your host's git ran the config the agent
+  wrote there. They now count as git counts them, and the check after the
+  session reads the config git reads for a directory a `commondir` names
+  (bugs review GIT-69).
+
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read
   the launcher bounds came back empty for a directory named with such a byte,
