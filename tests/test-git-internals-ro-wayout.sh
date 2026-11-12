@@ -234,31 +234,39 @@ refused && has "ERROR: $PROJ/wo180/worktrees/.git/commondir sends git to" && has
   && pass "G180 ../.. in a .git that lies in a directory named worktrees is refused, and is one to remove" \
   || fail "G180 worktrees/.git with ../.. ($(why))"
 rm -rf "$PROJ/wo180"
-mkdir -p "$PROJ/wo180/notes" && printf 'the shared directory\n' > "$PROJ/wo180/notes/commondir" || { printf 'SCAFFOLD-FAILED: G180 notes\n'; exit 1; }
+# A file of yours named commondir is left alone by itself (GIT-79; G193 in the
+# scan file); with one named HEAD beside it the directory is still taken.
+mkdir -p "$PROJ/wo180/notes" && printf 'the shared directory\n' > "$PROJ/wo180/notes/commondir" \
+  && printf 'the first line\n' > "$PROJ/wo180/notes/HEAD" || { printf 'SCAFFOLD-FAILED: G180 notes\n'; exit 1; }
 launch_timed 120 ..
 refused && has "If you did not make it, stop every container running on this tree and remove it on the" \
   && has "A file of yours that only shares the name: rename it." && clean \
-  && pass "G180 a file of yours named commondir: the refusal says to rename it" \
-  || fail "G180 a plain file named commondir ($(why))"
+  && pass "G180 files of yours named HEAD and commondir: the refusal says to rename it" \
+  || fail "G180 plain files named HEAD and commondir ($(why))"
 rm -rf "$PROJ/wo180"
 
 # ── G181: under refs/ or logs/ nothing is to be removed or moved ────────────
 # A branch named commondir is a file by that name among a bare repository's
-# refs, and the launch takes its directory for a git directory. The old `rm`
+# refs, and the launch took its directory for a git directory. The old `rm`
 # deleted the branch, the only name of its commits, and beside a branch named
 # hooks the refusal for a hooks that is no directory printed one too. No
 # command is printed there, for any of them, and nothing says to remove or
-# move anything.
+# move anything. Since GIT-79's fix such a directory is taken only with a HEAD
+# in it, which a remote whose HEAD is set leaves beside its branches (G193 in
+# the scan file has the ones that now launch).
 norm181() { ! has '(cd -P -- ' && ! grep -qwE 'rm|mv' "$ERR" && has "Do not remove it: that deletes the branch." && clean; }
 for b in commondir worktrees/x/commondir "commondir hooks"; do
   rm -rf "$PROJ/wo181"; mkdir -p "$PROJ/wo181" && "${G[@]}" init -q --bare "$PROJ/wo181/b.git" || { printf 'SCAFFOLD-FAILED: G181\n'; exit 1; }
-  for n in $b; do "${G[@]}" -C "$PROJ" push -q "$PROJ/wo181/b.git" "HEAD:refs/heads/$n" || { printf 'SCAFFOLD-FAILED: G181 push\n'; exit 1; }; done
+  for n in $b; do "${G[@]}" -C "$PROJ" push -q "$PROJ/wo181/b.git" "HEAD:refs/remotes/o/$n" || { printf 'SCAFFOLD-FAILED: G181 push\n'; exit 1; }; done
+  h181="${b%% *}"; h181="refs/remotes/o/${h181%commondir}HEAD"
+  "${G[@]}" --git-dir="$PROJ/wo181/b.git" symbolic-ref "$h181" "refs/remotes/o/${b%% *}" && [[ -f "$PROJ/wo181/b.git/$h181" ]] \
+    || { printf 'SCAFFOLD-FAILED: G181 HEAD\n'; exit 1; }
   before181="$("${G[@]}" --git-dir="$PROJ/wo181/b.git" for-each-ref)"
   launch_timed 120 ..
-  refused && has "ERROR: $PROJ/wo181/b.git/refs/heads/" && norm181 \
+  refused && has "ERROR: $PROJ/wo181/b.git/refs/remotes/o/" && norm181 \
     && has "It lies under a refs or logs directory:" && has "whose name ends in ${b##*[ /]}, or its log, is such a file" \
     && [[ -n "$before181" && "$("${G[@]}" --git-dir="$PROJ/wo181/b.git" for-each-ref)" == "$before181" ]] \
-    && pass "G181 a branch named ${b// / beside one named }: no command, and nothing to remove" \
+    && pass "G181 a remote's branch named ${b// / beside one named }, its HEAD set: no command, and nothing to remove" \
     || fail "G181 a branch named $b ($(why))"
 done
 # A file git's ../.. was written into, under refs/: the directory it names holds

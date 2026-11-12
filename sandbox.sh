@@ -3080,25 +3080,92 @@ _git_index_read() {
 # for a git directory, so the agent could add a config the host's git then read
 # (automated security review of 4a4e30c).
 _is_git_dir() {
-  # A regular commondir alone is enough, whatever HEAD, objects/ and refs/ hold:
-  # git writes one in every linked worktree's directory, an earlier launch made
-  # the ./ placeholder in every other it protected, and either is then bound
-  # read-only, a mount point the agent cannot remove. HEAD, objects/ and refs/
-  # are not, so moving one aside in one session hid the directory from the next
-  # launch (GIT-7; G77, G78; automated security reviews of 855d205, 7429d87).
-  # Taking a planted commondir too only protects more.
-  if [[ -f "$1/commondir" && ! -L "$1/commondir" ]]; then return 0; fi
   # A HEAD that is a link counts too: git takes one (review of 56c91c4; G68).
   # A FIFO counts as well, so that it is refused rather than hidden (G70).
   # A link counts whatever it leads to, a directory too (G71).
-  [[ -L "$1/HEAD" ]] || [[ -e "$1/HEAD" && ! -d "$1/HEAD" ]] || return 1
-  # Beside a HEAD, a commondir that is anything but a directory: a dangling link
-  # or a FIFO too, which _git_cd_check() refuses. Taken only where it was, or led
-  # to, a regular file, a linked worktree's directory with one was no git
-  # directory, and where its repository's own git directory was not taken either
-  # (its objects/ moved aside before its first protection) nothing listed it
-  # (review of the plan for GIT-78's fix; G188).
-  _git_has_store "$1" || [[ -L "$1/commondir" ]] || [[ -e "$1/commondir" && ! -d "$1/commondir" ]]
+  if [[ -L "$1/HEAD" ]] || [[ -e "$1/HEAD" && ! -d "$1/HEAD" ]]; then
+    # Beside a HEAD, a commondir that is anything but a directory: a dangling link
+    # or a FIFO too, which _git_cd_check() refuses. Taken only where it was, or led
+    # to, a regular file, a linked worktree's directory with one was no git
+    # directory, and where its repository's own git directory was not taken either
+    # (its objects/ moved aside before its first protection) nothing listed it
+    # (review of the plan for GIT-78's fix; G188).
+    _git_has_store "$1" || [[ -L "$1/commondir" ]] || [[ -e "$1/commondir" && ! -d "$1/commondir" ]] \
+      || _git_dir_nocd "$1"
+    return
+  fi
+  # With no HEAD, a regular commondir alone is enough, whatever objects/ and refs/
+  # hold: git writes one in every linked worktree's directory, an earlier launch
+  # made the ./ placeholder in every other it protected, and either is then bound
+  # read-only, a mount point the agent cannot remove. HEAD, objects/ and refs/
+  # are not, so moving one aside in one session hid the directory from the next
+  # launch (GIT-7; G77, G78; automated security reviews of 855d205, 7429d87).
+  # Only one holding the ./ a launch writes (_cd_ours), or lying where git writes
+  # one: any regular file by that name was taken, a branch named commondir or a
+  # plain file of yours, and _git_cd_check() then refused every launch (bugs
+  # review GIT-79; G193). git takes no directory without a HEAD, so one left
+  # alone here is none to git until the session writes a HEAD, which the check
+  # after it then finds.
+  # Where git keeps a linked worktree's directory (worktrees/<name>) any regular
+  # commondir still counts: one whose repository was hidden before its first
+  # protection, its own HEAD moved aside and its commondir naming a directory of
+  # the agent's, was refused before, and left alone here launched in silence
+  # (final review of GIT-79's fix; G193).
+  if [[ -f "$1/commondir" && ! -L "$1/commondir" ]] && { _cd_wt_loc "$1" || _cd_ours "$1/commondir"; }; then return 0; fi
+  _git_dir_nocd "$1"
+}
+# _git_dir_nocd <dir>: a hooks/ and a config that sets core.worktree, which is
+# what a launch leaves bound in a git directory it gave no ./ (GIT-73). The ./
+# was what found a protected directory again once a session had moved its HEAD,
+# objects/ or refs/ aside; with none, the next launch bound nothing of it, the
+# session wrote its config, and the host's git ran it. Whatever else the
+# directory holds, a commondir the session made included, which then refuses
+# the launch (bugs review GIT-85; G195). Not where git does not run: no config
+# is read there, and every repository gets the ./.
+_git_dir_nocd() {
+  [[ -d "$1/hooks" && -f "$1/config" ]] || return 1
+  _gdi_cost=$(( ${_gdi_cost:-0} + 1 ))
+  _git_wt_cfg "$1"
+}
+# _cd_ours <commondir file>: it holds the ./ a launch writes there. Read as
+# _git_ptr_read reads it, but a NUL, more than 4096 bytes or any other value is
+# "no", not a refusal: this is asked of files that are none of git's. A read cut
+# off still refuses the launch (_rd_run). What git writes (../.., libgit2 a full
+# path) it writes only in a worktrees/<name> directory, taken by its place.
+_cd_ours() {
+  local LC_ALL=C _cw_v=""
+  _gdi_cost=$(( ${_gdi_cost:-0} + 1 ))
+  if IFS= read -r -d '' _cw_v < <(_rd 4097 "$1" 2>/dev/null) || (( ${#_cw_v} > 4096 )); then return 1; fi
+  while [[ "$_cw_v" == *[$'\r\n'] ]]; do _cw_v="${_cw_v%?}"; done
+  [[ "$_cw_v" == ./ ]]
+}
+# _gdi_loose_refs <dir>: a directory the scan found by its HEAD that is loose
+# refs, not a repository: it lies in or under the refs/ or logs/ of a git
+# directory, its objects and refs are regular files with no execute bit for
+# anyone, and it has no commondir. A remote whose HEAD is set and that has
+# branches objects and refs leaves exactly that in refs/remotes/<name>/, and the
+# launch made commondir, config and hooks/ among them, after which git gc failed
+# (bugs review GIT-74; G194). The second part is git's own refusal: it takes
+# objects and refs by access(X_OK), which a file with no execute bit fails for
+# every user, root too (run), and a commondir would move where it looks. Not by
+# place alone: a HEAD and an objects/ planted beside a refs/ directory of yours
+# would put every repository in it "under a git directory's refs/", and a real
+# one's objects is a directory. The scan's candidates only: what a .git file,
+# a commondir or a gitdir names is taken as before.
+_gdi_loose_refs() {
+  local _lr_p="$1" _lr_b
+  [[ ! -e "$1/commondir" && ! -L "$1/commondir" ]] || return 1
+  [[ -f "$1/objects" && -f "$1/refs" ]] || return 1
+  _gdi_cost=$(( ${_gdi_cost:-0} + 1 ))
+  # By the mode bits, not `-x`, which answers for this user alone: 0645 is no
+  # execute for its owner, and root's git takes it (run). -type f: a link is
+  # none, and its own mode need not have the bits (macOS, chmod -h).
+  [[ "$(find "$1/objects" "$1/refs" -maxdepth 0 -type f ! -perm -100 ! -perm -010 ! -perm -001 -exec printf x \; 2>/dev/null)" == xx ]] || return 1
+  while [[ "$_lr_p" == /*/* ]]; do
+    _lr_b="${_lr_p##*/}"; _lr_p="${_lr_p%/*}"
+    if [[ "${_lr_b,,}" == refs || "${_lr_b,,}" == logs ]] && _is_git_dir "$_lr_p"; then return 0; fi
+  done
+  return 1
 }
 # _git_has_store <dir>: objects and refs, more than git asks of them: git takes
 # them by access(X_OK), an executable file as a directory, and a reftable
@@ -4111,6 +4178,12 @@ _gdi_follow() {
       fi
     done
   fi
+  # No git directory, in ANOTHER writable mount: named and watched as one in this
+  # mount is, below. It was passed in silence, and nothing looked at it again
+  # after a session that made it a repository (bugs review GIT-86; G193).
+  if [[ -z "$_ok" && "$t" != "$3" && "$t" != "$3"/* && -z "${had[$t]:-}" ]] && _in_writable "$t"; then
+    had[$t]=1; _gdi_not_git "$4" "$t"
+  fi
   [[ "$t" == "$3" || "$t" == "$3"/* ]] || return 0
   [[ -z "${had[$t]:-}" ]] || return 0
   had[$t]=1
@@ -4227,9 +4300,9 @@ _gdi_bare_up() {
 git_dirs_in() {
   # shellcheck disable=SC2178  # nameref: shellcheck does not model `local -n`
   local -n _gdi_dirs=$1 _gdi_files=$2 _gdi_links=$3 _gdi_unr=$4
-  local f lf g wt wcf wtp co rel back nref pb
-  local -a hits=()
-  local -A had=()
+  local f lf g wt wcf wtp co rel back nref pb nc0
+  local -a hits=() nogits=()
+  local -A had=() nogit=()
   # git's own names however they are spelled: where case is ignored git opens
   # .GIT/head and .GIT/CONFIG as its own, and a repository the agent spelled so
   # was never found (second review of the GIT-38 fix). Elsewhere this finds a
@@ -4244,6 +4317,7 @@ git_dirs_in() {
                  -o -ipath '*/.git/modules/*/objects' -o -ipath '*/.git/modules/*/refs' -o -ipath '*/.git/modules/*/logs' \) \) \) -prune \
       -o -iname HEAD ! -type d -print0 \
       -o -iname commondir -type f -print0 \
+      -o -iname config -type f -print0 \
       -o -iname .git \( -type f -o -type l -o -type d \) -print0 \
       -o -type d -ipath '*/.git/*' -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do
@@ -4252,7 +4326,7 @@ git_dirs_in() {
     # On a case-sensitive filesystem a .Git is not git's, and was left alone
     # before (third review).
     case "$f" in
-      */.git|*/HEAD|*/commondir|*/.git/*) ;;
+      */.git|*/HEAD|*/commondir|*/config|*/.git/*) ;;
       *) _ci_path "$f" || continue ;;
     esac
     if [[ "${lf##*/}" == .git ]]; then
@@ -4294,7 +4368,28 @@ git_dirs_in() {
       continue
     fi
     g="${f%/*}"
-    if [[ -z "${had[$g]:-}" ]] && _is_git_dir "$g"; then _gdi_dirs+=("$g"); had[$g]=1; fi
+    [[ -z "${had[$g]:-}" && -z "${nogit[$g]:-}" ]] || continue
+    # Loose refs named HEAD, objects and refs are passed over, and left unmarked
+    # in `had`, so that one a .git file names is still taken (_gdi_loose_refs; GIT-74).
+    nc0=${_gdi_cost:-0}
+    if _is_git_dir "$g" && ! _gdi_loose_refs "$g"; then _gdi_dirs+=("$g"); had[$g]=1; continue; fi
+    # One that took a read to tell (a commondir or a config beside no HEAD, loose
+    # refs) is counted, and past SANDBOX_GIT_MAX the launch is refused: the agent
+    # can plant any number, and each cost every launch a process (final review
+    # of GIT-79's fix: 500 took a launch from 2 s to 11 s; G196).
+    nogit[$g]=1
+    (( ${_gdi_cost:-0} > nc0 )) || continue
+    nogits+=("$g")
+    if (( ${#nogits[@]} > ${gitmax:-200} )); then
+      printf 'ERROR: %s holds more than %d directories this launch had to read to tell that they\n' "$(_term "$5")" "${gitmax:-200}" >&2
+      printf '       are no git directories (a file named commondir, or a config beside a hooks, with\n' >&2
+      printf '       no HEAD; loose refs named HEAD, objects and refs), and each read costs every\n' >&2
+      printf '       launch. Among them:\n' >&2
+      for g in "${nogits[@]:0:5}"; do printf '         %s\n' "$(_q "$g")" >&2; done
+      printf '       Remove those that are not yours, mount narrower directories, or raise\n' >&2
+      printf '       SANDBOX_GIT_MAX if every one of them is yours.\n' >&2
+      exit 1
+    fi
   done
   # Submodules the scan cannot see — a vendor/ is pruned by name, and submodules
   # commonly live in one: an absorbed one's checkout through its git directory's
@@ -5858,6 +5953,7 @@ git_hook_names=(applypatch-msg pre-applypatch post-applypatch pre-commit
   fsmonitor-watchman p4-changelist p4-prepare-changelist p4-post-changelist
   p4-pre-submit post-index-change)
 _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan stopped (GIT-9)
+_gdi_cost=0                # reads made to tell that a directory is no git directory (_cd_ours, _gdi_loose_refs, _git_dir_nocd)
 # What the launch scan found (git_dirs_in), by path, and the writable sources it
 # scanned: _git_after_session scans them again when the container exits.
 declare -A _git_launch_seen=()

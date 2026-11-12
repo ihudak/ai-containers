@@ -1598,5 +1598,313 @@ EXTRA_MOUNTS="$D192" launch_timed 120 "$TMP/app"
   || fail "G192 next launch (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 chmod -R u+rwx "$D188" "$D191" "$E191" 2>/dev/null; rm -rf "$D188" "$O188" "$D191" "$E191" "$D192"
 
+# ── G193: a file that only shares the name commondir is no git directory ──────
+# A regular commondir made its directory a git directory by itself, and
+# _git_cd_check then refused the launch, since git writes no such commondir: a
+# branch or a tag by that name in a bare repository or a separate git
+# directory, a plain file, and one in a directory above the mount each refused
+# every launch. git takes no directory without a HEAD, so one with no HEAD is
+# taken only when the file holds the ./ a launch writes there, which is what
+# finds a repository again that a launch protected and a session then hid, or
+# lies where git keeps a linked worktree's directory (bugs review GIT-79, GIT-7).
+D193="$TMP/d193"; mkdir -p "$D193/notes" "$D193/up/m" \
+  && "${G[@]}" init -q --bare "$D193/b.git" && "${G[@]}" -C "$PROJ" push -q "$D193/b.git" HEAD:refs/heads/commondir HEAD:refs/tags/x/commondir 2>/dev/null \
+  && "${G[@]}" init -q --separate-git-dir "$D193/sep" "$D193/co" && "${G[@]}" -C "$D193/co" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$D193/co" branch fix/commondir && printf 'my notes\n' > "$D193/notes/commondir" \
+  && printf 'a\0b\n' > "$D193/up/commondir" \
+  && [[ -f "$D193/b.git/refs/heads/commondir" && -f "$D193/b.git/refs/tags/x/commondir" && -f "$D193/sep/refs/heads/fix/commondir" ]] \
+  || { printf 'SCAFFOLD-FAILED: G193\n'; exit 1; }
+EXTRA_MOUNTS="$D193/b.git" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qE 'ERROR|refs/(heads|tags)' "$ERR" \
+  && [[ "$("${G[@]}" --git-dir="$D193/b.git" rev-parse refs/heads/commondir 2>/dev/null)" == "$("${G[@]}" -C "$PROJ" rev-parse HEAD)" ]] \
+  && [[ -z "$(find "$D193/b.git/refs" -name config -o -name hooks)" ]] \
+  && pass "G193 a bare repository with a branch and a tag named commondir launches, its refs untouched" \
+  || fail "G193 branch named commondir (rc=$LAUNCH_RC; $(grep -E 'ERROR|refs/' "$ERR" | head -2 | tr '\n' ' '))"
+EXTRA_MOUNTS="$D193/sep $D193/co" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qE 'ERROR|refs/heads' "$ERR" \
+  && pass "G193 a separate git directory with a branch fix/commondir launches" \
+  || fail "G193 separate git directory (rc=$LAUNCH_RC; $(grep -E 'ERROR|refs/' "$ERR" | head -2 | tr '\n' ' '))"
+EXTRA_MOUNTS="$D193/notes" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(cat "$D193/notes/commondir")" == "my notes" ]] && ! grep -qF "$D193/notes" < <(mounts | grep -v ":/workspace/notes:") \
+  && [[ "$(find "$D193/notes" -mindepth 1 | wc -l | tr -d ' ')" == 1 ]] \
+  && pass "G193 a plain file named commondir launches, and nothing is made or bound beside it" \
+  || fail "G193 plain file (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1); $(ls -A "$D193/notes" | tr '\n' ' '))"
+# Above the mount: the walk up from it asks whether each directory is a bare
+# repository (GIT-72), and one holding a NUL refused every launch.
+EXTRA_MOUNTS="$D193/up/m" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$D193/up" < <(grep -E 'ERROR|WARNING' "$ERR") \
+  && pass "G193 a file named commondir in the directory above a mount does not refuse the launch" \
+  || fail "G193 above the mount (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -1))"
+# What a launch protected is still found by its ./, whatever the session hid.
+"${G[@]}" init -q --bare "$D193/p.git" && "${G[@]}" -C "$PROJ" push -q "$D193/p.git" HEAD:refs/heads/main 2>/dev/null
+EXTRA_MOUNTS="$D193/p.git" launch "$TMP/app"
+mv "$D193/p.git/HEAD" "$D193/p.git/H" && mv "$D193/p.git/objects" "$D193/p.git/o"
+EXTRA_MOUNTS="$D193/p.git" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$D193/p.git/config:/workspace/p.git/config:ro" && has_mount "$D193/p.git/commondir:/workspace/p.git/commondir:ro" \
+  && pass "G193 a bare repository a launch protected is found by its ./ with its HEAD and objects moved aside" \
+  || fail "G193 protected, then hidden (rc=$LAUNCH_RC; $(mounts | grep -F p.git | tr '\n' ' '))"
+# A HEAD beside a commondir git does not write still refuses, of any kind.
+mkdir -p "$D193/h" && printf 'ref: refs/heads/main\n' > "$D193/h/HEAD" && printf '/nonexistent/cd\n' > "$D193/h/commondir"
+EXTRA_MOUNTS="$D193/h" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $D193/h/commondir sends git to" "$ERR" \
+  && pass "G193 a HEAD beside a commondir git does not write still refuses the launch" \
+  || fail "G193 HEAD beside a commondir (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+# With no HEAD and outside a worktrees/<name> directory, only the launcher's
+# own ./ makes a git directory: a path, absolute or relative, does not.
+mkdir -p "$D193/h2" "$D193/h3" && printf '/nonexistent/cd\n' > "$D193/h2/commondir" && printf '../x\n' > "$D193/h3/commondir"
+for h193 in h2 h3; do
+  EXTRA_MOUNTS="$D193/$h193" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 && "$(find "$D193/$h193" -mindepth 1 | wc -l | tr -d ' ')" == 1 ]] \
+    && pass "G193 a commondir holding a path ($(cat "$D193/$h193/commondir")), with no HEAD, is left alone" \
+    || fail "G193 a path, no HEAD, $h193 (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+done
+# Where git keeps a linked worktree's directory, any regular commondir still
+# counts. A bare repository never protected, its HEAD moved aside; its worktree's
+# directory, HEAD moved aside too, its commondir naming a directory of the
+# agent's: left alone, the session put both HEADs back and the host's git in the
+# checkout ran that directory's config (final review of this fix).
+mkdir -p "$D193/t" && "${G[@]}" init -q --bare "$D193/t/w.git" && "${G[@]}" -C "$PROJ" push -q "$D193/t/w.git" HEAD:refs/heads/main 2>/dev/null \
+  && "${G[@]}" --git-dir="$D193/t/w.git" worktree add -q "$TMP/out193t" main 2>/dev/null \
+  && mkdir -p "$D193/t/w.git/evil/objects" "$D193/t/w.git/evil/refs" && printf '[core]\n\tfsmonitor = /bin/true\n' > "$D193/t/w.git/evil/config" \
+  && mv "$D193/t/w.git/HEAD" "$D193/t/w.git/H" && mv "$D193/t/w.git/worktrees/out193t/HEAD" "$D193/t/w.git/worktrees/out193t/H" \
+  && printf '../../evil\n' > "$D193/t/w.git/worktrees/out193t/commondir" || { printf 'SCAFFOLD-FAILED: G193 trap\n'; exit 1; }
+EXTRA_MOUNTS="$D193/t" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $D193/t/w.git/worktrees/out193t/commondir sends git to" "$ERR" \
+  && pass "G193 a worktree's directory with no HEAD and a commondir git does not write still refuses, its repository hidden too" \
+  || fail "G193 hidden repository's worktree (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -1))"
+rm -rf "$TMP/out193t" "$D193/t"
+# So a file of yours by that name in a directory worktrees/<name>/ is still taken.
+mkdir -p "$D193/docs/worktrees/guide" && printf 'my notes\n' > "$D193/docs/worktrees/guide/commondir"
+EXTRA_MOUNTS="$D193/docs" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $D193/docs/worktrees/guide/commondir sends git to" "$ERR" \
+  && grep -qF "A file of yours that only shares the name: rename it" "$ERR" \
+  && pass "G193 a file named commondir in a directory worktrees/<name>/ is still refused, and said to be renamed" \
+  || fail "G193 file under worktrees/<name>/ (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+# A link by that name with no HEAD beside it was never taken, and is not now:
+# the scan does not meet it, and one a .git file names is no git directory.
+mkdir -p "$D193/h4/d" "$D193/h4/co" && printf './\n' > "$D193/h4/target" && ln -s ../target "$D193/h4/d/commondir" \
+  && printf 'gitdir: %s\n' "$D193/h4/d" > "$D193/h4/co/.git"
+EXTRA_MOUNTS="$D193/h4" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "names $D193/h4/d, which is not a git directory" "$ERR" \
+  && pass "G193 a link named commondir, with no HEAD, makes no git directory" \
+  || fail "G193 link, no HEAD (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -1))"
+# A repository protected with no placeholder (its config sets core.worktree,
+# GIT-73) and its linked worktree, both HEADs moved aside in a session: the
+# worktree's ../.. still finds both.
+mkdir -p "$D193/w" && "${G[@]}" init -q --bare "$D193/w/dot.git" && "${G[@]}" -C "$PROJ" push -q "$D193/w/dot.git" HEAD:refs/heads/main 2>/dev/null \
+  && "${G[@]}" --git-dir="$D193/w/dot.git" worktree add -q "$TMP/out193" main 2>/dev/null \
+  && "${G[@]}" --git-dir="$D193/w/dot.git" config core.bare false && "${G[@]}" --git-dir="$D193/w/dot.git" config core.worktree "$D193/w" \
+  || { printf 'SCAFFOLD-FAILED: G193 worktree\n'; exit 1; }
+EXTRA_MOUNTS="$D193/w" launch "$TMP/app"
+n193="$(mounts | grep -cF "$D193/w/dot.git/")"
+mv "$D193/w/dot.git/HEAD" "$D193/w/dot.git/H" && mv "$D193/w/dot.git/worktrees/out193/HEAD" "$D193/w/dot.git/worktrees/out193/H"
+EXTRA_MOUNTS="$D193/w" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$n193" -gt 0 && "$(mounts | grep -cF "$D193/w/dot.git/")" == "$n193" ]] \
+  && has_mount "$D193/w/dot.git/config:/workspace/w/dot.git/config:ro" \
+  && pass "G193 a repository with no placeholder and its worktree, their HEADs moved aside, keep their $n193 mounts" \
+  || fail "G193 HEADs moved aside (rc=$LAUNCH_RC; $n193 before, $(mounts | grep -cF "$D193/w/dot.git/") after)"
+rm -rf "$TMP/out193"
+# A .git file naming a directory with a commondir and no HEAD: named, and
+# looked at again after the session, which names it once it has a HEAD. In
+# this mount, and in another, where nothing was said (bugs review GIT-86).
+for m193 in f "f2 g2"; do
+  # shellcheck disable=SC2086  # split on purpose: one name, or two
+  set -- $m193; a193="$D193/$1"; b193="$D193/${2:-$1}"; w193="this mount"; [[ -z "${2:-}" ]] || w193="another mount"
+  mkdir -p "$a193/co" "$b193/node_modules/gd" "$b193/node_modules/cd/objects" "$b193/node_modules/cd/refs" \
+    && printf '../cd\n' > "$b193/node_modules/gd/commondir" \
+    && printf 'gitdir: %s\n' "$b193/node_modules/gd" > "$a193/co/.git" && printf '[core]\n\tfsmonitor = /bin/true\n' > "$b193/node_modules/cd/config"
+  e193="$a193"; [[ "$a193" == "$b193" ]] || e193="$a193 $b193"
+  FAKE_SESSION="printf 'ref: refs/heads/main\n' > '$b193/node_modules/gd/HEAD'" EXTRA_MOUNTS="$e193" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qF "names $b193/node_modules/gd, which is not a git directory" "$ERR" \
+    && grep -qF "$b193/node_modules/gd (" < <(grep -A3 -F 'WARNING: the session made git repositories' "$ERR") \
+    && pass "G193 a .git file naming one with no HEAD is named, and named again once the session writes the HEAD ($w193)" \
+    || fail "G193 named by a .git file, $w193 (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -3 | tr '\n' ' '))"
+  EXTRA_MOUNTS="$e193" launch "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $b193/node_modules/gd/commondir sends git to" "$ERR" \
+    && pass "G193 …and refuses the next launch ($w193)" \
+    || fail "G193 next launch, $w193 (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+done
+set --
+# A target the agent cannot write, outside every writable mount, is not named.
+mkdir -p "$D193/f3/co" "$TMP/out193b/x" && printf 'gitdir: %s\n' "$TMP/out193b/x" > "$D193/f3/co/.git"
+EXTRA_MOUNTS="$D193/f3" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$TMP/out193b/x, which is not a git directory" "$ERR" \
+  && pass "G193 a .git file naming a directory outside every writable mount that is no git directory is not named" \
+  || fail "G193 target outside every mount (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$TMP/out193b"
+
+# ── G194: remote-tracking refs named HEAD, objects and refs are no repository ──
+# In a bare repository, a remote whose HEAD is set and that has branches objects
+# and refs leaves three loose refs that passed for a git directory: the launch
+# made commondir, config and hooks/ among them, and git gc then failed (bugs
+# review GIT-74). Passed over only where git itself turns them down: under the
+# refs/ or logs/ of a git directory, objects and refs regular files with no
+# execute bit, and nothing else of a git directory beside them.
+D194="$TMP/d194"; mkdir -p "$D194" && "${G[@]}" init -q "$D194/src" && "${G[@]}" -C "$D194/src" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$D194/src" branch objects && "${G[@]}" -C "$D194/src" branch refs \
+  && "${G[@]}" init -q --bare "$D194/b.git" && "${G[@]}" --git-dir="$D194/b.git" remote add o "$D194/src" \
+  && "${G[@]}" --git-dir="$D194/b.git" -c protocol.file.allow=always fetch -q o 2>/dev/null \
+  && "${G[@]}" --git-dir="$D194/b.git" remote set-head o main \
+  && [[ -f "$D194/b.git/refs/remotes/o/HEAD" && -f "$D194/b.git/refs/remotes/o/objects" && -f "$D194/b.git/refs/remotes/o/refs" ]] \
+  || { printf 'SCAFFOLD-FAILED: G194\n'; exit 1; }
+o194="$D194/b.git/refs/remotes/o"
+EXTRA_MOUNTS="$D194/b.git" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && ! -e "$o194/commondir" && ! -e "$o194/hooks" && ! -e "$o194/config" ]] \
+  && ! grep -qF "refs/remotes/o" < <(mounts) \
+  && [[ -z "$("${G[@]}" --git-dir="$D194/b.git" for-each-ref 2>&1 >/dev/null)" ]] \
+  && "${G[@]}" --git-dir="$D194/b.git" gc -q 2>/dev/null \
+  && pass "G194 loose remote-tracking refs HEAD, objects and refs get nothing made among them, and git gc still works" \
+  || fail "G194 refs taken for a repository (rc=$LAUNCH_RC; $(ls "$o194" 2>/dev/null | tr '\n' ' '); gc: $("${G[@]}" --git-dir="$D194/b.git" gc -q 2>&1 | head -1))"
+# With branches named config and hooks beside them as well: git turns the
+# directory down before it reads either.
+rm -rf "$D194/b.git"; "${G[@]}" -C "$D194/src" branch config && "${G[@]}" -C "$D194/src" branch hooks \
+  && "${G[@]}" init -q --bare "$D194/b.git" && "${G[@]}" --git-dir="$D194/b.git" remote add o "$D194/src" \
+  && "${G[@]}" --git-dir="$D194/b.git" -c protocol.file.allow=always fetch -q o 2>/dev/null \
+  && "${G[@]}" --git-dir="$D194/b.git" remote set-head o main && [[ -f "$o194/config" && -f "$o194/hooks" && -f "$o194/objects" ]] \
+  || { printf 'SCAFFOLD-FAILED: G194 config and hooks\n'; exit 1; }
+EXTRA_MOUNTS="$D194/b.git" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && ! -e "$o194/commondir" && -f "$o194/hooks" && -s "$o194/config" ]] && ! grep -qF "refs/remotes/o" < <(mounts) \
+  && pass "G194 …with branches named config and hooks beside them too" \
+  || fail "G194 config and hooks branches (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1); $(ls -F "$o194" 2>/dev/null | tr '\n' ' '))"
+# The guards: each of these is still taken, and protected.
+g194() {  # NAME, then what to do in the candidate $c194 before the launch
+  local n="$1"; shift
+  c194="$D194/g.git/refs/x"; rm -rf "$D194/g.git" "$D194/co"
+  "${G[@]}" init -q --bare "$D194/g.git" && mkdir -p "$c194" && printf 'ref: refs/heads/main\n' > "$c194/HEAD" \
+    && printf '%040d\n' 1 > "$c194/objects" && printf '%040d\n' 2 > "$c194/refs" && "$@" \
+    || { printf 'SCAFFOLD-FAILED: G194 %s\n' "$n"; exit 1; }
+  EXTRA_MOUNTS="$D194/g.git" launch "$TMP/app"
+  { { [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $c194/commondir sends git to" "$ERR"; } \
+      || { [[ "$LAUNCH_RC" == 0 ]] && has_mount "$c194/config:/workspace/g.git/refs/x/config:ro"; }; } \
+    && pass "G194 still taken: $n" \
+    || fail "G194 passed over: $n (rc=$LAUNCH_RC; $(mounts | grep -F /refs/x | tr '\n' ' '))"
+}
+# The shape the guards start from is itself passed over, so each shows something.
+c194="$D194/g.git/refs/x"; "${G[@]}" init -q --bare "$D194/g.git" && mkdir -p "$c194" && printf 'ref: refs/heads/main\n' > "$c194/HEAD" \
+  && printf '%040d\n' 1 > "$c194/objects" && printf '%040d\n' 2 > "$c194/refs" || { printf 'SCAFFOLD-FAILED: G194 shape\n'; exit 1; }
+EXTRA_MOUNTS="$D194/g.git" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && ! -e "$c194/commondir" && ! -e "$c194/config" ]] && ! grep -qF "/refs/x" < <(mounts) \
+  && pass "G194 the same three files under any git directory's refs/ are passed over" \
+  || fail "G194 the shape itself (rc=$LAUNCH_RC; $(ls "$c194" | tr '\n' ' '))"
+x194() { chmod 0744 "$c194/objects"; };                       g194 "objects executable by its owner" x194
+o194x() { chmod 0645 "$c194/refs"; };                         g194 "refs executable by others only, which root's git takes" o194x
+g194x() { chmod 0654 "$c194/refs"; };                         g194 "refs executable by its group only" g194x
+d194() { rm "$c194/objects" "$c194/refs" && mkdir "$c194/objects" "$c194/refs"; }; g194 "objects and refs directories" d194
+c194f() { printf '../y\n' > "$c194/commondir"; };            g194 "a commondir beside them" c194f
+l194() { rm "$c194/refs" && ln -s objects "$c194/refs"; };    g194 "refs a link to a file" l194
+# One a .git file names is taken as before, whatever its place.
+n194() { mkdir -p "$D194/g.git/co" && printf 'gitdir: %s\n' "$c194" > "$D194/g.git/co/.git"; }; g194 "the same, named by a .git file" n194
+# Under the logs/ of a git directory it is passed over too.
+rm -rf "$D194/g.git"; "${G[@]}" init -q --bare "$D194/g.git" && mkdir -p "$D194/g.git/logs/refs/remotes/o" \
+  && for x194 in HEAD objects refs; do printf '0 1 t\n' > "$D194/g.git/logs/refs/remotes/o/$x194"; done
+EXTRA_MOUNTS="$D194/g.git" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && ! -e "$D194/g.git/logs/refs/remotes/o/commondir" ]] && ! grep -qF "/logs/refs" < <(mounts) \
+  && pass "G194 reflogs named HEAD, objects and refs are passed over too" \
+  || fail "G194 under logs/ (rc=$LAUNCH_RC; $(ls "$D194/g.git/logs/refs/remotes/o" | tr '\n' ' '))"
+# Under a directory named refs that belongs to no git directory.
+rm -rf "$D194/g.git"; mkdir -p "$D194/plain/refs/x" && printf 'ref: refs/heads/main\n' > "$D194/plain/refs/x/HEAD" \
+  && printf '%040d\n' 1 > "$D194/plain/refs/x/objects" && printf '%040d\n' 2 > "$D194/plain/refs/x/refs"
+EXTRA_MOUNTS="$D194/plain" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$D194/plain/refs/x/config:/workspace/plain/refs/x/config:ro" \
+  && pass "G194 still taken: the same under a refs/ that is no git directory's" \
+  || fail "G194 passed over under a plain refs/ (rc=$LAUNCH_RC; $(mounts | grep -F /refs/x | tr '\n' ' '))"
+# In a git directory, but not under its refs/ or logs/.
+rm -rf "$D194/plain"; "${G[@]}" init -q --bare "$D194/g.git" && mkdir -p "$D194/g.git/other/x" && printf 'ref: refs/heads/main\n' > "$D194/g.git/other/x/HEAD" \
+  && printf '%040d\n' 1 > "$D194/g.git/other/x/objects" && printf '%040d\n' 2 > "$D194/g.git/other/x/refs"
+EXTRA_MOUNTS="$D194/g.git" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$D194/g.git/other/x/config:/workspace/g.git/other/x/config:ro" \
+  && pass "G194 still taken: the same in a git directory, outside its refs/ and logs/" \
+  || fail "G194 passed over outside refs/ (rc=$LAUNCH_RC; $(mounts | grep -F /other/x | tr '\n' ' '))"
+rm -rf "$D194/g.git"
+# A real bare repository kept under another's refs/.
+rm -rf "$D194/plain"; "${G[@]}" init -q --bare "$D194/g.git" && "${G[@]}" init -q --bare "$D194/g.git/refs/inner.git"
+EXTRA_MOUNTS="$D194/g.git" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$D194/g.git/refs/inner.git/config:/workspace/g.git/refs/inner.git/config:ro" \
+  && pass "G194 still taken: a real bare repository under another's refs/" \
+  || fail "G194 a repository under refs/ (rc=$LAUNCH_RC; $(mounts | grep -F inner.git | tr '\n' ' '))"
+chmod -R u+rwx "$D193" "$D194" 2>/dev/null; rm -rf "$D193" "$D194"
+
+# ── G195: a repository protected with no placeholder is found again ───────────
+# One whose config sets core.worktree gets no ./ (GIT-73), and the ./ was what
+# found a protected git directory again once a session had moved its HEAD
+# aside: with none, and no linked worktree, the next launch bound nothing of
+# it, the session wrote its config and put the HEAD back, and the host's git
+# ran it. Its config and hooks/ are bound, so they are what finds it: a
+# directory with no HEAD holding a hooks/ and a config that sets core.worktree
+# (bugs review GIT-85, GIT-7).
+D195="$TMP/d195"; mkdir -p "$D195/wt" && "${G[@]}" init -q --bare "$D195/dot.git" \
+  && "${G[@]}" -C "$PROJ" push -q "$D195/dot.git" HEAD:refs/heads/main 2>/dev/null \
+  && "${G[@]}" --git-dir="$D195/dot.git" config core.bare false && "${G[@]}" --git-dir="$D195/dot.git" config core.worktree "$D195/wt" \
+  || { printf 'SCAFFOLD-FAILED: G195\n'; exit 1; }
+EXTRA_MOUNTS="$D195" launch "$TMP/app"
+m195="$(mounts | grep -F "$D195/dot.git" | LC_ALL=C sort)"
+[[ "$LAUNCH_RC" == 0 && ! -e "$D195/dot.git/commondir" ]] && has_mount "$D195/dot.git/config:/workspace/d195/dot.git/config:ro" \
+  && pass "G195 control: it is protected, with no placeholder" \
+  || fail "G195 control (rc=$LAUNCH_RC; $(tr '\n' ' ' <<<"$m195"))"
+mv "$D195/dot.git/objects" "$D195/dot.git/o" && mv "$D195/dot.git/refs" "$D195/dot.git/r"
+EXTRA_MOUNTS="$D195" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -n "$m195" && "$(mounts | grep -F "$D195/dot.git" | LC_ALL=C sort)" == "$m195" ]] \
+  && pass "G195 with its objects and refs moved aside it keeps the same mounts" \
+  || fail "G195 objects and refs moved aside (rc=$LAUNCH_RC; before: $(wc -l <<<"$m195" | tr -d ' '); after: $(mounts | grep -cF "$D195/dot.git"))"
+mv "$D195/dot.git/HEAD" "$D195/dot.git/H"
+EXTRA_MOUNTS="$D195" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(mounts | grep -F "$D195/dot.git" | LC_ALL=C sort)" == "$m195" ]] \
+  && pass "G195 …and with its HEAD moved aside as well" \
+  || fail "G195 HEAD moved aside (rc=$LAUNCH_RC; after: $(mounts | grep -cF "$D195/dot.git"))"
+mv "$D195/dot.git/o" "$D195/dot.git/objects" && mv "$D195/dot.git/r" "$D195/dot.git/refs"
+EXTRA_MOUNTS="$D195" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(mounts | grep -F "$D195/dot.git" | LC_ALL=C sort)" == "$m195" ]] \
+  && pass "G195 …and with only its HEAD moved aside" \
+  || fail "G195 only HEAD moved aside (rc=$LAUNCH_RC; after: $(mounts | grep -cF "$D195/dot.git"))"
+# A commondir the session made there, whatever it holds, refuses the next
+# launch with the HEAD moved aside too: a relative path with no HEAD beside it
+# is none of git's elsewhere (GIT-79), and would have hidden this one.
+printf '../evil\n' > "$D195/dot.git/commondir"
+EXTRA_MOUNTS="$D195" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $D195/dot.git/commondir sends git to" "$ERR" \
+  && pass "G195 a commondir made there refuses the next launch, its HEAD moved aside or not" \
+  || fail "G195 commondir and no HEAD (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -f "$D195/dot.git/commondir"
+# What makes it one: a hooks/ and a config that sets core.worktree, both.
+mkdir -p "$D195/p1/hooks" "$D195/p2/hooks" "$D195/p3" && printf '[core]\n\tbare = false\n' > "$D195/p1/config" \
+  && printf '[core]\n\tworktree = /x\n' > "$D195/p3/config" && printf 'port = 80\n[core]\n' > "$D195/p2/config"
+EXTRA_MOUNTS="$D195" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qE "/d195/p[123]/" < <(mounts) && [[ ! -e "$D195/p1/commondir" && ! -e "$D195/p3/hooks" ]] \
+  && pass "G195 a config with a hooks/ but no core.worktree, or with it and no hooks/, makes no git directory" \
+  || fail "G195 lookalikes (rc=$LAUNCH_RC; $(mounts | grep -E "/d195/p[123]/" | tr '\n' ' '))"
+chmod -R u+rwx "$D195" 2>/dev/null; rm -rf "$D195"
+
+# ── G196: what is read and found to be no git directory is bounded ────────────
+# A file named commondir beside no HEAD, loose refs, and a config beside a
+# hooks/ each take a read to turn down, and the agent can plant any number:
+# past SANDBOX_GIT_MAX the launch is refused, naming five (final review of
+# GIT-79's fix).
+D196="$TMP/d196"; mkdir -p "$D196/a" "$D196/b" "$D196/c" && "${G[@]}" init -q --bare "$D196/b/g.git"
+for i196 in 1 2 3 4 5; do
+  mkdir -p "$D196/a/n$i196" "$D196/b/g.git/refs/x$i196" "$D196/c/k$i196/hooks" && printf 'notes\n' > "$D196/a/n$i196/commondir" \
+    && printf 'ref: refs/heads/main\n' > "$D196/b/g.git/refs/x$i196/HEAD" && printf '%040d\n' 1 > "$D196/b/g.git/refs/x$i196/objects" \
+    && printf '%040d\n' 2 > "$D196/b/g.git/refs/x$i196/refs" && printf '[core]\n\tbare = false\n' > "$D196/c/k$i196/config"
+done
+for w196 in a b c; do
+  SANDBOX_GIT_MAX=4 EXTRA_MOUNTS="$D196/$w196" launch "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "holds more than 4 directories this launch had to read" "$ERR" \
+    && [[ "$(grep -cE "^ +$D196/$w196/" "$ERR")" == 5 ]] \
+    && pass "G196 five look-alikes past a limit of four refuse the launch, and are named ($w196)" \
+    || fail "G196 $w196 (rc=$LAUNCH_RC; $(grep -F -A2 ERROR "$ERR" | head -3 | tr '\n' ' '))"
+  SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$D196/$w196" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && pass "G196 …and five within a limit of five launch ($w196)" \
+    || fail "G196 $w196 within the limit (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+done
+# Only what took a read is counted: a file named config or HEAD with nothing of
+# a git directory beside it costs none, and any number of them launch.
+mkdir -p "$D196/d"
+for i196 in 1 2 3 4 5; do
+  mkdir -p "$D196/d/c$i196" "$D196/d/h$i196" && printf 'port = 80\n' > "$D196/d/c$i196/config" && printf 'title\n' > "$D196/d/h$i196/HEAD"
+done
+SANDBOX_GIT_MAX=4 EXTRA_MOUNTS="$D196/d" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && pass "G196 files named config or HEAD that cost no read are not counted" \
+  || fail "G196 uncounted (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$D196"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

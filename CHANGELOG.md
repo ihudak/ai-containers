@@ -247,6 +247,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `node_modules`, or in another mount) had none of its worktrees' directories
   bound, and now has (bugs review GIT-78).
 
+- **A branch or a file named `commondir` no longer refuses every launch.** Any
+  regular file by that name made its directory a git directory to the
+  launcher, which then refused it, since git writes no such `commondir`: a
+  branch or tag named `commondir` in a bare repository, a plain file of
+  yours, and one in the directory above a mount. With no `HEAD` beside it,
+  such a file now counts only when it holds the launcher's own placeholder,
+  or lies where git keeps a linked worktree's directory
+  (`worktrees/<name>/`). git takes no directory without a `HEAD`, so nothing
+  git uses at that moment is left out. A remote-tracking branch named
+  `commondir`, which has the remote's `HEAD` beside it, is still refused.
+  A tree holding more such look-alikes than `SANDBOX_GIT_MAX` is refused,
+  since each takes a read to turn down (bugs review GIT-79).
+- **Remote-tracking refs named `HEAD`, `objects` and `refs` are no longer
+  taken for a repository.** In a bare repository, a remote whose `HEAD` is set
+  and that has branches `objects` and `refs` left three loose refs that
+  passed for a git directory; the launch wrote `commondir`, `config` and
+  `hooks/` among them, and `git gc` then failed. They are passed over where
+  git itself turns them down. A repository this happened to: remove those
+  three from `refs/remotes/<name>/` on the host (bugs review GIT-74).
+- **A repository whose `config` sets `core.worktree` stays protected when a
+  session hides its `HEAD`.** Such a repository gets no `commondir`
+  placeholder (GIT-73, above), and the placeholder was what found a protected
+  git directory again once its `HEAD`, `objects/` or `refs/` had been moved
+  aside: the next launch bound nothing of it, and the session could write its
+  `config`. It is now found by the `config` and `hooks/` the launch binds
+  there (bugs review GIT-85).
+- **A `.git` file that names a directory in another writable mount which is
+  no git directory is now named at launch**, and looked at again when the
+  container exits; it was passed in silence, and a session that made that
+  directory a repository went unnamed (bugs review GIT-86).
+
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read
   the launcher bounds came back empty for a directory named with such a byte,
