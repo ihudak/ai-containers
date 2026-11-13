@@ -328,6 +328,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   launcher (two empty files do) was named when the container exited, and not
   again. The first launch that sees one now names them, as a first
   protection does (bugs review GIT-80).
+- **A submodule's `lfs/`, `annex/` and `svn/` are no longer taken for git
+  directories.** git-lfs, git-annex and git-svn keep them inside the git
+  directory they serve, and under `.git/modules` each passed the test that keeps
+  a submodule's git directory protected with its `HEAD` moved aside: the launch
+  made `commondir`, `config`, `config.worktree` and `hooks/` in each and bound
+  them, four or five mounts apiece. One that an earlier launch filled so keeps
+  being taken while its `commondir` or `config` is there: remove the four
+  together, once no container uses the repository (bugs review GIT-75).
 
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read

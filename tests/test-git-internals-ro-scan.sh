@@ -1938,5 +1938,61 @@ SANDBOX_GIT_MAX=100 EXTRA_MOUNTS="$D197" launch "$TMP/app"
   || fail "G197 within the limit (rc=$LAUNCH_RC; $(grep -A2 -F 'WARNING: the session' "$ERR" | tr '\n' ' '))"
 rm -rf "$D197" "$TMP/bin197" "$TMP/stat197.log"
 
+# ── G203: a submodule's lfs/, annex/ and svn/ are not git directories ─────────
+# git-lfs keeps lfs/objects/ and lfs/tmp/ in the git directory it serves,
+# git-annex annex/objects/, its index and journal, git-svn svn/.metadata and
+# svn/refs/remotes/: under .git/modules each passed the wide test that keeps a
+# submodule's git directory protected with its HEAD moved aside (GIT-48), and got
+# placeholders and binds. One named so, directly inside a directory there, with
+# no HEAD (a link counts), no config and not both objects and refs, is passed
+# over: git uses it neither as a git directory nor as a common directory, and
+# every git directory a launch protected holds a config (bugs review GIT-75).
+D203="$TMP/d203"
+mk203() {  # a repository whose submodule's git directory is .git/modules/sub
+  rm -rf "$D203"; mkdir -p "$D203/r/.git/modules/sub/objects" "$D203/r/.git/modules/sub/refs/heads" \
+    && "${G[@]}" init -q "$D203/r" && printf 'ref: refs/heads/main\n' > "$D203/r/.git/modules/sub/HEAD" \
+    && printf '[core]\n\tbare = false\n' > "$D203/r/.git/modules/sub/config" || { printf 'SCAFFOLD-FAILED: G203\n'; exit 1; }
+}
+taken203() { [[ -f "$1/commondir" ]] && has_mount "$1/config:/workspace/d203${1#"$D203"}/config:ro"; }
+mk203; M203="$D203/r/.git/modules/sub"
+mkdir -p "$M203/lfs/objects/ab/cd" "$M203/lfs/tmp" "$M203/annex/objects" "$M203/annex/journal" "$M203/annex/othertmp" \
+  "$M203/svn/refs/remotes/origin/trunk" && : > "$M203/lfs/objects/ab/cd/abcd203" && : > "$M203/annex/index" \
+  && : > "$M203/svn/.metadata" && : > "$M203/svn/refs/remotes/origin/trunk/index" || { printf 'SCAFFOLD-FAILED: G203 tools\n'; exit 1; }
+EXTRA_MOUNTS="$D203" launch "$TMP/app"
+bad203=""
+for t in lfs annex svn; do
+  [[ -e "$M203/$t/commondir" || -e "$M203/$t/config" || -e "$M203/$t/config.worktree" || -e "$M203/$t/hooks" ]] && bad203+=" $t"
+  grep -qF "$M203/$t" < <(mounts) && bad203+=" $t(mounted)"
+done
+[[ "$LAUNCH_RC" == 0 && -z "$bad203" ]] && taken203 "$M203" \
+  && pass "G203 a submodule's lfs/, annex/ and svn/ get nothing made or bound; the submodule's git directory is protected" \
+  || fail "G203 tool directories taken:${bad203:- (none)} (rc=$LAUNCH_RC; sub protected: $(taken203 "$M203" && echo y || echo n))"
+# A .git file naming one: no git directory, named as such.
+mkdir -p "$D203/co" && printf 'gitdir: %s\n' "$M203/lfs" > "$D203/co/.git"
+EXTRA_MOUNTS="$D203" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && ! -e "$M203/lfs/commondir" ]] && grep -qF 'not a git directory' < <(grep -F "$M203/lfs" "$ERR") \
+  && pass "G203 a .git file naming one is told it names no git directory" \
+  || fail "G203 .git file naming lfs/ (rc=$LAUNCH_RC; stderr: $(grep -F 'lfs' "$ERR" | head -3 | tr '\n' ' '))"
+# Each of what makes one a git directory, or one a launch protected, keeps it
+# taken: a HEAD, a HEAD that is a link leading nowhere (git takes one whose text
+# starts refs/), a config, objects and refs both (git takes that for a common
+# directory); and a submodule named lfs, whose git directory is .git/modules/lfs.
+guard203() {  # <label> <directory> : taken
+  EXTRA_MOUNTS="$D203" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && taken203 "$2" && pass "G203 one with $1 is still taken" \
+    || fail "G203 one with $1 passed over (rc=$LAUNCH_RC; commondir: $([[ -f "$2/commondir" ]] && echo y || echo n))"
+}
+mk203; mkdir -p "$D203/r/.git/modules/sub/lfs/objects" && printf 'ref: refs/heads/main\n' > "$D203/r/.git/modules/sub/lfs/HEAD"
+guard203 "a HEAD" "$D203/r/.git/modules/sub/lfs"
+mk203; mkdir -p "$D203/r/.git/modules/sub/lfs/objects" && ln -s refs/heads/main "$D203/r/.git/modules/sub/lfs/HEAD"
+guard203 "a HEAD that is a dangling link" "$D203/r/.git/modules/sub/lfs"
+mk203; mkdir -p "$D203/r/.git/modules/sub/lfs/objects" && printf '[core]\n\tbare = false\n' > "$D203/r/.git/modules/sub/lfs/config"
+guard203 "a config" "$D203/r/.git/modules/sub/lfs"
+mk203; mkdir -p "$D203/r/.git/modules/sub/lfs/objects" "$D203/r/.git/modules/sub/lfs/refs"
+guard203 "objects and refs" "$D203/r/.git/modules/sub/lfs"
+mk203; mkdir -p "$D203/r/.git/modules/lfs/objects"
+guard203 "the name of a submodule (.git/modules/lfs)" "$D203/r/.git/modules/lfs"
+rm -rf "$D203"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

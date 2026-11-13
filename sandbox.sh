@@ -3199,6 +3199,24 @@ _gdi_loose_refs() {
   done
   return 1
 }
+# _gdi_tool_dir <dir>: a directory git-lfs (lfs/), git-annex (annex/) or git-svn
+# (svn/) keeps inside the git directory it serves, under .git/modules a
+# submodule's: named so, directly inside a directory there, with no HEAD (a link
+# counts, as git takes one whose text starts refs/ without following it), no
+# config and not both objects and refs. git uses such a directory neither as a
+# git directory, which needs a HEAD, nor as the common directory a commondir or
+# GIT_COMMON_DIR names, which needs both (run, git 2.56; review of the plan); and
+# every git directory a launch protected under .git/modules holds the ./
+# commondir it made there, bound read-only, by which the scan takes it
+# (_is_git_dir) whatever else it holds. The tools write none of the three: lfs/
+# holds objects/ and tmp/, annex/ objects/, an index and journals, svn/ refs/ and
+# .metadata. Each got placeholders and binds, under SANDBOX_GIT_MAX (bugs review
+# GIT-75; G203). The scan's candidates only, as _gdi_loose_refs; stats, no read.
+_gdi_tool_dir() {
+  local l="${1,,}"
+  [[ "$l" == */.git/modules/*/lfs || "$l" == */.git/modules/*/annex || "$l" == */.git/modules/*/svn ]] || return 1
+  [[ ! -e "$1/HEAD" && ! -L "$1/HEAD" && ! -e "$1/config" ]] && ! _git_has_store "$1"
+}
 # _git_has_store <dir>: objects and refs, more than git asks of them: git takes
 # them by access(X_OK), an executable file as a directory, and a reftable
 # repository keeps working with refs one. Anything there, a link included,
@@ -4420,7 +4438,8 @@ git_dirs_in() {
         # Both objects and refs as git takes them (_git_has_store), or any one of
         # these: git gc writes refs, a file, in every git directory's info/,
         # which either alone took for one (review of GIT-69's fix).
-        elif [[ "$lf" == */.git/modules/* ]] && { _git_has_store "$f" || [[ -d "$f/objects" || -d "$f/refs" \
+        # Not a submodule's lfs/, annex/ or svn/ (_gdi_tool_dir; GIT-75).
+        elif [[ "$lf" == */.git/modules/* ]] && ! _gdi_tool_dir "$f" && { _git_has_store "$f" || [[ -d "$f/objects" || -d "$f/refs" \
                || -f "$f/config" || -d "$f/hooks" || -f "$f/index" || -f "$f/commondir" ]]; }; then
           _gdi_dirs+=("$f"); had[$f]=1
         fi
