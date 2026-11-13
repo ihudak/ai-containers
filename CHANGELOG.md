@@ -347,6 +347,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checkout's `.git` file or a file of yours, and to remove only one that is
   none of these (bugs review
   GIT-77).
+- **A git config of very many keys no longer refuses every launch.** The keys
+  that make git run a program were read from every entry in a loop under the
+  read bound, and 300,000 aliases refused each launch as "the host may be
+  busy". git now lists only those keys, 1200 a file at most, and the cut is
+  named; a checkout's `remote.origin.url` is read the same way (bugs review
+  GIT-89). A `core.worktree` set in `config.worktree` is named with them
+  (GIT-88), and a repository whose path holds a newline is named once, not at
+  every launch (GIT-90).
 
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read

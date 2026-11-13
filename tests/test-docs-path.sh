@@ -366,6 +366,22 @@ else
 fi
 teardown
 
+# GIT-89: a config of very many origin URLs is not read whole in a bash loop
+# under the read bound, which refused the launch as "host may be busy": past
+# 1200 the origin is taken for unknown, as for a config that cannot be read.
+setup
+mkdir -p "$TMP/app"
+register_git_repo docs ssh://git@example.org/team/docs.git "$TMP/docsco"
+awk 'BEGIN { print "[remote \"origin\"]"; for (i = 0; i < 300000; i++) print "\turl = ssh://git@example.org/team/docs.git" }' >> "$TMP/docsco/.git/config"
+export DOCS_PATH="$TMP/docsco" REPOS="docs:rw"
+run_sandbox_bounded 60 "$TMP/app"
+if [[ "$RC" -ne 124 ]] && ! grep -q 'could not be read within' "$ERR"; then
+  pass "GIT-89 a config of 300,000 origin URLs is not read whole (rc=$RC)"
+else
+  fail "GIT-89 300,000 origin URLs (rc=$RC; $(grep -m1 -E 'ERROR|could not' "$ERR"))"
+fi
+teardown
+
 # A linked worktree: its .git file's gitdir: and its commondir are followed to
 # the config that holds origin.
 setup

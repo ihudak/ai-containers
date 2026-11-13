@@ -1908,5 +1908,57 @@ EXTRA_MOUNTS="$TMP/h120" launch "$TMP/app"
   || fail "G201 push hooks for a value git does not read (rc=$LAUNCH_RC; $(grep -aF -A1 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/h120" "$TMP/o120"
 
+# ── G205 (GIT-89): a config long enough to list for seconds launches ─────────
+# The keys that make git run a program were read from every entry git listed,
+# in a bash loop under the read bound, which counts the reader's time: 300,000
+# `!` aliases refused every launch as "the host may be busy". git now lists only
+# the keys that count (--get-regexp, as the include walk does), at most 1200 of
+# them a file; past that the cut is named first. Harmless entries before a key
+# cannot push it past the cut (review of the plan).
+aliases205() { awk -v n="$1" 'BEGIN { print "[alias]"; for (i = 0; i < n; i++) printf "\ta%d = !x\n", i }'; }
+wtn205() {  # <repository under /workspace/r205>: the line of keys of its config.worktree NOTE
+  grep -A1 -F "NOTE: /workspace/r205/$1/.git/config.worktree, which no launch has named before, sets" "$ERR" | tail -1
+}
+R205="$TMP/r205"; mkdir -p "$R205" && "${G[@]}" init -q "$R205/h" && "${G[@]}" init -q "$R205/l" \
+  || { printf 'SCAFFOLD-FAILED: G205\n'; exit 1; }
+EXTRA_MOUNTS="$R205" launch "$TMP/app"
+{ printf '[x]\n'; for i in $(seq 1 1200); do printf '\tk%d = 1\n' "$i"; done; printf '[core]\n\tsshCommand = ssh-205\n'; } > "$R205/h/.git/config.worktree"
+aliases205 300000 > "$R205/l/.git/config.worktree"
+EXTRA_MOUNTS="$R205" launch_timed 60 "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(wtn205 h)" == *core.sshcommand* ]] \
+  && pass "G205 a key after 1200 entries that run nothing is named" \
+  || fail "G205 key after harmless entries (rc=$LAUNCH_RC; $(wtn205 h))"
+[[ "$LAUNCH_RC" == 0 && "$(wtn205 l)" == *"(config.worktree: more than 1200 keys that can run a program, the rest not read), alias.a0"*"and 1191 more." ]] \
+  && pass "G205 300,000 aliases in config.worktree launch, the cut named first (${LAUNCH_S}s)" \
+  || fail "G205 300,000 aliases (rc=$LAUNCH_RC; ${LAUNCH_S}s; $(wtn205 l | cut -c1-200); $(grep -m1 ERROR "$ERR"))"
+"${G[@]}" init -q "$R205/f" && aliases205 300000 >> "$R205/f/.git/config" || { printf 'SCAFFOLD-FAILED: G205 first\n'; exit 1; }
+EXTRA_MOUNTS="$R205" launch_timed 60 "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF '(config: more than 1200 keys that can run a program, the rest not read)' < <(grep -A1 -F 'NOTE: /workspace/r205/f/.git is protected for the first time' "$ERR") \
+  && pass "G205 a first protection of a config of 300,000 aliases launches, the cut named (${LAUNCH_S}s)" \
+  || fail "G205 first protection, 300,000 aliases (rc=$LAUNCH_RC; ${LAUNCH_S}s; $(grep -m1 ERROR "$ERR"))"
+rm -rf "$R205"
+
+# ── G206 (GIT-88): a core.worktree in config.worktree is named ───────────────
+# While extensions.worktreeConfig is off git takes no core.worktree from
+# config.worktree, nor does the walk (GIT-81); once it is on, the value moves
+# the checkout a relative core.hooksPath is judged from. It is named, in words
+# of its own, as the keys that run a program are; never from config, where a
+# repository used with --git-dir sets it (GIT-73).
+R206="$TMP/r206"; mkdir -p "$R206/cw" && "${G[@]}" init -q "$R206/r" && "${G[@]}" init -q --bare "$R206/dot.git" \
+  && "${G[@]}" --git-dir="$R206/dot.git" config core.bare false && "${G[@]}" --git-dir="$R206/dot.git" config core.worktree "$R206/cw" \
+  || { printf 'SCAFFOLD-FAILED: G206\n'; exit 1; }
+EXTRA_MOUNTS="$R206" launch "$TMP/app"
+first206="$(cat "$ERR")"
+printf '[core]\n\tworktree = %s\n' "$R206/cw" > "$R206/r/.git/config.worktree"
+EXTRA_MOUNTS="$R206" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF 'core.worktree (the checkout a relative hook path is taken from)' \
+     < <(grep -A1 -F 'NOTE: /workspace/r206/r/.git/config.worktree, which no launch has named before, sets' "$ERR") \
+  && pass "G206 a core.worktree set in config.worktree is named, in words of its own" \
+  || fail "G206 core.worktree in config.worktree (rc=$LAUNCH_RC; $(grep -A1 -F 'r206/r/.git' "$ERR" | head -3 | tr '\n' ' '))"
+! grep -qF 'core.worktree (the checkout' <<<"$first206" && grep -qF 'NOTE: /workspace/r206/dot.git sets core.worktree in its config' <<<"$first206" \
+  && pass "G206 … never from config, where a repository used with --git-dir sets it" \
+  || fail "G206 core.worktree named from config ($(grep -A1 -F 'r206/dot.git' <<<"$first206" | head -3 | tr '\n' ' '))"
+rm -rf "$R206"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

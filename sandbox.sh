@@ -5235,10 +5235,10 @@ _git_prog_keys='core\.(fsmonitor|sshcommand|editor|pager|askpass|gitproxy|altern
 # _git_key_shown <key>: a config key as it may be printed: a credential.<url>
 # key's user and password (`https://user:token@host`) blanked, since a NOTE
 # printed on every launch would show them (review of the GIT-42 fix).
-_git_key_shown() {
+_git_key_shown() {   # <key> [variable]: printed, or set in <variable>
   local k="$1"
   if [[ "$k" == credential.*://*@* ]]; then k="${k/:\/\/*@/://***@}"; fi
-  printf '%s' "$k"
+  if [[ -n "${2:-}" ]]; then printf -v "$2" '%s' "$k"; else printf '%s' "$k"; fi
 }
 
 # _git_prog <key> <value> <out-array>: what a key that runs a program has git
@@ -5372,18 +5372,29 @@ _git_prog() {
 # each once, values never printed. Read with git, which runs nothing from a
 # file it only lists; with no git on this host, none. A boolean core.fsmonitor
 # is git's own daemon, and an alias or a submodule's update runs a program only
-# when it starts with '!'. A file that does not exist sets nothing.
+# when it starts with '!'. A file that does not exist sets nothing. git lists
+# only the keys that count (--get-regexp, as _git_walk_keys does), at most 1200
+# of them a file, and a file cut there is named first: read whole, in this
+# loop, under the read bound, 300,000 aliases refused every launch as slow
+# (bugs review GIT-89), and counted among every entry, 1200 harmless ones hid a
+# key after them (review of the plan). core.worktree runs nothing, but set in
+# config.worktree it is the checkout a relative core.hooksPath is judged from
+# once git reads that file; named there in words of its own, never from config,
+# where a repository used with --git-dir sets it (GIT-73, GIT-88).
 _git_exec_keys() {
-  local f rec k v
-  local re="^(core\\.hookspath|include\\.path|includeif\\..+\\.path|protocol\\.(ext\\.)?allow|${_git_prog_keys})\$"
+  local f rec k v n ks
+  local re="^(core\\.hookspath|core\\.worktree|include\\.path|includeif\\..+\\.path|protocol\\.(ext\\.)?allow|${_git_prog_keys})\$"
   local -A had=()
+  local -a out=() cut=()
   _git_usable || return 0
   for f in "$@"; do
     if [[ ! -f "$f" ]]; then continue; fi
+    n=0
     while IFS= read -r -d '' rec; do
+      if (( ++n > 1200 )); then cut+=("(${f##*/}: more than 1200 keys that can run a program, the rest not read)"); break; fi
       # A key over 256 bytes is named by its size, once (GIT-49).
       if ! _git_kv "$rec" k v; then
-        if [[ -z "${had[long]:-}" ]]; then had[long]=1; printf '%s\0' "(a key of more than 256 characters)"; fi
+        if [[ -z "${had[long]:-}" ]]; then had[long]=1; out+=("(a key of more than 256 characters)"); fi
         continue
       fi
       if [[ ! "$k" =~ $re || -n "${had[$k]:-}" ]]; then continue; fi
@@ -5392,11 +5403,15 @@ _git_exec_keys() {
         alias.*|submodule.*.update) if [[ "$v" != '!'* ]]; then continue; fi ;;
         # A path runs a program; a host name does not (review of the batch 10 branch).
         sendemail.smtpserver|sendemail.*.smtpserver) if [[ "$v" != /* ]]; then continue; fi ;;
+        core.worktree)
+          [[ "${f##*/}" == config.worktree ]] || continue
+          had[$k]=1; out+=("core.worktree (the checkout a relative hook path is taken from)"); continue ;;
       esac
       had[$k]=1
-      _git_key_shown "$k"; printf '\0'
-    done < <(_git_file_config "$f" --null --list 2>/dev/null)
+      _git_key_shown "$k" ks; out+=("$ks")
+    done < <(_git_file_config "$f" --null --get-regexp "$re" 2>/dev/null)
   done
+  for k in ${cut[@]+"${cut[@]}"} ${out[@]+"${out[@]}"}; do printf '%s\0' "$k"; done
 }
 
 # _git_report_once <git dir> <where the agent sees it> <what happened> <al> [hooks-named]:
@@ -5518,7 +5533,7 @@ _git_ident() {
 }
 
 # The repositories whose keys and hooks a launch has named, one `<identity>
-# <path>` line each (_git_ident; a path with a newline is not recorded). The
+# <path>` line each (_git_ident; a path with a newline as %q writes it in the C locale, GIT-90). The
 # first protection — the launch that makes the commondir placeholder — names
 # them. A repository whose placeholder was there already, made by an earlier
 # engine or planted with one the agent made, never had that moment, and is
@@ -5546,15 +5561,21 @@ _git_reported_load() {
 # which named the hooks and read no key: `<identity> hooks:<path>`, a line no
 # physical path can make, so an older engine matches it to nothing.
 _git_reported() {    # <git dir, physical> [hooks]: rc 0 when it is in the record
-  [[ "$1" != *$'\n'* ]] || return 1
+  local p="$1"
+  # A path with a newline as %q writes it in the C locale ($'…'), which no
+  # physical path starts with: one line was all it could not be, and it was
+  # named at every launch (bugs review GIT-90); the C locale, or %q spells a
+  # byte past ASCII otherwise in another (review of the plan).
+  if [[ "$p" == *$'\n'* ]]; then LC_ALL=C printf -v p '%q' "$p"; fi
   _git_reported_load
-  [[ -n "${_git_reported_set["$(_git_ident "$1") ${2:+$2:}$1"]:-}" ]]
+  [[ -n "${_git_reported_set["$(_git_ident "$1") ${2:+$2:}$p"]:-}" ]]
 }
 _git_report_record() {   # <git dir, physical> [hooks]: add it, once, on a line of its own; quiet
-  local line last=""
-  [[ "$1" != *$'\n'* ]] || return 0
+  local line last="" p="$1"
+  # As _git_reported reads it (GIT-90).
+  if [[ "$p" == *$'\n'* ]]; then LC_ALL=C printf -v p '%q' "$p"; fi
   _git_reported_load
-  line="$(_git_ident "$1") ${2:+$2:}$1"
+  line="$(_git_ident "$1") ${2:+$2:}$p"
   [[ -z "${_git_reported_set[$line]:-}" ]] || return 0
   _git_reported_set[$line]=1
   [[ ! -L "$_git_reported_file" && ( ! -e "$_git_reported_file" || ( -f "$_git_reported_file" \
@@ -5922,7 +5943,13 @@ _checkout_origin_url() {
     [[ "$t" == /* ]] || t="$gd/$t"
     gd="$t"
   fi
+  # At most 1200, as a config's keys are read (_git_exec_keys): past that the
+  # origin is unknown, since an empty one later would empty the list; read
+  # whole in this loop under the read bound, 300,000 refused the launch as slow
+  # (review of the GIT-89 plan).
+  local n=0
   while IFS= read -r -d '' t; do
+    if (( ++n > 1200 )); then return 1; fi
     if [[ -z "$t" ]]; then u=""; elif [[ -z "$u" ]]; then u="$t"; fi
   done < <(_git_file_config "$gd/config" --null --get-all remote.origin.url 2>/dev/null)
   [[ -n "$u" ]] || return 1

@@ -261,17 +261,38 @@ else
   fail "G108 the first protection was not reported and recorded; the record's checks were skipped (rc=$LAUNCH_RC)"
 fi
 rm -rf "$TMP/rr"
-# A path with a newline cannot be one line of the record, so a repository
-# there is named at every launch, never taken for reported. A mutant that took
-# it for reported survived every test (GAP-2's slice 2; sandbox.sh: `_git_reported()`).
-nl109="$TMP/rn/a"$'\n'"b"
-mkdir -p "$nl109" && "${G[@]}" -C "$nl109" init -q && "${G[@]}" -C "$nl109" config core.sshCommand 'ssh-109' \
+# A path with a newline is recorded as `printf %q` writes it in the C locale
+# ($'…'), which no physical path starts with, so a repository there is named
+# once, as any other is (bugs review GIT-90): it was named at every launch. Its
+# placeholder made beforehand, so the launch is no first protection and only
+# the record decides: a mutant that took it for reported names nothing. The
+# same in another locale, where %q spells é otherwise (review of the plan). Any
+# other path is recorded as before, so older records stay valid.
+nl109="$TMP/rn/a"$'\n'"é"
+mkdir -p "$nl109" "$TMP/rn/s p" && "${G[@]}" -C "$nl109" init -q && "${G[@]}" -C "$nl109" config core.sshCommand 'ssh-109' \
+  && printf './\n' > "$nl109/.git/commondir" && "${G[@]}" -C "$TMP/rn/s p" init -q \
   || { printf 'SCAFFOLD-FAILED: G109\n'; exit 1; }
-EXTRA_MOUNTS="$TMP/rn" launch "$TMP/app"
-EXTRA_MOUNTS="$TMP/rn" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && grep -qF 'core.sshcommand' < <(grep -A1 -F 'was protected by an earlier launch that did not report it, and its config sets' "$ERR") \
-  && pass "G109 a repository at a path with a newline is named again at the next launch" \
+LC_ALL=C.UTF-8 EXTRA_MOUNTS="$TMP/rn" launch "$TMP/app"
+grep -qF 'core.sshcommand' < <(grep -A1 -F 'was protected by an earlier launch that did not report it, and its config sets' "$ERR") \
+  && pass "G109 a repository at a path with a newline, never reported, is named" \
   || fail "G109 a newline path taken for reported (rc=$LAUNCH_RC; stderr: $(grep -A1 NOTE "$ERR" | head -2 | tr '\n' ' '))"
+# Recorded in one locale and looked up in the other, both ways round: a second
+# repository, made now, is recorded by the launch in C, and looked up in UTF-8.
+nl109b="$TMP/rn/b"$'\n'"é"
+mkdir -p "$nl109b" && "${G[@]}" -C "$nl109b" init -q && "${G[@]}" -C "$nl109b" config core.sshCommand 'ssh-109b' \
+  && printf './\n' > "$nl109b/.git/commondir" || { printf 'SCAFFOLD-FAILED: G109 second\n'; exit 1; }
+LC_ALL=C EXTRA_MOUNTS="$TMP/rn" launch "$TMP/app"
+nb109="$(grep -c 'did not report it' "$ERR")"
+[[ "$LAUNCH_RC" == 0 && "$nb109" == 1 ]] && grep -qF "/workspace/rn/b" < <(grep -F 'did not report it' "$ERR") \
+  && pass "G109 … once: the next launch, in the C locale, names only the new one" \
+  || fail "G109 named again in C (rc=$LAUNCH_RC; $nb109 NOTE(s): $(grep -F 'did not report it' "$ERR" | head -2 | tr '\n' ' '))"
+LC_ALL=C.UTF-8 EXTRA_MOUNTS="$TMP/rn" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'did not report it' "$ERR" \
+  && pass "G109 … and the launch after it, in UTF-8, names neither" \
+  || fail "G109 named again in UTF-8 (rc=$LAUNCH_RC; stderr: $(grep -F 'did not report it' "$ERR" | head -2 | tr '\n' ' '))"
+grep -qE " $TMP/rn/s p/\.git\$" "$HOME/.ai-containers/git-reported.conf" \
+  && pass "G109 a path with no newline is recorded as before" \
+  || fail "G109 a plain path recorded otherwise ($(grep -F 'rn/s' "$HOME/.ai-containers/git-reported.conf" | head -1))"
 rm -rf "$TMP/rn"
 
 # ── G94: a repository the session made is named when the container exits ───
