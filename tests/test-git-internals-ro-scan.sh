@@ -924,15 +924,16 @@ rm -rf "$C158"
 
 # ── G159: a git directory's file of the wrong type: what to do about it ──────
 # A HEAD, config or hooks of the wrong type (here a directory, or a file for
-# hooks) refuses the launch, saying what to do: a HEAD is replaced with a ref,
-# anything else removed.
+# hooks) refuses the launch, saying what to do: anything but a HEAD is removed.
+# For a HEAD no command is printed (G204): a redirect into it opened a FIFO there
+# or followed a link put there meanwhile (GIT-76).
 for v159 in HEAD config hooks; do
   mkdir -p "$PROJ/r159" && "${G[@]}" init -q "$PROJ/r159" || { printf 'SCAFFOLD-FAILED: G159\n'; exit 1; }
   rm -rf "${PROJ:?}/r159/.git/$v159"
   if [[ "$v159" == hooks ]]; then : > "$PROJ/r159/.git/hooks"; else mkdir "$PROJ/r159/.git/$v159"; fi
   launch ..
   case "$v159" in
-    HEAD) h159="Replace it on the host with a regular file, e.g. printf 'ref: refs/heads/main\\n' > $PROJ/r159/.git/HEAD"; t159="regular file" ;;
+    HEAD) h159="remove what is at $PROJ/r159/.git/HEAD on the host"; t159="regular file" ;;
     config) h159="would read what it writes. Remove it on the host (rm $PROJ/r159/.git/config)."; t159="regular file" ;;
     hooks) h159="would read what it writes. Remove it on the host (rm $PROJ/r159/.git/hooks)."; t159="directory" ;;
   esac
@@ -942,6 +943,43 @@ for v159 in HEAD config hooks; do
     || fail "G159 $v159 (rc=$LAUNCH_RC; $(grep -A2 -F 'r159' "$ERR" | head -3 | tr '\n' ' '))"
   rm -rf "$PROJ/r159"
 done
+
+# ── G204: what to do about a HEAD that is no regular file, by where it lies ──
+# No command: one that wrote HEAD opened a FIFO there, or followed a link put
+# there meanwhile (bugs review GIT-76), and one that removed it first and wrote
+# a branch made a directory git took for none a repository, whose config the
+# agent may have written, put a linked worktree on a branch another had, and
+# gave a submodule's git directory, normally at a commit, a branch (review of
+# the plan). What to write is said by where the directory lies.
+D204="$TMP/d204"
+head204() {  # <git dir> <label> <what to write> <what git then reads>
+  rm -rf "${1:?}/HEAD"; mkdir "$1/HEAD"
+  EXTRA_MOUNTS="$D204" launch "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "ERROR: $1/HEAD is not a regular file; refusing the launch." "$ERR" \
+    && grep -qF "once no container runs on this tree, remove what is at $1/HEAD on the host" "$ERR" && grep -qF -- "$3" "$ERR" \
+    && grep -qF -- "$4" "$ERR" \
+    && grep -qF "If $1 is not yours, move it (mv) to a directory you never mount." "$ERR" \
+    && ! grep -qE "printf 'ref:|> [^ ]*/HEAD|\(cd -P" "$ERR" \
+    && pass "G204 a HEAD that is no regular file in $2: no command, $3" \
+    || fail "G204 $2 (rc=$LAUNCH_RC; $(grep -A6 -F "$1/HEAD" "$ERR" | head -7 | tr '\n' ' '))"
+}
+rm -rf "$D204"; mkdir -p "$D204" && "${G[@]}" init -q "$D204/r" && "${G[@]}" -C "$D204/r" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$D204/r" worktree add -q "$D204/wt" && mkdir -p "$D204/r/.git/modules/sub/objects" "$D204/r/.git/modules/sub/refs" \
+  && printf 'ref: refs/heads/main\n' > "$D204/r/.git/modules/sub/HEAD" || { printf 'SCAFFOLD-FAILED: G204\n'; exit 1; }
+head204 "$D204/r/.git/worktrees/wt" "a linked worktree's directory" "never one another worktree has checked out" \
+  "git then reads $D204/r/.git/worktrees/wt/config.worktree, and the config and hooks/ of the directory its commondir"
+printf 'ref: refs/heads/wt\n' > "$D204/r/.git/worktrees/wt/HEAD.new" && rm -rf "$D204/r/.git/worktrees/wt/HEAD" && mv "$D204/r/.git/worktrees/wt/HEAD.new" "$D204/r/.git/worktrees/wt/HEAD"
+head204 "$D204/r/.git/modules/sub" "a submodule's git directory" "the submodule was at, which its superproject records." \
+  "git then reads $D204/r/.git/modules/sub/config.worktree, and the config and hooks/ of the directory its commondir"
+printf 'ref: refs/heads/main\n' > "$D204/r/.git/modules/sub/HEAD.new" && rm -rf "$D204/r/.git/modules/sub/HEAD" && mv "$D204/r/.git/modules/sub/HEAD.new" "$D204/r/.git/modules/sub/HEAD"
+head204 "$D204/r/.git" "a repository's .git" "it was on (ref: refs/heads/<branch>)." \
+  "names, or its own where it has none: read that commondir and those files first."
+printf 'ref: refs/heads/main\n' > "$D204/r/.git/HEAD.new" && rm -rf "$D204/r/.git/HEAD" && mv "$D204/r/.git/HEAD.new" "$D204/r/.git/HEAD"
+# Under modules/ but not a .git's: an ordinary repository, not a submodule.
+mkdir -p "$D204/d/modules" && "${G[@]}" init -q "$D204/d/modules/vpc" || { printf 'SCAFFOLD-FAILED: G204 modules\n'; exit 1; }
+head204 "$D204/d/modules/vpc/.git" "a repository in a directory named modules" "it was on (ref: refs/heads/<branch>)." \
+  "git then reads $D204/d/modules/vpc/.git/config.worktree, and the config and hooks/ of the directory its commondir"
+rm -rf "$D204"
 
 # ── G160: which git directories get placeholders, and which commondir refuses ─
 # A git directory under .git/modules counts as a repository's own whatever it

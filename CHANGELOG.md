@@ -336,6 +336,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   them, four or five mounts apiece. One that an earlier launch filled so keeps
   being taken while its `commondir` or `config` is there: remove the four
   together, once no container uses the repository (bugs review GIT-75).
+- **Two refusals no longer print or imply a step that can do harm.** For a
+  `HEAD` that is no regular file the launch printed a `printf … > HEAD`, which
+  waits at a FIFO and writes through a link; it now prints no command and says
+  what to write, by where the directory lies (a linked worktree's own branch, a
+  submodule's commit, else the branch it was on), and to read first the
+  `commondir` there and the `config` and `hooks/` git then takes (bugs review
+  GIT-76). The refusal for a file with a second hard link now says to keep the
+  name git reads, to copy apart another name in a git directory, a hook, a
+  checkout's `.git` file or a file of yours, and to remove only one that is
+  none of these (bugs review
+  GIT-77).
 
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read

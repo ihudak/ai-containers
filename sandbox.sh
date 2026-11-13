@@ -1024,8 +1024,7 @@ launcher_ro_overlay() {
             printf '       would read what it writes.\n' >&2
             _cd_way_out "$g"
           elif [[ "$f" == HEAD ]]; then
-            printf '       The agent could write into it, and your host'\''s git would read what it writes.\n' >&2
-            printf '       Replace it on the host with a regular file, e.g. printf '\''ref: refs/heads/main\\n'\'' > %s\n' "$(_q "$g/$f")" >&2
+            _head_say "$g"
           else
             printf '       Through a read-only bind the agent could still write into it, and your host'\''s git\n' >&2
             printf '       would read what it writes. Remove it on the host (rm %s).\n' "$(_q "$g/$f")" >&2
@@ -2266,7 +2265,18 @@ _ro_fifo_search() {
     printf '       A read-only bind protects a path, not the file: the agent can still write it through\n' >&2
     printf '       another name. On the host,\n' >&2
     printf '         find %s%s -xdev -samefile %s\n' "$([[ -L "$h" ]] && printf -- '-L ')" "$(_q "$mnt")" "$(_q "$h")" >&2
-    printf '       lists its names. Copy apart one that is another repository'\''s own; remove one you did not make.\n' >&2
+    # The name git reads stays: removed, a worktree's commondir handed git the
+    # config beside it (GIT-70's harm) and a config lost your settings (bugs
+    # review GIT-77). Another name git reads too, a deduplicator's link between
+    # two repositories' commondirs or two hooks of one, is copied apart, never
+    # removed (review of the plan); so is another worktree's, a checkout's .git
+    # file (two superprojects' at one submodule path), or a file of yours
+    # (final review).
+    printf '       lists its names. Keep %s%s, the name your host'\''s git reads here.\n' "$(_term "$h")" "$([[ -L "$h" ]] && printf ' and what it leads to')" >&2
+    printf '       Of the others, copy apart one that lies in a git directory (another repository'\''s or another\n' >&2
+    printf '       worktree'\''s), is a hook, is a checkout'\''s .git file, or is a file of yours; remove only one\n' >&2
+    printf '       that is none of these.\n' >&2
+    printf '       Read the file first: what is in it may have been written through another name.\n' >&2
     exit 1
   done
 }
@@ -3293,6 +3303,38 @@ _cd_under_ro() {
 # shell is in it (bash's pwd -P resolves the path again; review of the plan).
 _cd_cmd() {
   printf '         (cd -P -- %s && [ "$(pwd -P)" = %s ] && [ . -ef %s ] && %s)\n' "$(_q "$1")" "$(_q "$1")" "$(_q "$1")" "$2" >&"${_rd_errfd:-2}"
+}
+# _head_say <git dir>: what to do about a HEAD that is no regular file, and no
+# link (the protection loop's first check). No command is printed: one that
+# wrote HEAD opened a FIFO there, or followed a link put there meanwhile (bugs
+# review GIT-76), and one that removed it first and then wrote a branch made a
+# directory git took for none a repository, whose config the agent may have
+# written (git status ran its core.fsmonitor), put a linked worktree on a branch
+# another worktree had, and gave a submodule's git directory, normally at a
+# commit, a branch (review of the plan). What to write is said by where the
+# directory lies, never by what it holds; refs/ and logs/ are answered before.
+_head_say() {
+  local t; t="$(_term "$1")"
+  printf '       Your host'\''s git takes no repository there while it is a directory, a socket or a device,\n' >&2
+  printf '       and reads through a FIFO what the agent writes. If %s is not yours, move it (mv) to a directory you never mount.\n' "$t" >&2
+  printf '       If it is yours, once no container runs on this tree, remove what is at %s/HEAD on the host\n' "$t" >&2
+  if _cd_wt_loc "$1"; then
+    printf '       without writing into it (it may be a FIFO), and write a regular file there naming that\n' >&2
+    printf '       worktree'\''s own branch, never one another worktree has checked out (ref: refs/heads/<branch>);\n' >&2
+    printf '       a bare repository that only lies in a directory named worktrees: its default branch.\n' >&2
+  elif [[ "${1,,}" == */.git/modules/* ]]; then
+    printf '       without writing into it (it may be a FIFO), and write a regular file there holding the commit\n' >&2
+    printf '       the submodule was at, which its superproject records.\n' >&2
+  else
+    printf '       without writing into it (it may be a FIFO), and write a regular file there naming the branch\n' >&2
+    printf '       it was on (ref: refs/heads/<branch>).\n' >&2
+  fi
+  # What git then reads: the HEAD check comes before _git_cd_check, so a
+  # commondir there is unchecked, and git takes config and hooks/ from where it
+  # leads; naming the directory's own sent the user to the wrong files, and the
+  # agent's core.fsmonitor ran (final review of the GIT-76 fix).
+  printf '       git then reads %s/config.worktree, and the config and hooks/ of the directory its commondir\n' "$t" >&2
+  printf '       names, or its own where it has none: read that commondir and those files first.\n' >&2
 }
 # _cd_way_out <git dir>: what to do about its commondir, one git does not
 # write: a link, no regular file, one this launcher cannot read as git does, or

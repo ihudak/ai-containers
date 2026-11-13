@@ -397,8 +397,14 @@ rm -rf "$TMP/n111"
 hl112() {  # $1 = label, $2 = the file the refusal names
   # The advice finds the other name; copying over it wrote through a link the
   # agent planted at <file>.new, into a file of yours (review of the GIT-31 fix).
+  # It says to keep the name git reads, and which of the others to copy apart
+  # or remove: "remove one you did not make" read as this one lost a worktree's
+  # commondir or your config (bugs review GIT-77).
   [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $2 has more than one hard link, and your host's git reads it" "$ERR" \
     && grep -qF -- "-xdev -samefile $2" "$ERR" && ! grep -qF 'cp -p' "$ERR" \
+    && grep -qF "lists its names. Keep $2" "$ERR" && grep -qF "the name your host's git reads here." "$ERR" \
+    && grep -qF "Of the others, copy apart one that lies in a git directory (another repository's or another" "$ERR" \
+    && grep -qF "is a hook, is a checkout's .git file, or is a file of yours; remove only one" "$ERR" \
     && pass "G112 $1 refuses the launch, naming it" \
     || fail "G112 $1 (rc=$LAUNCH_RC; stderr: $(grep -E 'ERROR' "$ERR" | head -2 | tr '\n' ' '))"
 }
@@ -507,6 +513,9 @@ EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
 ln "$TMP/other112/hook" "$TMP/h112/side.txt" || { printf 'SCAFFOLD-FAILED: G112 side name\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/h112" launch "$TMP/app"
 hl112 "a hook linking outside every mount, to a file with a name inside one" "$TMP/h112/r/.git/hooks/pre-commit"
+grep -qF "Keep $TMP/h112/r/.git/hooks/pre-commit and what it leads to, the name your host's git reads here." "$ERR" \
+  && pass "G112 for a link, what it leads to is kept with it" \
+  || fail "G112 a link's target not named to keep ($(grep -F 'Keep' "$ERR" | head -1))"
 grep -qF "it can write $TMP/other112/hook through another name of that file, in $TMP/h112" <<<"$(grep -A1 -F 'NOTE: /workspace/h112/r/.git/hooks/pre-commit, a hook your host' "$ERR")" \
   && pass "G112 such a hook is also named as a link the agent can redirect, with where the other name lies" \
   || fail "G112 hook NOTE (stderr: $(grep -A1 -F 'hooks/pre-commit, a hook' "$ERR" | head -2 | tr '\n' ' '))"
