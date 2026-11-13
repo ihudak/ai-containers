@@ -523,6 +523,72 @@ EXTRA_MOUNTS="$R200" PATH="$TMP/gl200:$PATH" launch "$TMP/app"
   && pass "G200 an empty config.worktree is not read at every launch" \
   || fail "G200 an empty config.worktree read (rc=$LAUNCH_RC; $(grep -cF "$R200/z/.git/config.worktree" "$TMP/gl200.log" 2>/dev/null) reads; log: $(wc -l < "$TMP/gl200.log" 2>/dev/null) lines)"
 rm -rf "$R200" "$TMP/gl200" "$TMP/gl200.log"
+# ── G202 (GIT-80): a repository under a read-only overlay is named once ──────
+# Inside a launcher (two empty files make one) or under another repository's
+# hooks/, a git directory gets no binds of its own and never reached the
+# first-protection report, so what its config sets that makes git run programs,
+# and its hooks, were never named: the check after a session named one the
+# session made, and the next launch did not. The first launch that sees one
+# names them once, as a first protection does, in the record of reported
+# repositories; where git does not run, the hooks, and the keys at the next
+# launch with git (bugs review GIT-80).
+L202="$TMP/ov202"
+ovn202() {  # <repository under /workspace/ov202> <config|hooks/> <what the NOTE says happened>: the line after its first
+  grep -A1 -F "NOTE: /workspace/ov202/$1/.git lies under a read-only overlay and $3, and its $2" "$ERR" | tail -1
+}
+mkdir -p "$L202/l" && : > "$L202/l/sandbox.sh" && : > "$L202/l/sandbox-common.sh" \
+  && "${G[@]}" init -q "$L202/l/r" && "${G[@]}" init -q "$L202/l/clean" \
+  && "${G[@]}" -C "$L202/l/r" commit -q --allow-empty -m i && "${G[@]}" -C "$L202/l/r" worktree add -q "$L202/wt" \
+  && printf '[alias]\n\twt = !wt202\n' > "$L202/l/r/.git/worktrees/wt/config.worktree" \
+  && "${G[@]}" -C "$L202/l/r" config core.sshCommand 'ssh -i sekrit202' \
+  && printf '#!/bin/sh\n' > "$L202/l/r/.git/hooks/pre-commit" && chmod 755 "$L202/l/r/.git/hooks/pre-commit" \
+  || { printf 'SCAFFOLD-FAILED: G202\n'; exit 1; }
+EXTRA_MOUNTS="$L202" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(ovn202 l/r config 'was not reported before')" == *core.sshcommand* \
+   && "$(ovn202 l/r hooks/ 'was not reported before')" == *pre-commit* ]] \
+  && grep -qF "git config --file $L202/l/r/.git/config --list" "$ERR" && grep -qF "ls -l $L202/l/r/.git/hooks" "$ERR" \
+  && ! grep -qF 'sekrit202' "$ERR" && ! grep -qF 'NOTE: /workspace/ov202/l/clean' "$ERR" \
+  && pass "G202 a repository under a read-only overlay has its keys and hooks named, no value; a clean one nothing" \
+  || fail "G202 under an overlay (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'ov202/l' "$ERR" | head -6 | tr '\n' ' '))"
+[[ "$(grep -A1 -F 'NOTE: /workspace/ov202/l/r/.git/worktrees/wt lies under a read-only overlay and was not reported before, and its config' "$ERR" | tail -1)" == *alias.wt* ]] \
+  && pass "G202 … a linked worktree's directory there, by its config.worktree" \
+  || fail "G202 linked worktree under an overlay (stderr: $(grep -A1 -F 'worktrees/wt' "$ERR" | head -3 | tr '\n' ' '))"
+EXTRA_MOUNTS="$L202" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'lies under a read-only overlay and' "$ERR" \
+  && pass "G202 … once: the next launch says nothing" \
+  || fail "G202 named again (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'read-only overlay and' "$ERR" | head -2 | tr '\n' ' '))"
+# One the session makes there is named after it, and by the next launch.
+FAKE_SESSION="mkdir -p '$L202/m' && : > '$L202/m/sandbox.sh' && : > '$L202/m/sandbox-common.sh' && git init -q '$L202/m/r' && git -C '$L202/m/r' config core.fsmonitor fsm202" \
+  EXTRA_MOUNTS="$L202" launch "$TMP/app"
+EXTRA_MOUNTS="$L202" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(ovn202 m/r config 'was not reported before')" == *core.fsmonitor* ]] \
+  && pass "G202 one the session made inside a launcher it made is named by the next launch" \
+  || fail "G202 made in a session (rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'ov202/m' "$ERR" | head -3 | tr '\n' ' '))"
+# With a commondir the launch refuses; once it is removed, the launch names it.
+FAKE_SESSION="mkdir -p '$L202/c' && : > '$L202/c/sandbox.sh' && : > '$L202/c/sandbox-common.sh' && git init -q '$L202/c/r' && git -C '$L202/c/r' config core.fsmonitor fsm202 && mkdir -p '$L202/c/r/cd' && printf '../cd\n' > '$L202/c/r/.git/commondir'" \
+  EXTRA_MOUNTS="$L202" launch "$TMP/app"
+EXTRA_MOUNTS="$L202" launch "$TMP/app"; rc202="$LAUNCH_RC"
+rm -f "$L202/c/r/.git/commondir"
+EXTRA_MOUNTS="$L202" launch "$TMP/app"
+[[ "$rc202" != 0 && "$LAUNCH_RC" == 0 && "$(ovn202 c/r config 'was not reported before')" == *core.fsmonitor* ]] \
+  && pass "G202 one with a commondir planted too is refused, and named once that is removed" \
+  || fail "G202 commondir variant (refused: $rc202; rc=$LAUNCH_RC; stderr: $(grep -A1 -F 'ov202/c' "$ERR" | head -3 | tr '\n' ' '))"
+# Where git does not run: the hooks, once; then the keys, at the first launch with git.
+rm -rf "$L202/l" "$L202/m" "$L202/c" "$L202/wt"
+mkdir -p "$L202/n" && : > "$L202/n/sandbox.sh" && : > "$L202/n/sandbox-common.sh" && "${G[@]}" init -q "$L202/n/r" \
+  && "${G[@]}" -C "$L202/n/r" config core.sshCommand 'ssh -i sekrit202' \
+  && printf '#!/bin/sh\n' > "$L202/n/r/.git/hooks/pre-commit" && chmod 755 "$L202/n/r/.git/hooks/pre-commit" \
+  || { printf 'SCAFFOLD-FAILED: G202 no git\n'; exit 1; }
+EXTRA_MOUNTS="$L202" PATH="$nogit98" launch "$TMP/app"
+h202="$(ovn202 n/r hooks/ 'was not reported before')"
+EXTRA_MOUNTS="$L202" PATH="$nogit98" launch "$TMP/app"
+n202="$(grep -c 'lies under a read-only overlay' "$ERR")"
+EXTRA_MOUNTS="$L202" launch "$TMP/app"
+[[ "$h202" == *pre-commit* && "$n202" == 0 && "$(ovn202 n/r config 'was reported where git did not run')" == *core.sshcommand* ]] \
+  && ! grep -qF 'NOTE: /workspace/ov202/n/r/.git lies under a read-only overlay and was reported where git did not run, and its hooks/' "$ERR" \
+  && pass "G202 where git does not run its hooks are named once, and its keys by the next launch with git, alone" \
+  || fail "G202 no git (hooks: $h202; second no-git launch: $n202 NOTE(s); stderr: $(grep -A1 -F 'ov202/n' "$ERR" | head -4 | tr '\n' ' '))"
+rm -rf "$L202"
 rm -rf "$R98" "$TMP/r98b" "$TMP/r98c" "$TMP/r98d" "$TMP/out98" "$TMP/nogit98" "$TMP/brokengit98" "$TMP/brokengit98.log" "$TMP/mutegit98"
 
 # ── G120: a core.hooksPath is judged as git takes it (GIT-35) ─────────────────

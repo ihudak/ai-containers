@@ -281,8 +281,9 @@ refused && has "ERROR: $PROJ/wo181/b.git/refs/heads/worktrees/x/commondir names 
 rm -rf "$PROJ/wo181"
 
 # ── G182: under a read-only overlay no command is printed ───────────────────
-# A repository inside a launcher gets no binds and no first-protection NOTE,
-# so its commondir removed made git read a config nothing had named. There the
+# A repository inside a launcher gets no binds, and what its config sets is
+# named only by the launch after its commondir is removed (GIT-80), so git
+# would read that config, unnamed, in between. There the
 # refusal prints no command: what is not yours is moved out, and a repository
 # of yours is told what git reads once its commondir is gone. A worktree's
 # directory there is told what git writes, by hand.
@@ -295,7 +296,7 @@ mk182() {  # $1 = the git directory under the launcher that gets the commondir
 mk182 "$E182/.git"; launch_timed 120 ..
 refused && has "ERROR: $E182/.git/commondir sends git to" && ! has '(cd -P -- ' && ! grep -qw rm "$ERR" \
   && has "If $E182/.git is not yours, move it (mv) to a directory you never mount." \
-  && has "$E182/.git/hooks once that is gone, and no launch names what they set there: read them" && clean \
+  && has "$E182/.git/hooks once that is gone: read them" && ! has 'no launch names' && clean \
   && pass "G182 a commondir under a read-only overlay: no command, and what git reads once it is gone" \
   || fail "G182 under a read-only overlay ($(why))"
 mk182 "$E182/.git/worktrees/w"; launch_timed 120 ..
@@ -420,7 +421,7 @@ else
     && pass "G185 a directory under refs/ reached through a link gets no command" \
     || fail "G185 under refs/ through a link ($(u185 "$U/lnk" known | head -3 | tr '\n' ' '))"
   [[ "$(u185 "$U/plain" known)" == *"$(r_cmd "$U/plain")"* && "$(u185 "$U/lnch/.git" known)" != *'(cd -P'* \
-     && "$(u185 "$U/lnch/.git" known)" == *"is not yours, move it (mv)"*"no launch names what they set there"* ]] \
+     && "$(u185 "$U/lnch/.git" known)" == *"is not yours, move it (mv)"*"once that is gone: read them"* && "$(u185 "$U/lnch/.git" known)" != *"no launch names"* ]] \
     && pass "G185 under a read-only overlay no command; beside it, the removal" \
     || fail "G185 the overlay ($(u185 "$U/lnch/.git" known | head -3 | tr '\n' ' '))"
   [[ "$(u185 "$U/lnch/.git/worktrees/w" known)" != *'(cd -P'* && "$(u185 "$U/lnch/.git/worktrees/w" known)" == *"write that back by hand"* ]] \

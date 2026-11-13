@@ -320,6 +320,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for you (as for the other files the launch makes, GIT-48); each repository
   costs one more bind mount, about 50 ms of every start on Docker Desktop
   (bugs review GIT-81).
+- **A repository under a read-only overlay — inside a launcher directory, or
+  under another repository's `hooks/` — is named once.** It gets no binds of
+  its own and never reached the report a first protection makes, so the keys
+  its config sets that make git run a program, and its hooks, were never
+  named: a repository a session made inside a directory it also made a
+  launcher (two empty files do) was named when the container exited, and not
+  again. The first launch that sees one now names them, as a first
+  protection does (bugs review GIT-80).
 
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read

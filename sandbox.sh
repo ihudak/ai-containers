@@ -929,6 +929,21 @@ launcher_ro_overlay() {
           # (bugs review GIT-62, GIT-64, GIT-67).
           _git_cd_check "$g" gown
           if [[ -n "$gown" ]]; then _git_cfg_frozen[$g]=1; fi
+          # Named once, as a first protection names a repository's: what its
+          # config sets that makes git run programs, and its hooks. It gets no
+          # binds and never reached that report, so a repository the session
+          # made inside a launcher it made, named when the container exited, was
+          # not named again, and its config was then taken for frozen (bugs
+          # review GIT-80; G202). After _git_cd_check, so a launch it refuses
+          # records nothing. Where git did not run the hooks were named, and the
+          # keys are by the next launch with git, alone.
+          rep=""; hk=""
+          if ! _git_reported "$g"; then
+            if ! _git_reported "$g" hooks; then rep="lies under a read-only overlay and was not reported before"
+            elif _git_usable; then rep="lies under a read-only overlay and was reported where git did not run"; hk=1
+            fi
+          fi
+          if [[ -n "$rep" ]]; then _git_report_once "$g" "$at" "$rep" "" "$hk"; fi
           # gitdir too, which names a linked worktree's checkout (final review of
           # the GIT-46 fix).
           for f in config config.worktree commondir gitdir; do
@@ -1086,37 +1101,7 @@ launcher_ro_overlay() {
             elif _git_usable; then rep="was protected by an earlier launch where git did not run"; al=""; hk=1
             fi
           fi
-          if [[ -n "$rep" ]]; then
-            _git_runs "$g" rk rh
-            if [[ -n "$hk" ]]; then rh=""; fi
-            if [[ -n "$rk" ]]; then
-              printf 'NOTE: %s %s, and its config%s sets\n' "$(_term "$at")" "$rep" "$al" >&2
-              printf '      what makes your host'\''s git run programs: %s.\n' "$(_term "$rk")" >&2
-              printf '      If you did not set them yourself, review them on the host:\n' >&2
-              for f in "$g/config" "$g/config.worktree"; do
-                if [[ -f "$f" ]]; then printf '        git config --file %s --list\n' "$(_q "$f")" >&2; fi
-              done
-            fi
-            # The same moment freezes hooks/ as it is, and a repository the agent
-            # made in a subdirectory arrives with whatever hooks it put there.
-            if [[ -n "$rh" ]]; then
-              printf 'NOTE: %s %s, and its hooks/%s\n' "$(_term "$at")" "$rep" "$al" >&2
-              printf '      holds hooks your host'\''s git runs: %s.\n' "$(_term "$rh")" >&2
-              printf '      If you did not put them there, review them on the host:\n' >&2
-              printf '        ls -l %s\n' "$(_q "$g/hooks")" >&2
-            fi
-            # Not as reported where git does not run: no key was read, and the
-            # launch with git that its WARNING asks for must still name them
-            # (review of the GIT-24 fix, M1).
-            # A config.worktree whose keys that read named is recorded too
-            # (`wt:`, below); one that named none is not, so what is written
-            # into it later is named (final review of the GIT-81 fix).
-            if _git_usable; then
-              _git_report_record "$g"
-              ek=(); mapfile -d '' -t ek < <(_git_exec_keys "$g/config.worktree")
-              if (( ${#ek[@]} )); then _git_report_record "$g" wt; fi
-            else _git_report_record "$g" hooks; fi
-          fi
+          if [[ -n "$rep" ]]; then _git_report_once "$g" "$at" "$rep" "$al" "$hk"; fi
         elif [[ -f "$g/commondir" ]]; then
           # Physically, as git resolves it (strbuf_add_real_path), and without the
           # trailing CR git strips: `cd` reads `s/..` lexically, which named the
@@ -3246,8 +3231,9 @@ _cd_own() {
 #     names, which the next launch holds to _git_cd_check()'s rule;
 #   - elsewhere git writes no commondir, and it is removed: the directory is
 #     then what it was without one, which the agent could make it whenever it
-#     could write that file. Not under a read-only overlay, where no launch
-#     names what its config sets, nor where the overlays are not all known;
+#     could write that file. Not under a read-only overlay, where nothing is
+#     bound and only the launch after names what its config sets (GIT-80), git
+#     reading it in between, nor where the overlays are not all known;
 #   - under a refs/ or logs/ nothing is printed to run: a branch named commondir
 #     is such a file, and the `rm` deleted it (run by the plan's reviewer);
 #   - a directory is moved out, never removed.
@@ -3314,7 +3300,7 @@ _cd_way_out() {
       printf '       A file of yours that only shares the name: rename it.\n' >&"$_wo_fd"
     else
       printf '       If it is a repository of yours, it holds no commondir: git reads %s/config and\n' "$_wo_t" >&"$_wo_fd"
-      printf '       %s/hooks once that is gone, and no launch names what they set there: read them\n' "$_wo_t" >&"$_wo_fd"
+      printf '       %s/hooks once that is gone: read them\n' "$_wo_t" >&"$_wo_fd"
       printf '       before you remove it. A file of yours that only shares the name: rename it.\n' >&"$_wo_fd"
     fi
   elif _cd_wt_loc "$_wo_d"; then
@@ -5350,6 +5336,48 @@ _git_exec_keys() {
       _git_key_shown "$k"; printf '\0'
     done < <(_git_file_config "$f" --null --list 2>/dev/null)
   done
+}
+
+# _git_report_once <git dir> <where the agent sees it> <what happened> <al> [hooks-named]:
+# name, once, what a git directory already holds that makes the host's git run
+# programs — the keys its config sets and the hooks its hooks/ holds
+# (_git_runs) — and record that they were named (_git_report_record): at a first
+# protection, for one an earlier launch protected without naming them, and for
+# one under a read-only overlay, which gets no binds of its own (GIT-80). With a
+# fifth argument the hooks were named by a launch where git did not run, and are
+# not named again.
+_git_report_once() {
+  local g="$1" at="$2" rep="$3" al="$4" hk="${5:-}" rk rh f
+  local -a ek=()
+  _git_runs "$g" rk rh
+  if [[ -n "$hk" ]]; then rh=""; fi
+  if [[ -n "$rk" ]]; then
+    printf 'NOTE: %s %s, and its config%s sets\n' "$(_term "$at")" "$rep" "$al" >&2
+    printf '      what makes your host'\''s git run programs: %s.\n' "$(_term "$rk")" >&2
+    printf '      If you did not set them yourself, review them on the host:\n' >&2
+    for f in "$g/config" "$g/config.worktree"; do
+      if [[ -f "$f" ]]; then printf '        git config --file %s --list\n' "$(_q "$f")" >&2; fi
+    done
+  fi
+  # The same moment freezes hooks/ as it is, and a repository the agent
+  # made in a subdirectory arrives with whatever hooks it put there.
+  if [[ -n "$rh" ]]; then
+    printf 'NOTE: %s %s, and its hooks/%s\n' "$(_term "$at")" "$rep" "$al" >&2
+    printf '      holds hooks your host'\''s git runs: %s.\n' "$(_term "$rh")" >&2
+    printf '      If you did not put them there, review them on the host:\n' >&2
+    printf '        ls -l %s\n' "$(_q "$g/hooks")" >&2
+  fi
+  # Not as reported where git does not run: no key was read, and the
+  # launch with git that its WARNING asks for must still name them
+  # (review of the GIT-24 fix, M1).
+  # A config.worktree whose keys that read named is recorded too (`wt:`);
+  # one that named none is not, so what is written into it later is named
+  # by the launch that finds it (final review of the GIT-81 fix).
+  if _git_usable; then
+    _git_report_record "$g"
+    ek=(); mapfile -d '' -t ek < <(_git_exec_keys "$g/config.worktree")
+    if (( ${#ek[@]} )); then _git_report_record "$g" wt; fi
+  else _git_report_record "$g" hooks; fi
 }
 
 # _git_runs <git dir> <keys-out> <hooks-out>: what in this git directory makes
