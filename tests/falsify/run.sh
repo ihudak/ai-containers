@@ -8,6 +8,7 @@
 #                            [--jobs N|auto] [--timeout S]
 #                            [--operators <list> | --deep] [--max-unproven-pct N]
 #                            [--max-assertless N] [--controls N] [--select-oracles]
+#                            [--stop-at-kill]
 #
 #   --select-oracles        per-mutant oracle selection (feature-gaps review
 #                           GAP-2). For a target whose oracle field names two or
@@ -34,6 +35,45 @@
 #                           no mutant, otherwise (it extracts a function, or runs
 #                           a renamed copy) for every one.
 #                           Also FALSIFY_SELECT=1.
+#   --stop-at-kill          end a mutant's run at the first test that printed
+#                           a FAIL: line (feature-gaps review GAP-2). One such
+#                           line makes the mutant KILLED, and the tests after
+#                           it in the set add nothing to that verdict but
+#                           their run time. The stop alone changes one verdict:
+#                           a test AFTER the one that failed whose own setup
+#                           breaks (SCAFFOLD-FAILED) would make the whole set
+#                           UNPROVEN; here the mutant is KILLED, by the
+#                           assertion that was seen failing. (And a kill's
+#                           signal: the driver exits 1 when it stops, and a
+#                           later test's timeout is not seen.) Only a mutant's
+#                           runs stop: the baseline, the coverage pass and the
+#                           controls run every test.
+#                           The target's tests also run QUICKEST FIRST, by
+#                           their times on the baseline, so the run reaches
+#                           the test that fails before it has paid for the
+#                           slow ones. That order is used only if a second
+#                           baseline, on a freshly seeded tree, is green in
+#                           it; the controls run in it too. Against the usual
+#                           order a verdict can differ in two ways. Where a
+#                           test is stopped by its clock or its setup breaks,
+#                           which of that test and the one that fails runs
+#                           first decides between UNPROVEN and KILLED. And
+#                           where the MUTANT makes one test leave something
+#                           another reads, the order decides whether the
+#                           reader sees it, and a mutant that SURVIVES the
+#                           usual order can be KILLED or UNPROVEN in this one.
+#                           So a mutant that did not survive the order, any
+#                           of whose runs left the worker tree changed, is run
+#                           again, the whole set in the usual order on a tree
+#                           seeded afresh, and that verdict is recorded
+#                           (NOTE|order-rerun). The check is `git
+#                           status` once the run has ended: a leftover that is
+#                           gone by then (the test that read it removed it) or
+#                           that `git status` does not show (a file git
+#                           ignores, an empty directory, one under .git, one
+#                           outside the tree) is not seen, and the order's
+#                           verdict stands. Opt-in, used by no shard. Also
+#                           FALSIFY_STOP_AT_KILL=1.
 #   --deep                  the per-target deep pass (feature-gaps review
 #                           GAP-4): only the targets tests/falsify/deep.conf
 #                           names, each under ONLY the extra operators that
@@ -91,7 +131,8 @@
 #              ALL(red-when-traced)), or `off: …` when an oracle is red on its
 #              own and the target's mutants run the whole set.
 #   NOTE|selection-miss|<identity>|<detail>   a selected subset survived and the
-#              rest of the set killed: the verdict is the full set's.
+#              rest of the set killed (or, after a NOTE|order-rerun, the
+#              whole set in the usual order did): the verdict is the full set's.
 #   NOTE|selection-rerun|<identity>|<detail>   a selected subset neither killed
 #              with an assertion nor survived: after a timeout the rest of the
 #              set ran, otherwise the whole set, and the verdict is the set's.
@@ -101,6 +142,18 @@
 #              the baseline (FALSIFY_TEST_CLOCK=0: none).
 #   NOTE|test-clock|<identity>|<test> (<s>s)   the test whose own clock stopped
 #              this mutant's oracle.
+#   NOTE|stop-at-kill|<target>|<detail>   --stop-at-kill: this target's mutants
+#              were run to their first FAIL: line, not to the end of the set,
+#              and in which order: quickest first, or the usual one and why.
+#   NOTE|order-rerun|<identity>|<detail>   --stop-at-kill: the mutant was
+#              KILLED or UNPROVEN quickest first and one of its runs left the
+#              worker tree changed, so the whole set ran again in the usual
+#              order; the verdict is that run's. It stands in for a
+#              NOTE|selection-rerun, which NOTE|selection-total then does not
+#              count.
+#   NOTE|reseed|<target>|<detail>   the baseline or a control left the worker
+#              tree changed, and its slot was re-seeded before a mutant ran in
+#              it (after a mutant's own run: NOTE|reseed|<identity>|…).
 #   OPERATORS|<target>|<list>      one per target, right after RUN: the
 #              operators that target's mutants were generated with. The ledger
 #              gate scopes its stale/obsolete checks by them, so a deep pass and
@@ -239,6 +292,7 @@
 #   FALSIFY_JOBS       worker slots                  (default: 1)
 #   FALSIFY_TIMEOUT    per-mutant seconds            (default: 60)
 #   FALSIFY_TEST_CLOCK=0  no clock per test (below); the set's clock only
+#   FALSIFY_STOP_AT_KILL=1  --stop-at-kill
 #   FALSIFY_OPERATORS  passed through to generate.sh; name `stream-flip` to
 #                      reach the operator that is off by default
 #   FALSIFY_KEEP=1     keep the scratch trees for inspection
@@ -464,6 +518,7 @@ FR_TEST_CLOCK="${FALSIFY_TEST_CLOCK:-1}"
 [[ "$FR_TEST_CLOCK" == 0 ]] || FR_TEST_CLOCK=1
 FR_RA_CLOCKS=""   # this target's "<test>=<seconds> ...", once its baseline is in
 FR_RA_TIMES=""    # where the baseline records each test's time
+FR_RA_ORDER=""    # --stop-at-kill: this target's tests quickest first, once a baseline proved that order green
 FR_TARGET=""
 FR_EXCLUDE=""
 FR_LIST_TARGETS=0
@@ -472,6 +527,11 @@ FR_DEEP_CONF="${FALSIFY_DEEP_CONF:-$FR_HERE/deep.conf}"
 FR_OPS=()      # per target: the operator list it is generated with, "" = the run's
 FR_FUNCS=()    # per target: an EXECUTED-PARTIAL row's functions, "" = the whole file
 FR_SELECT="${FALSIFY_SELECT:-0}"
+# --stop-at-kill. FR_STOP_NOW is what falsify_run_oracle reads, and only
+# fr_run_mutant sets it, for its own runs: every other caller (the baseline, the
+# coverage pass, a control, a test that sources this file) runs the whole set.
+FR_STOP="${FALSIFY_STOP_AT_KILL:-0}"
+FR_STOP_NOW=""   # never the caller's: one in the environment would stop the baseline and the controls
 declare -A FR_SEL=()     # "<target>|<lineno>" → the oracles whose trace covers that line's statement
 declare -A FR_SEL_ON=()  # "<target>" → 1 once its coverage pass has run
 FR_SEL_MISS=0
@@ -1022,7 +1082,11 @@ falsify_run_oracle() {   # <tree> <oracle-set> <outfile> <timeout-seconds> [<lab
   set -m
   rm -f "$out.clocked"
   ( cd "$tree" && export TMPDIR="$otmp" || exit 1
-    unset RA_TEST_CLOCK RA_TEST_CLOCKS RA_TIMES_FILE RA_CLOCKED_FILE
+    # RA_STOP_AT_FAIL too: one the caller's shell exports would stop the baseline
+    # at its first red test, and a control.
+    unset RA_TEST_CLOCK RA_TEST_CLOCKS RA_TIMES_FILE RA_CLOCKED_FILE RA_STOP_AT_FAIL RA_ORDER
+    if [[ -n "${FR_STOP_NOW:-}" ]]; then export RA_STOP_AT_FAIL=1; fi
+    if [[ -n "$FR_RA_ORDER" ]]; then export RA_ORDER="$FR_RA_ORDER"; fi
     if [[ -n "$FR_RA_CLOCKS" ]]; then export RA_TEST_CLOCKS="$FR_RA_CLOCKS" RA_CLOCKED_FILE="$out.clocked"; fi
     if [[ -n "$FR_RA_TIMES" ]]; then export RA_TIMES_FILE="$FR_RA_TIMES"; fi
     exec bash "$FR_DRIVER_REL" -v "${onames[@]}" ) >"$out" 2>&1 &
@@ -1415,8 +1479,19 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   # slot's debris check sees it, `git status`: a gitignored file left behind
   # is not seen, here or between any two mutants of a slot.
   local run="$oracle" sel="" rest="" o ms_sel=0 sel_verdict="" sel_signal="" clock
-  local foreign="" foreign_tok="" pre_note="" write_failed=0 tclock=""
+  local foreign="" foreign_tok="" pre_note="" write_failed=0 tclock="" dirty_any=0
   local -a all_o=()
+  # --stop-at-kill, for this mutant's runs and no longer: a local, because a
+  # caller may run this function in its own shell (tests/test-falsify-run.sh).
+  # Each run below, the subset's, the rest's and the whole set's, ends at its
+  # first FAIL: line. That line is a kill in the whole set's output as well,
+  # which holds the same tests; what the run no longer shows is a later test's
+  # timeout (still a kill beside a FAIL: line) or a later test's broken setup,
+  # the difference --help states. The tests may run in another order than the
+  # set's usual one (FR_RA_ORDER), and what that can change is below, after the
+  # verdict.
+  local FR_STOP_NOW=""
+  if [[ "$FR_STOP" == 1 ]]; then FR_STOP_NOW=1; fi
   clock="$(fr_effective_timeout "$oracle")"
   if [[ -n "${FR_SEL_ON[$target]:-}" ]]; then
     sel="${FR_SEL[$target|$lineno]-}"
@@ -1441,6 +1516,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     fi
     cp -Pp "$FR_CACHE/$target" "$tree/$target"
     if [[ "$(falsify_tree_fingerprint "$tree")" != "$(cat "$FR_OUT/w$slot.porcelain")" ]]; then
+      dirty_any=1   # for the order's guard below: this look is one of its two
       if fr_seed_slot "$slot"; then
         pre_note="NOTE|reseed|$ident|the selected subset left the worker tree changed; slot $slot re-seeded before the rest of the set ran"
       else
@@ -1476,8 +1552,74 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     fi
   fi
 
+  # ANY VERDICT IN THE ORDER BUT SURVIVED IS BELIEVED ONLY IF ITS RUN LEFT THE
+  # TREE AS IT WAS
+  # (review of 9d07b9d). The second baseline proved the order green on the
+  # pristine tree, and nothing about this mutant's: a mutant can make one test
+  # leave something another reads, and then the order decides whether the
+  # reader runs before the writer or after it. Quickest first, a writer that
+  # the mutant sent into the tree ran before the slow test that fails on what
+  # it finds there; in the usual order that test runs first and the mutant
+  # SURVIVES, which is the verdict a ledger entry is owed for. A slow test
+  # whose setup breaks on that file, or that hangs on it, makes the order's
+  # verdict UNPROVEN, and that hides the survivor as well: the ledger asks no
+  # entry for a mutant that is only ever UNPROVEN (re-review of 2c230b7). So a
+  # run that did not survive and changed the tree runs again: the whole set,
+  # in the usual order, on a re-seeded tree, still to its first FAIL: line, and
+  # that verdict is the one recorded. Seen as every debris check here sees,
+  # `git status`, and once the run has ended: a leftover that is gone by then
+  # (the test that read it removed it on its way out), or that `git status`
+  # does not show (a file git ignores, one under .git, one outside the tree),
+  # is not seen, and the order's verdict stands (--help says so). A run that
+  # survived in the order needs no second look: the direction that hides a
+  # survivor is the only one guarded, and the other costs an entry nobody owes.
+  # "Left the tree changed" is asked of EVERY run of this mutant, not of the
+  # last: with --select-oracles what the subset left was cleared before the
+  # rest ran (dirty_any, above), and a subset that hung on another test's
+  # leftover has its UNPROVEN recorded after a rest that ran green on the
+  # re-seeded tree (third review, of a29e02a).
+  local ord_note="" ord_verdict ord_signal ord_ms foreign_more="" ord_dirty=0
+  if (( ! write_failed )) && [[ -n "$FR_RA_ORDER" && "$FALSIFY_VERDICT" != SURVIVED ]]; then
+    cp -Pp "$FR_CACHE/$target" "$tree/$target"
+    if [[ "$(falsify_tree_fingerprint "$tree")" != "$(cat "$FR_OUT/w$slot.porcelain")" ]]; then ord_dirty=1; fi
+    if (( dirty_any || ord_dirty )); then
+      ord_verdict="$FALSIFY_VERDICT"; ord_signal="$FALSIFY_SIGNAL"; ord_ms="$FALSIFY_MS"
+      # A foreign flag this run saw, before the next run's bookkeeping takes
+      # its place: never silent, beside one the selected subset's run saw too.
+      if [[ -n "$FALSIFY_FOREIGN_FLAG" ]]; then
+        if [[ -z "$foreign" ]]; then
+          foreign="$FALSIFY_FOREIGN_FLAG"; foreign_tok="$FALSIFY_TOKEN"
+        else
+          foreign_more="$(fr_foreign_note "$ident" "$slot" "$FALSIFY_FOREIGN_FLAG" "$FALSIFY_TOKEN")"
+        fi
+      fi
+      # Seeded afresh whenever the guard fires, a tree `git status` already
+      # sees clean included (the subset's leftovers cleared before the rest,
+      # which left none it shows): the rest ran this mutant there, and what it
+      # left that no debris check sees, a file git ignores, would be read by
+      # the run that decides. A tree copy, against a whole set's run.
+      if fr_seed_slot "$slot"; then
+        pre_note+="${pre_note:+$'\n'}NOTE|reseed|$ident|a run of it quickest first left the worker tree changed; slot $slot re-seeded before the set ran again in the usual order"
+      else
+        falsify_tree_fingerprint "$tree" > "$FR_OUT/w$slot.porcelain"
+        pre_note+="${pre_note:+$'\n'}NOTE|reseed-failed|$ident|slot $slot could NOT be re-seeded before the set ran again in the usual order; what ran next ran against a tree that is not the repo"
+      fi
+      if ! falsify_write_mutant "$FR_CACHE/$target" "$tree/$target" "$lineno" "$text"; then
+        write_failed=1; FALSIFY_FOREIGN_FLAG=""
+      else
+        local FR_RA_ORDER=""
+        falsify_run_oracle "$tree" "$oracle" "$out" "$clock" "s$slot.m$seq.u"
+        falsify_verdict "$FALSIFY_RC" "$out" "$FALSIFY_TIMED_OUT"
+        tclock="$FALSIFY_TEST_CLOCKED"
+        FALSIFY_MS=$(( FALSIFY_MS + ord_ms ))
+        run="$oracle"
+        ord_note="NOTE|order-rerun|$ident|$ord_verdict quickest first ($ord_signal), and a run of it left the worker tree changed; the whole set in the usual order gives $FALSIFY_VERDICT ($FALSIFY_SIGNAL), and that is the verdict"
+      fi
+    fi
+  fi
+
   if (( write_failed )); then
-    printf 'NOTE|write-failed|%s|could not apply the mutant to %s again for the rest of the set\n' "$ident" "$tree/$target" > "$res"
+    printf 'NOTE|write-failed|%s|could not apply the mutant to %s again for its next run\n' "$ident" "$tree/$target" > "$res"
   else
     printf 'MUTANT|%s|%s|%s|%s|%s|%s|%s|%s\n' \
       "$FALSIFY_VERDICT" "$ident" "$run" "$seq" "$lineno" \
@@ -1498,15 +1640,21 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
     fi
   fi
   if [[ -n "$pre_note" ]]; then printf '%s\n' "$pre_note" >> "$res"; fi
+  if [[ -n "$ord_note" ]]; then printf '%s\n' "$ord_note" >> "$res"; fi
   if (( ! write_failed )) && [[ -n "$tclock" && "$FALSIFY_SIGNAL" == *timeout* ]]; then
     printf 'NOTE|test-clock|%s|%s\n' "$ident" "$tclock" >> "$res"
   fi
   if (( write_failed )); then
     :
+  elif [[ "$sel_verdict" == SURVIVED && "$FALSIFY_VERDICT" == KILLED && -n "$ord_note" ]]; then
+    printf 'NOTE|selection-miss|%s|selected %s survived; the whole set, run again in the usual order, killed (%s)\n' \
+      "$ident" "$sel" "$FALSIFY_SIGNAL" >> "$res"
   elif [[ "$sel_verdict" == SURVIVED && "$FALSIFY_VERDICT" == KILLED ]]; then
     printf 'NOTE|selection-miss|%s|selected %s survived; the rest of the set (%s) killed (%s)\n' \
       "$ident" "$sel" "$rest" "$FALSIFY_SIGNAL" >> "$res"
-  elif [[ -n "$sel_verdict" && "$sel_verdict" != SURVIVED ]]; then
+  elif [[ -z "$ord_note" && -n "$sel_verdict" && "$sel_verdict" != SURVIVED ]]; then
+    # (after an order rerun the usual order's whole set decided, and
+    # NOTE|order-rerun says so: this note would describe runs that did not)
     printf 'NOTE|selection-rerun|%s|selected %s gave %s (%s); then %s ran, and the verdict is %s (%s)\n' \
       "$ident" "$sel" "$sel_verdict" "$sel_signal" "$rest" "$FALSIFY_VERDICT" "$FALSIFY_SIGNAL" >> "$res"
   fi
@@ -1514,6 +1662,7 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   if [[ -n "$foreign" ]]; then
     fr_foreign_note "$ident" "$slot" "$foreign" "$foreign_tok" >> "$res"
   fi
+  if [[ -n "$foreign_more" ]]; then printf '%s\n' "$foreign_more" >> "$res"; fi
 
   # A flag this invocation did not arm reached this slot. Recorded against the
   # mutant it would have mislabelled, and naming the SLOT, because the slot is
@@ -1653,6 +1802,52 @@ fr_scaffold_only() {   # <signal> → 0 when the oracle could not start and asse
   [[ "$1" == *scaffold* && "$1" != *failline* ]]
 }
 
+# WHAT A BASELINE OR A CONTROL LEFT IS NOT THE NEXT MUTANT'S (bugs review
+# TST-35). A mutant's run ends in _fr_slot_restore, which re-seeds a tree the
+# run left changed. The baseline and the controls ran in a slot too and ended in
+# nothing: a test that leaves a file in the tree and fails when it finds one
+# there killed the first mutant to run in slot 0 after the baseline, and the
+# next in a slot after a control, whatever the mutant was. Same check, same
+# limit: `git status` does not show a file git ignores, or one under .git.
+_fr_slot_clean() {   # <slot> <target> <what ran there> → a NOTE on stdout if the tree had changed
+  local slot="$1" tree
+  tree="$(fr_slot_tree "$slot")"
+  [[ "$(falsify_tree_fingerprint "$tree")" != "$(cat "$FR_OUT/w$slot.porcelain" 2>/dev/null)" ]] || return 0
+  if fr_seed_slot "$slot"; then
+    printf 'NOTE|reseed|%s|%s left the worker tree changed; slot %s re-seeded\n' "$2" "$3" "$slot"
+  else
+    falsify_tree_fingerprint "$tree" > "$FR_OUT/w$slot.porcelain"
+    printf 'NOTE|reseed-failed|%s|slot %s could NOT be re-seeded after %s; every later mutant in it runs against a tree that is not the repo\n' "$2" "$slot" "$3"
+  fi
+}
+
+# --stop-at-kill: the names in a baseline's times file, quickest first. A test
+# timed more than once (a baseline that was retried) counts with its slowest
+# time, as for its clock; tests that tie keep the order they were first seen in,
+# which is the driver's own, so an order that changes nothing reads as that.
+# A re-seed in the run's own shell (after the baseline, before and after the
+# second one) reports like a mutant's: the NOTE on stdout, and a failure named
+# on stderr and counted, so the run exits non-zero as it does for a slot that
+# could not be re-seeded after a mutant (review of 9d07b9d: these went by with
+# a NOTE and exit 0, and the mutants that ran next were scored on that tree).
+_fr_main_note() {   # <a NOTE line, or nothing>
+  [[ -n "$1" ]] || return 0
+  printf '%s\n' "$1"
+  if [[ "$1" == 'NOTE|reseed-failed|'* ]]; then
+    fr_err "RESEED FAILED — ${1#NOTE|reseed-failed|*|}"
+    FR_RESEED_FAILED=$(( FR_RESEED_FAILED + 1 ))
+  fi
+}
+
+fr_test_order() {   # <times file> → "<test> <test> ..."
+  awk '$2 ~ /^[0-9]+$/ { if (!($1 in m) || $2 + 0 > m[$1]) m[$1] = $2 + 0; if (!($1 in o)) o[$1] = ++n }
+       END { for (k in m) printf "%d %d %s\n", m[k], o[k], k }' "$1" 2>/dev/null \
+    | sort -k1,1n -k2,2n | awk '{ printf "%s%s", (NR > 1 ? " " : ""), $3 }'
+}
+fr_test_seen() {   # <times file> → the names in the order first seen
+  awk '$2 ~ /^[0-9]+$/ && !($1 in o) { o[$1] = 1; printf "%s%s", (n++ ? " " : ""), $1 }' "$1" 2>/dev/null
+}
+
 fr_test_clocks() {   # <times file> → "<test>=<seconds> ..." for RA_TEST_CLOCKS
   awk -v t="$FR_TIMEOUT" '
     $2 ~ /^[0-9]+$/ { if (!($1 in m) || $2 + 0 > m[$1]) m[$1] = $2 + 0; if (!($1 in o)) o[$1] = ++n }
@@ -1787,6 +1982,7 @@ fr_run_control() {   # <slot> <target> <oracle> <n> <resultfile>
         "$target" "$(tail -1 "$out" 2>/dev/null | tr -d '|')" >> "$res"
     fi
   fi
+  _fr_slot_clean "$slot" "$target" "a control" >> "$res"
   return 0
 }
 
@@ -2438,6 +2634,7 @@ falsify_main() {
       --operators) FALSIFY_OPERATORS="${2:-}"; export FALSIFY_OPERATORS; FR_OPERATORS_FLAG=1; shift 2 || return 2 ;;
       --deep) FR_DEEP=1; shift ;;
       --select-oracles) FR_SELECT=1; shift ;;
+      --stop-at-kill) FR_STOP=1; shift ;;
       -h|--help) fr_usage; return 0 ;;
       *) fr_err "unknown option: $1"; fr_usage >&2; return 2 ;;
     esac
@@ -2469,6 +2666,9 @@ falsify_main() {
   fi
   if [[ "$FR_SELECT" != 0 && "$FR_SELECT" != 1 ]]; then
     fr_err "FALSIFY_SELECT must be 0 or 1, got '${FR_SELECT}'"; return 2
+  fi
+  if [[ "$FR_STOP" != 0 && "$FR_STOP" != 1 ]]; then
+    fr_err "FALSIFY_STOP_AT_KILL must be 0 or 1, got '${FR_STOP}'"; return 2
   fi
   if [[ ! "$FR_JOBS" =~ ^[1-9][0-9]*$ ]]; then
     fr_err "--jobs must be a positive integer or 'auto', got '${FR_JOBS}'"; return 2
@@ -2589,9 +2789,11 @@ falsify_main() {
     # An oracle that is not green on the UNMUTATED tree cannot distinguish
     # anything: every mutant would be reported KILLED. rc=2 is named for what
     # it is, because that is what a misspelled oracle looks like.
-    FR_RA_CLOCKS=""; FR_RA_TIMES="$FR_OUT/times.$i"; rm -f "$FR_RA_TIMES"
+    FR_RA_CLOCKS=""; FR_RA_ORDER=""; FR_RA_TIMES="$FR_OUT/times.$i"; rm -f "$FR_RA_TIMES"
     fr_run_baseline "$oracle"
     FR_RA_TIMES=""
+    # Before anything else runs in slot 0, a skipped target's successor included.
+    _fr_main_note "$(_fr_slot_clean 0 "$target" "the baseline")"
     if [[ "$FALSIFY_VERDICT" != "SURVIVED" ]]; then
       if (( FALSIFY_RC == 2 )); then
         fr_err "oracle '$oracle' matched NO test (run-all.sh exit 2) — a misspelled oracle name would report every mutant of $target as KILLED. Skipping $target."
@@ -2657,6 +2859,50 @@ falsify_main() {
     if (( FR_TEST_CLOCK )); then
       FR_RA_CLOCKS="$(fr_test_clocks "$FR_OUT/times.$i")"
       printf 'NOTE|test-clocks|%s|%s\n' "$target" "$FR_RA_CLOCKS"
+    fi
+    # --stop-at-kill: quickest first, if that order is green.
+    #
+    # The baseline above proved the set green in the driver's own order, and
+    # nothing about any other: a test that passes only on what an earlier one
+    # left would fail first in a new order, in every mutant's run, and each
+    # would be recorded KILLED. So the order is tried before it is used: the
+    # whole set, on the pristine tree, in a slot seeded afresh, because the
+    # first baseline ran in this one and what it left there (a file git ignores
+    # is in no debris check) is exactly what such a test passes on. One attempt,
+    # under the clocks, timing nothing: an order that is not green for any
+    # reason is not used, and the run goes on in the order that was.
+    if [[ "$FR_STOP" == 1 ]]; then
+      local ord seen how="in the driver's usual order, which is already quickest first"
+      ord="$(fr_test_order "$FR_OUT/times.$i")"; seen="$(fr_test_seen "$FR_OUT/times.$i")"
+      if [[ -z "$ord" ]]; then
+        how="in the driver's usual order: the baseline left no times to order its tests by"
+      elif [[ "$ord" != "$seen" ]]; then
+        if ! fr_seed_slot 0; then
+          # fr_seed_slot removes the tree before it copies: what is there now
+          # is not the repo, and its fingerprint is the slot's reference from
+          # here on, as after any re-seed that failed.
+          how="in the driver's usual order: slot 0 could not be seeded afresh to try quickest first ($ord)"
+          falsify_tree_fingerprint "$(fr_slot_tree 0)" > "$FR_OUT/w0.porcelain" 2>/dev/null
+          _fr_main_note "NOTE|reseed-failed|$target|slot 0 could NOT be seeded afresh for the baseline in the run's order; every later mutant in it runs against a tree that is not the repo"
+        else
+          FR_RA_ORDER="$ord"
+          falsify_run_oracle "$(fr_slot_tree 0)" "$oracle" "$FR_OUT/baseline.order.log" \
+            "$(fr_effective_timeout "$oracle")" "baseline.order"
+          falsify_verdict "$FALSIFY_RC" "$FR_OUT/baseline.order.log" "$FALSIFY_TIMED_OUT"
+          if [[ "$FALSIFY_VERDICT" == SURVIVED ]]; then
+            how="quickest first: $ord (green in that order on a freshly seeded tree, ${FALSIFY_MS}ms; the controls run in it too)"
+          else
+            FR_RA_ORDER=""
+            how="in the driver's usual order: quickest first ($ord) was not green on a freshly seeded tree ($FALSIFY_VERDICT, $FALSIFY_SIGNAL)"
+            fr_warn "--stop-at-kill: $target's oracles are not green quickest first ($ord): $FALSIFY_VERDICT, $FALSIFY_SIGNAL. A FAIL: line below is a test that depends on one that ran before it in the usual order; anything else is the machine. The usual order is kept."
+            local ol
+            while IFS= read -r ol; do fr_warn "  in that order: $ol"; done < <(fr_oracle_excerpt "$FR_OUT/baseline.order.log")
+          fi
+          rm -f "$FR_OUT/baseline.order.log"*
+          _fr_main_note "$(_fr_slot_clean 0 "$target" "the baseline in the run's order")"
+        fi
+      fi
+      printf 'NOTE|stop-at-kill|%s|each mutant is run to its first FAIL: line, not to the end of its oracle set, %s; the baseline, the coverage pass and the controls run every test\n' "$target" "$how"
     fi
     rm -f "$FR_OUT/times.$i"
 

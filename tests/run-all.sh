@@ -14,6 +14,9 @@
 #   RA_TIMES_FILE=<path>            append "<name> <seconds>" per test
 #   RA_CLOCKED_FILE=<path>          append "<name> <seconds>" for a test its
 #                                   clock stopped
+#   RA_STOP_AT_FAIL=1               end the run after the first test that
+#                                   printed a FAIL: line (and exit 1)
+#   RA_ORDER="<name> ..."           run these tests first, in this order
 #
 # Each test is self-contained (its own temp dirs, isolated HOME, fake docker
 # where needed) and must not touch the real repo or the real projects.conf.
@@ -33,7 +36,7 @@ filters=""
 for arg in "$@"; do
   case "$arg" in
     -v|--verbose) verbose=1 ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) printf 'run-all.sh: unknown option: %s\n' "$arg" >&2; exit 2 ;;
     *) filters="${filters:+$filters }$arg" ;;
   esac
@@ -230,7 +233,29 @@ unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS 
 # itself (tests/test-run-all.sh, the tier's own tests) must not inherit them.
 ra_clock_all="${RA_TEST_CLOCK:-}"; ra_clocks="${RA_TEST_CLOCKS:-}"; ra_times="${RA_TIMES_FILE:-}"
 ra_clocked="${RA_CLOCKED_FILE:-}"
-unset RA_TEST_CLOCK RA_TEST_CLOCKS RA_TIMES_FILE RA_CLOCKED_FILE
+# RA_STOP_AT_FAIL=1 (tests/falsify/run.sh --stop-at-kill): one FAIL: line makes a
+# mutant KILLED, and the tests after it add nothing to that verdict but their
+# time. The line is the tier's kill, `falsify_has_fail_line`: FAIL: at a line's
+# start or after whitespace, which is wider than this driver's own `^FAIL:`.
+ra_stop_at_fail="${RA_STOP_AT_FAIL:-}"; ra_stopped=0
+# RA_ORDER: the selected tests it names run first, in its order, and the others
+# after them as the glob gave them. The tier puts a target's quickest tests
+# first, so a run that stops at a FAIL: line stops before the slow ones.
+ra_order="${RA_ORDER:-}"
+unset RA_TEST_CLOCK RA_TEST_CLOCKS RA_TIMES_FILE RA_CLOCKED_FILE RA_STOP_AT_FAIL RA_ORDER
+if [ -n "$ra_order" ]; then
+  ra_first=""; ra_later=""
+  for ra_o in $ra_order; do
+    for t in $selected; do
+      [ "${t##*/}" = "$ra_o" ] || continue
+      case " $ra_first " in *" $t "*) ;; *) ra_first="${ra_first:+$ra_first }$t" ;; esac
+    done
+  done
+  for t in $selected; do
+    case " $ra_first " in *" $t "*) ;; *) ra_later="${ra_later:+$ra_later }$t" ;; esac
+  done
+  selected="$ra_first${ra_first:+${ra_later:+ }}$ra_later"
+fi
 ra_clock_for() {  # <name> → its clock in whole seconds, or nothing
   ra_c=""
   for ra_kv in $ra_clocks; do
@@ -293,6 +318,7 @@ for t in $selected; do
   ra_td="$RA_TMPROOT/$name"
   mkdir -p "$ra_td" || ra_td="$RA_TMPROOT"
   ra_clock="$(ra_clock_for "$name")"; ra_timed_out=0; ra_t0=$SECONDS; ra_us0="${EPOCHREALTIME:-}"
+  ra_log_whole=1
   if [ -n "$ra_clock" ]; then
     # Monitor mode, so the test and its clock each lead a process group that
     # can be signalled whole: a test's children (a launcher, a fake docker, a
@@ -341,6 +367,9 @@ for t in $selected; do
       ra_n=0
       # Not when the clock stopped it, which stopped tee too: no marker comes.
       while [ ! -e "$ra_fifo.done" ] && [ ! -f "$ra_flag" ] && [ "$ra_n" -lt 20 ]; do sleep 0.1; ra_n=$((ra_n + 1)); done
+      # tee did not reach the end of the test's output: the log may be cut off,
+      # and RA_STOP_AT_FAIL does not decide on it.
+      [ -e "$ra_fifo.done" ] || ra_log_whole=0
       ra_sig KILL "$ra_tee"; wait "$ra_tee" 2>/dev/null
     elif [ "$verbose" -eq 1 ]; then
       cat "$log"
@@ -395,6 +424,12 @@ for t in $selected; do
     ra_not_run="$ra_rest"
     break
   fi
+  # After the clock, which wins: a test that printed FAIL: and then ran past its
+  # clock is a timeout, and what it printed while it died is not a result.
+  ra_stop=0
+  if [ "$ra_stop_at_fail" = 1 ] && [ "$ra_log_whole" -eq 1 ] && grep -qE '(^|[[:space:]])FAIL:' "$log"; then
+    ra_stop=1
+  fi
   if [ "$rc" -eq 0 ]; then
     # A printed FAIL: line is a failure regardless of the exit code, checked
     # BEFORE the assertion count below. The exit code is exactly the signal
@@ -417,6 +452,7 @@ for t in $selected; do
         grep -E '^FAIL:' "$log" | sed 's/^/     /' | head -20
         printf '     (run with -v for full output)\n'
       fi
+      if [ "$ra_stop" -eq 1 ]; then ra_stopped=1; ra_not_run="$ra_rest"; break; fi
       continue
     fi
     # Surface the assertion count without the noise. PASS takes precedence
@@ -467,6 +503,7 @@ for t in $selected; do
       printf '     (run with -v for full output)\n'
     fi
   fi
+  if [ "$ra_stop" -eq 1 ]; then ra_stopped=1; ra_not_run="$ra_rest"; break; fi
 done
 
 printf '\n%s test(s), %s passed, %s failed\n' "$total" "$((total - failed))" "$failed"
@@ -478,9 +515,16 @@ printf '\n%s test(s), %s passed, %s failed\n' "$total" "$((total - failed))" "$f
 if [ -n "$ra_not_run" ]; then
   ra_names=""
   for ra_t in $ra_not_run; do ra_names="${ra_names:+$ra_names }$(basename "$ra_t")"; done
-  printf 'not run, after a test ran past its clock: %s\n' "$ra_names"
+  if [ "$ra_stopped" -eq 1 ]; then
+    printf 'not run, after a test failed: %s\n' "$ra_names"
+  else
+    printf 'not run, after a test ran past its clock: %s\n' "$ra_names"
+  fi
 fi
 if [ "$failed" -gt 0 ]; then
   printf 'Failing: %s\n' "$failed_names"
   exit 1
 fi
+# Stopped on a FAIL: line this driver's own rule did not count (one after
+# whitespace, in a test that exited 0): a run that left tests unrun is not green.
+[ "$ra_stopped" -eq 0 ] || exit 1

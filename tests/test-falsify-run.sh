@@ -1798,13 +1798,19 @@ sel_decide() {   # <scenario> → the runs, then the result records
     case "$sc" in
       kill)       ans[b.sh]="1 0 FAIL: b" ;;
       killodd)    ans[b.sh]="1 0 xFAIL: a FAIL: b"$'\xff\r' ;;
-      timeout)    ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 FAIL: c" ;;
+      timeout|stopkill) ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 FAIL: c" ;;
       hang)       ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
       artefact)   ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 FAIL: c" ;;
       tscaffold)  ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="1 0 SCAFFOLD-FAILED: c" ;;
       scafftime)  ans[b.sh]="143 1 SCAFFOLD-FAILED: b"; ans[a.sh,b.sh,c.sh]="1 0 FAIL: a" ;;
       exit)       ans[b.sh]="1 0 died"; ans[a.sh,b.sh,c.sh]="1 0 FAIL: a" ;;
       debris|reseedfail) ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
+      # In an order (FR_RA_ORDER set below): the subset hangs, having left the
+      # tree changed (ordhang) or not (ordclean), and the rest is green; and
+      # the subset survives, the rest's setup breaks on a changed tree, and the
+      # whole set in the usual order kills (ordmiss).
+      ordhang|ordclean) ans[b.sh]="143 1 hung"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
+      ordmiss)    ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="1 0 SCAFFOLD-FAILED: c"; ans[a.sh,b.sh,c.sh]="1 0 FAIL: b" ;;
       writefail*|foreign) ans[b.sh]="0 0 PASS: b"; ans[a.sh,c.sh]="0 0 PASS: a" ;;
     esac
     nr=0
@@ -1812,15 +1818,22 @@ sel_decide() {   # <scenario> → the runs, then the result records
     falsify_run_oracle() {
       local a="${ans[$2]:-0 0 PASS: x}"
       nr=$(( nr + 1 ))
-      printf 'run %s %s %s\n' "$2" "$4" "$(sed -n 2p "$1/t.sh")" >> "$d/calls"
+      printf 'run %s %s %s%s%s\n' "$2" "$4" "$(sed -n 2p "$1/t.sh")" "${FR_STOP_NOW:+ stop}" "${FR_RA_ORDER:+ ord}" >> "$d/calls"
       FALSIFY_RC="${a%% *}"; a="${a#* }"; FALSIFY_TIMED_OUT="${a%% *}"
       printf '%s\n' "${a#* }" > "$3"
       FALSIFY_MS=1000; FALSIFY_FOREIGN_FLAG=""; FALSIFY_TOKEN="tok$nr"
       if [[ "$sc" == foreign || "$sc" == writefailforeign ]] && (( nr == 1 )); then FALSIFY_FOREIGN_FLAG=other; fi
       if [[ "$sc" == debris || "$sc" == reseedfail ]]; then printf 'dirty\n' > "$d/fp"; fi
+      if [[ "$sc" == ordhang ]] && (( nr == 1 )); then printf 'dirty\n' > "$d/fp"; fi
+      if [[ "$sc" == ordmiss ]] && (( nr == 2 )); then printf 'dirty\n' > "$d/fp"; fi
       return 0
     }
+    # shellcheck disable=SC2034  # read by fr_run_mutant, sourced above
+    if [[ "$sc" == stopkill ]]; then FR_STOP=1; fi
+    # shellcheck disable=SC2034  # read by fr_run_mutant and the stub above
+    if [[ "$sc" == ord* ]]; then FR_RA_ORDER="b.sh a.sh c.sh"; fi
     fr_run_mutant 0 t.sh a.sh,b.sh,c.sh 1 2 cond-negate deadbeef MUTATED "$d/res"
+    if [[ "$sc" == stopkill ]]; then printf 'after %s\n' "${FR_STOP_NOW:-unset}" >> "$d/calls"; fi
     # As bytes: the killodd note holds a byte that is not UTF-8, and BSD cut in a
     # UTF-8 locale drops its line with "Illegal byte sequence" (bugs review TST-31).
     cat "$d/calls"; LC_ALL=C cut -d'|' -f1-7 "$d/res"
@@ -1988,6 +2001,408 @@ else
   kill -TERM "$lg_run" 2>/dev/null; wait "$lg_run" 2>/dev/null
 fi
 while IFS= read -r p; do kill -KILL "$p" 2>/dev/null; done < "$lg_pids"
+
+# ── 12f. --stop-at-kill: a mutant's run ends at its first FAIL: line (GAP-2) ──
+# One FAIL: line makes a mutant KILLED, and the tests after it in the set could
+# add nothing to that verdict but their run time: the whole-file measurement of
+# sandbox.sh paid 30 minutes a mutant for them. With --stop-at-kill the driver
+# is told to stop there (run-all.sh's RA_STOP_AT_FAIL), in a mutant's runs only.
+# The baseline times every test for the clocks, the coverage pass maps every
+# test, and a control is a measurement of the whole set, so none of them is told.
+#
+# The fixture is the same repo with two things added. Its driver is a stub that
+# records what the tier handed each run, by the run's label (the driver's TMPDIR
+# ends in the token falsify_run_oracle made: baseline, c<slot>.n<n>,
+# cov<k>.<mode>, s<slot>.m<seq>, s<slot>.m<seq>.r) and then runs the real one.
+# And an oracle that sorts after test-fx-a.sh records each run it was part of.
+unset FALSIFY_STOP_AT_KILL RA_STOP_AT_FAIL
+FXS="$TMP/repo-stop"
+cp -a "$FX" "$FXS"
+mv "$FXS/tests/run-all.sh" "$FXS/tests/run-all-real.sh"
+cat > "$FXS/tests/run-all.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "${RA_STOP_AT_FAIL:-unset}" "${TMPDIR##*/}" "${RA_ORDER:-unset}" >> "$FX_STOPLOG"
+exec bash "$(dirname "${BASH_SOURCE[0]}")/run-all-real.sh" "$@"
+EOF
+cat > "$FXS/tests/test-fx-zz-count.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$TMPDIR" >> "$FX_STOPCOUNT"
+sleep 1
+printf 'PASS: counted\n'
+EOF
+# For the order (below): an oracle that sorts first and takes three seconds; a
+# pair where the quick one passes only on what the slow one left, in a file git
+# ignores, which no debris check sees; and one that is red on its own leftovers.
+# The baseline's times are whole seconds and tests that tie keep their usual
+# order, so what decides an order here is a sleep, never how fast two tests of
+# no length ran: test-fx-zz-count.sh takes a second so that test-fx-a.sh, on a
+# loaded machine, does not sort after it, and the slow ones take three.
+cat > "$FXS/tests/test-fx-0slow.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$TMPDIR" >> "$FX_STOPCOUNT"
+sleep 3
+printf 'PASS: slow, and blind\n'
+EOF
+cat > "$FXS/tests/test-fx-0prov.sh" <<'EOF'
+#!/usr/bin/env bash
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+sleep 3
+: > "$FX_DIR/.prov" && printf 'PASS: provided\n'
+EOF
+cat > "$FXS/tests/test-fx-need.sh" <<'EOF'
+#!/usr/bin/env bash
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -e "$FX_DIR/.prov" ]]; then printf 'PASS: found what the provider left\n'; exit 0; fi
+printf 'FAIL: nothing was provided\n'; exit 1
+EOF
+cat > "$FXS/tests/test-fx-left.sh" <<'EOF'
+#!/usr/bin/env bash
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -e "$FX_DIR/.left" ]]; then printf 'FAIL: found .left from an earlier run\n'; exit 1; fi
+: > "$FX_DIR/.left"; printf 'PASS: a clean tree\n'
+EOF
+# And for 12i: a target whose mutants make a quick test write into the tree
+# instead of its scratch, and a slow test, first in the usual order, that fails
+# when it finds that file there.
+cat > "$FXS/fixture-where.sh" <<'EOF'
+#!/usr/bin/env bash
+fx_where() {
+  if [[ -n "$1" ]]; then printf '%s\n' "$1"; else printf '.\n'; fi
+}
+EOF
+cat > "$FXS/tests/test-fx-w-quick.sh" <<'EOF'
+#!/usr/bin/env bash
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=/dev/null
+source "$FX_DIR/fixture-where.sh"
+cd "$FX_DIR" || exit 1
+: > "$(fx_where "$TMPDIR")/fx-w.out"; printf 'PASS: wrote my file\n'
+EOF
+cat > "$FXS/tests/test-fx-0w-check.sh" <<'EOF'
+#!/usr/bin/env bash
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+sleep 3
+if [[ -e "$FX_DIR/fx-w.out" ]]; then printf 'FAIL: found fx-w.out in the tree\n'; exit 1; fi
+printf 'PASS: nothing in the tree\n'
+EOF
+cat > "$FXS/tests/test-fx-0w-scaf.sh" <<'EOF'
+#!/usr/bin/env bash
+FX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+sleep 3
+if [[ -e "$FX_DIR/fx-w.out" ]]; then printf 'SCAFFOLD-FAILED: cannot set up beside fx-w.out\n'; exit 1; fi
+printf 'PASS: set up\n'
+EOF
+printf '.prov\n' >> "$FXS/.gitignore"
+chmod +x "$FXS/tests/run-all.sh" "$FXS/tests"/test-fx-*.sh
+( cd "$FXS" && git add -A && git -c user.email=t@example -c user.name=t commit -qm stop ) >/dev/null 2>&1
+CONF_STOP="$(conf stop 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-a.sh,test-fx-zz-count.sh')"
+export FX_STOPLOG="$TMP/stop.log" FX_STOPCOUNT="$TMP/stop.count"
+stop_reset() { : > "$FX_STOPLOG"; : > "$FX_STOPCOUNT"; }
+stop_seen() {   # <label regex> → what such runs were handed, e.g. "unset" or "1" or "1,unset"; "none" if no such run
+  FX_RE="$1" awk -F'|' '$2 ~ ENVIRON["FX_RE"] { print $1; n++ } END { if (!n) print "none" }' "$FX_STOPLOG" | sort -u | paste -sd, -
+}
+order_seen() {   # <label regex> → the RA_ORDER such runs were handed, the same way
+  FX_RE="$1" awk -F'|' '$2 ~ ENVIRON["FX_RE"] { print $3; n++ } END { if (!n) print "none" }' "$FX_STOPLOG" | sort -u | paste -sd, -
+}
+stop_counted() {   # <label regex> → how many such runs reached the oracle that sorts last
+  local n; n="$(grep -cE "/tmp/$1[^/]*/run-all-tmp" "$FX_STOPCOUNT" 2>/dev/null)"; printf '%s' "${n:-0}"
+}
+stop_verdicts() { awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 "|" $7 "|" $9 }' <<< "$FX_OUT" | sort; }
+
+stop_reset
+fx_run "$RUN" "$CONF_STOP" "$FXS" "$TMP/wit-stop0" --jobs 1 --controls 1
+check "control: without --stop-at-kill the run completes (exit 0)" "0" "$FX_RC"
+stop_ref="$(stop_verdicts)"
+stop_n="$(grep -c '^MUTANT|' <<< "$FX_OUT")"; stop_surv="$(grep -c '^MUTANT|SURVIVED|' <<< "$FX_OUT")"
+[[ "$stop_n" -ge 3 && "$stop_surv" -ge 1 && "$stop_surv" -lt "$stop_n" ]] \
+  && pass "control: the fixture has kills and a survivor ($stop_n mutants, $stop_surv survived)" \
+  || fail "control: the fixture should have kills and a survivor — got $stop_n mutants, $stop_surv survived"
+check "control: without the flag every mutant's run reaches the last oracle" "$stop_n" "$(stop_counted 's[0-9]+\.m')"
+check "control: … and no run of the driver is told to stop" "unset" "$(stop_seen '.')"
+check "control: … and there is no NOTE|stop-at-kill record" "0" "$(grep -c '^NOTE|stop-at-kill|' <<< "$FX_OUT")"
+
+stop_reset
+fx_run "$RUN" "$CONF_STOP" "$FXS" "$TMP/wit-stop1" --jobs 1 --controls 1 --stop-at-kill
+check "--stop-at-kill runs (exit 0)" "0" "$FX_RC"
+[[ -n "$stop_ref" && "$(stop_verdicts)" == "$stop_ref" ]] \
+  && pass "  … and every verdict and signal is the one the whole set gives" \
+  || fail "  … verdicts differ — whole: $(tr '\n' ' ' <<< "$stop_ref") stopped: $(stop_verdicts | tr '\n' ' ')"
+check "  … a killed mutant's run does not reach the oracle after the one that failed: only the survivors' do" \
+  "$stop_surv" "$(stop_counted 's[0-9]+\.m')"
+check "  … a mutant's runs are told to stop" "1" "$(stop_seen '^s[0-9]+\.m')"
+check "  … the baseline is not" "unset" "$(stop_seen '^baseline\.')"
+check "  … and a control is not" "unset" "$(stop_seen '^c[0-9]+\.n')"
+[[ "$(stop_counted 'baseline\.')" -ge 1 && "$(stop_counted 'c[0-9]+\.n')" -ge 1 ]] \
+  && pass "  … so the baseline and the control still run every oracle" \
+  || fail "  … the baseline or the control did not reach the last oracle (baseline $(stop_counted 'baseline\.'), control $(stop_counted 'c[0-9]+\.n'))"
+check "  … the record of a kill still names the whole set" \
+  "test-fx-a.sh,test-fx-zz-count.sh" "$(fx_field "$FX_OUT" "$KILLABLE" 4)"
+check "  … and one NOTE|stop-at-kill record says the run used it" "1" "$(grep -c '^NOTE|stop-at-kill|fixture-lib.sh|' <<< "$FX_OUT")"
+
+stop_reset
+FALSIFY_STOP_AT_KILL=1 fx_run "$RUN" "$CONF_STOP" "$FXS" "$TMP/wit-stop2" --jobs 1 --controls 0
+check "FALSIFY_STOP_AT_KILL=1 turns it on" "1|$stop_surv" "$(stop_seen '^s[0-9]+\.m')|$(stop_counted 's[0-9]+\.m')"
+stop_reset
+RA_STOP_AT_FAIL=1 fx_run "$RUN" "$CONF_STOP" "$FXS" "$TMP/wit-stop3" --jobs 1 --controls 0
+check "an RA_STOP_AT_FAIL in the caller's environment reaches no run of the driver" \
+  "unset|$stop_n" "$(stop_seen '.')|$(stop_counted 's[0-9]+\.m')"
+stop_reset
+FR_STOP_NOW=1 fx_run "$RUN" "$CONF_STOP" "$FXS" "$TMP/wit-stop3b" --jobs 1 --controls 1
+check "nor does the runner's own FR_STOP_NOW, set there: the baseline and the control would have stopped" \
+  "unset|$stop_n" "$(stop_seen '.')|$(stop_counted 's[0-9]+\.m')"
+FALSIFY_STOP_AT_KILL=2 fx_run "$RUN" "$CONF_STOP" "$FXS" "$TMP/wit-stop4" --jobs 1 --controls 0 2>/dev/null
+check "FALSIFY_STOP_AT_KILL other than 0 or 1 is refused (exit 2)" "2" "$FX_RC"
+
+# With --select-oracles: the coverage pass is not told, and a subset's run and
+# the rest's run both are. The verdicts are still the whole set's (12d's).
+stop_reset
+fx_run "$RUN" "$CONF_SEL" "$FXS" "$TMP/wit-stop5" --jobs 1 --controls 0 --select-oracles --stop-at-kill
+check "--stop-at-kill with --select-oracles runs (exit 0)" "0" "$FX_RC"
+[[ -n "$full_verdicts" && "$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 "|" $7 }' <<< "$FX_OUT" | sort)" == "$full_verdicts" ]] \
+  && pass "  … and every verdict and signal is the whole set's" \
+  || fail "  … verdicts differ from the whole set's — got: $(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 "|" $7 }' <<< "$FX_OUT" | sort | tr '\n' ' ')"
+check "  … the coverage pass is not told to stop" "unset" "$(stop_seen '^cov[0-9]+\.')"
+check "  … a subset's run is" "1" "$(stop_seen '^s[0-9]+\.m[0-9]+\.[0-9]')"
+check "  … and so is the run of the rest of the set" "1" "$(stop_seen '^s[0-9]+\.m[0-9]+\.r\.')"
+check "  … stop: the rest's run after a subset that timed out is told too, and nothing is left set after the mutant" \
+  "run b.sh 15 MUTATED stop|run a.sh,c.sh 15 MUTATED stop|after unset" \
+  "$(sel_decide stopkill | grep -E '^(run|after) ' | paste -sd'|' -)"
+check "  … and without the flag no run is marked" \
+  "run b.sh 15 MUTATED|run a.sh,c.sh 15 MUTATED" \
+  "$(sel_decide timeout | grep -E '^(run|after) ' | paste -sd'|' -)"
+grep -q -- '--stop-at-kill' <<< "$(bash "$RUN" --help 2>&1)" \
+  && pass "--help names --stop-at-kill" || fail "--help does not name --stop-at-kill"
+
+# ── 12g. --stop-at-kill runs a target's quickest tests first ─────────────────
+# Stopping at the first FAIL: line saves little while the slow tests sort first:
+# measured on sandbox.sh, a mutant that test-parsers.sh kills in seconds paid
+# half an hour for the seven git-internals tests ahead of it. So the tier orders
+# a target's tests by their time on the baseline (RA_ORDER), and proves that
+# order green with a second baseline on a freshly seeded tree before it uses
+# it. The controls run in it too. An order that is not green there is not used.
+CONF_ORD="$(conf ord 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-0slow.sh,test-fx-a.sh')"
+ORD_WANT='test-fx-a.sh test-fx-0slow.sh'
+stop_reset
+fx_run "$RUN" "$CONF_ORD" "$FXS" "$TMP/wit-ord0" --jobs 1 --controls 1
+check "control: without --stop-at-kill no run is handed an order, and there is one baseline" \
+  "unset|none" "$(order_seen '.')|$(order_seen '^baseline\.order\.')"
+ord_ref="$(stop_verdicts)"
+stop_reset
+fx_run "$RUN" "$CONF_ORD" "$FXS" "$TMP/wit-ord1" --jobs 1 --controls 1 --stop-at-kill
+check "--stop-at-kill with a slow oracle that sorts first runs (exit 0)" "0" "$FX_RC"
+check "  … the first baseline runs in the usual order" "unset" "$(order_seen '^baseline\.[0-9]')"
+check "  … a second baseline runs quickest first" "$ORD_WANT" "$(order_seen '^baseline\.order\.')"
+check "  … and so do the controls and the mutants" "$ORD_WANT|$ORD_WANT" "$(order_seen '^c[0-9]+\.n')|$(order_seen '^s[0-9]+\.m')"
+check "  … the second baseline and the control are not told to stop" "unset|unset" "$(stop_seen '^baseline\.order\.')|$(stop_seen '^c[0-9]+\.n')"
+check "  … a killed mutant never reaches the slow oracle: only the survivors' runs do" \
+  "$stop_surv" "$(stop_counted 's[0-9]+\.m')"
+[[ -n "$ord_ref" && "$(stop_verdicts)" == "$ord_ref" ]] \
+  && pass "  … and every verdict and signal is the one the whole set gives" \
+  || fail "  … verdicts differ — whole: $(tr '\n' ' ' <<< "$ord_ref") ordered: $(stop_verdicts | tr '\n' ' ')"
+check "  … there is still one BASELINE record" "1" "$(grep -c '^BASELINE|' <<< "$FX_OUT")"
+check "  … and a kill that left the tree as it was is not run again in the usual order" \
+  "0|none" "$(grep -c '^NOTE|order-rerun|' <<< "$FX_OUT")|$(stop_seen '^s[0-9]+\.m[0-9]+\.u\.')"
+grep -q "^NOTE|stop-at-kill|fixture-lib.sh|.*quickest first: $ORD_WANT" <<< "$FX_OUT" \
+  && pass "  … and the NOTE names the order" \
+  || fail "  … the NOTE does not name the order — got: $(grep '^NOTE|stop-at-kill|' <<< "$FX_OUT")"
+# The order is the tier's own: one in the caller's environment reaches nothing.
+stop_reset
+RA_ORDER="test-fx-0slow.sh test-fx-a.sh" fx_run "$RUN" "$CONF_STOP" "$FXS" "$TMP/wit-ord2" --jobs 1 --controls 1
+check "an RA_ORDER in the caller's environment reaches no run of the driver" "unset" "$(order_seen '.')"
+# Tests that tie keep their usual order, and then there is nothing to prove.
+stop_reset
+fx_run "$RUN" "$CONF_STOP" "$FXS" "$TMP/wit-ord3" --jobs 1 --controls 0 --stop-at-kill
+check "an order that is the usual one is not handed out, and has no second baseline" \
+  "unset|none" "$(order_seen '.')|$(order_seen '^baseline\.order\.')"
+# A second target starts from the usual order again.
+CONF_ORD2="$(printf 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-0slow.sh,test-fx-a.sh\nfixture-slow.sh|EXECUTED-WHOLE|test-fx-slow.sh\n' > "$TMP/ord2.conf"; printf '%s' "$TMP/ord2.conf")"
+stop_reset
+fx_run "$RUN" "$CONF_ORD2" "$FXS" "$TMP/wit-ord4" --jobs 1 --controls 0 --stop-at-kill
+check "the next target's baseline is not handed the last target's order" "unset" "$(order_seen '^baseline\.[0-9]')"
+# With --select-oracles a subset is a part of the order, in the order.
+CONF_SELORD="$(conf selord 'fixture-sel.sh|EXECUTED-WHOLE|test-fx-0slow.sh,test-fx-sel-one.sh,test-fx-sel-mixed.sh,test-fx-sel-strict.sh,test-fx-sel-shy.sh')"
+stop_reset
+fx_run "$RUN" "$CONF_SELORD" "$FXS" "$TMP/wit-ord5" --jobs 1 --controls 0 --select-oracles --stop-at-kill
+[[ -n "$full_verdicts" && "$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 "|" $7 }' <<< "$FX_OUT" | sort)" == "$full_verdicts" ]] \
+  && pass "with --select-oracles and an order, every verdict and signal is still the whole set's" \
+  || fail "with --select-oracles and an order, verdicts differ — got: $(awk -F'|' '$1 == "MUTANT" { print $3 "|" $2 "|" $7 }' <<< "$FX_OUT" | sort | tr '\n' ' ')"
+[[ "$(order_seen '^s[0-9]+\.m')" == *"test-fx-0slow.sh" && "$(order_seen '^s[0-9]+\.m')" != *,* ]] \
+  && pass "  … and a subset's run and the rest's are handed the order, the slow oracle last" \
+  || fail "  … subsets were not handed the order — got: $(order_seen '^s[0-9]+\.m')"
+# AN ORDER THAT IS NOT GREEN ON A CLEAN TREE IS NOT USED. test-fx-need.sh passes
+# only on a file test-fx-0prov.sh leaves, one git ignores. Quickest first, it
+# runs before its provider and fails. The second baseline must see that, so it
+# must not run in the tree the first baseline left that file in.
+CONF_NEED="$(conf need 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-0prov.sh,test-fx-need.sh')"
+stop_reset
+fx_run "$RUN" "$CONF_NEED" "$FXS" "$TMP/wit-ord6" --jobs 2 --controls 0 --stop-at-kill 2>/dev/null
+check "an order that is red on a clean tree: the run still completes (exit 0)" "0" "$FX_RC"
+check "  … the second baseline ran in that order" "test-fx-need.sh test-fx-0prov.sh" "$(order_seen '^baseline\.order\.')"
+check "  … and no mutant's run is handed it" "unset" "$(order_seen '^s[0-9]+\.m')"
+check "  … the target is not skipped, and nothing is KILLED by the order: every mutant survives these two blind oracles" \
+  "$stop_n|0" "$(grep -c '^MUTANT|SURVIVED|' <<< "$FX_OUT")|$(grep -c '^MUTANT|KILLED|' <<< "$FX_OUT")"
+grep -q '^NOTE|stop-at-kill|fixture-lib.sh|.*usual order.*not green' <<< "$FX_OUT" \
+  && pass "  … and the NOTE says the usual order was kept, and why" \
+  || fail "  … the NOTE does not say the order was refused — got: $(grep '^NOTE|stop-at-kill|' <<< "$FX_OUT")"
+grep -q 'FAIL: nothing was provided' <<< "$FX_ERR" \
+  && pass "  … and stderr shows what went red in that order" \
+  || fail "  … stderr does not show what went red — got: $FX_ERR"
+# The order comes from every attempt of the baseline, a test's slowest time.
+printf 'a.sh 3\nb.sh 2\na.sh 1\nc.sh 0\nd.sh 2\n' > "$TMP/ord.times"
+FX_ORD="$( ( set +u
+  # shellcheck source=/dev/null
+  source "$RUN" >/dev/null 2>&1
+  fr_test_order "$TMP/ord.times" ) )"
+check "the order is by each test's slowest time, ties in the order first seen" "c.sh b.sh d.sh a.sh" "$FX_ORD"
+
+# ── 12h. WHAT A BASELINE OR A CONTROL LEFT IS NOT THE NEXT MUTANT'S (TST-35) ──
+# A mutant's run is followed by a check of its worker tree, re-seeded if the
+# run left it changed. The baseline and the controls were not: the first mutant
+# to run in slot 0 after the baseline, and the next in a slot after a control,
+# read what they had left. test-fx-left.sh fails when it finds a file an earlier
+# run of itself left, and asserts nothing about the target, so every mutant
+# must SURVIVE. Before the fix, the first after the baseline and the first
+# after each control were KILLED, by nothing the mutant did.
+CONF_LEFT="$(conf left 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-left.sh')"
+fx_run "$RUN" "$CONF_LEFT" "$FXS" "$TMP/wit-left" --jobs 1 --controls 2
+check "an oracle red on its own leftovers kills no mutant after the baseline or a control" \
+  "$stop_n|0" "$(grep -c '^MUTANT|SURVIVED|' <<< "$FX_OUT")|$(grep -c '^MUTANT|KILLED|' <<< "$FX_OUT")"
+check "  … the controls passed" "0" "$(grep -c '^CONTROL|FAIL|' <<< "$FX_OUT")"
+[[ "$(grep -c '^NOTE|reseed|fixture-lib.sh|the baseline left' <<< "$FX_OUT")" == 1 \
+   && "$(grep -c '^NOTE|reseed|fixture-lib.sh|a control left' <<< "$FX_OUT")" -ge 1 ]] \
+  && pass "  … and the re-seeds after the baseline and after a control are on the record" \
+  || fail "  … no NOTE|reseed for the baseline or a control — got: $(grep '^NOTE|reseed' <<< "$FX_OUT" | cut -c1-120 | tr '\n' ' ')"
+
+# And the second baseline is a run in slot 0 like the first: what it left is
+# cleared before a mutant runs there.
+CONF_LEFTORD="$(conf leftord 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-0slow.sh,test-fx-left.sh')"
+fx_run "$RUN" "$CONF_LEFTORD" "$FXS" "$TMP/wit-leftord" --jobs 1 --controls 0 --stop-at-kill
+check "  … nor after the baseline in the run's order" \
+  "$stop_n|0|1" "$(grep -c '^MUTANT|SURVIVED|' <<< "$FX_OUT")|$(grep -c '^MUTANT|KILLED|' <<< "$FX_OUT")|$(grep -c "^NOTE|reseed|fixture-lib.sh|the baseline in the run's order left" <<< "$FX_OUT")"
+
+# ── 12i. AN ORDER MUST NOT TURN A SURVIVOR INTO A KILL (review of 9d07b9d) ────
+# The second baseline proves the order green on the pristine tree, and nothing
+# about a mutant's. A mutant can make one test leave something another reads,
+# and then the order decides the verdict: fx_where's mutants make
+# test-fx-w-quick.sh write fx-w.out into the tree, where test-fx-0w-check.sh
+# fails on finding it. In the usual order the checker runs first, finds nothing,
+# and the mutant SURVIVES, which is what the whole set says without the flag and
+# what a ledger entry is owed for. Quickest first, the writer runs first and the
+# checker kills. So a kill in the order whose run left the worker tree changed
+# is not believed: the set runs again in the usual order, on a re-seeded tree,
+# and that verdict is the one recorded.
+CONF_W="$(conf where 'fixture-where.sh|EXECUTED-WHOLE|test-fx-0w-check.sh,test-fx-w-quick.sh')"
+stop_reset
+fx_run "$RUN" "$CONF_W" "$FXS" "$TMP/wit-w0" --jobs 1 --controls 0
+w_ref="$(stop_verdicts)"; w_n="$(grep -c '^MUTANT|' <<< "$FX_OUT")"
+[[ "$w_n" -ge 1 && "$(grep -c '^MUTANT|SURVIVED|' <<< "$FX_OUT")" == "$w_n" ]] \
+  && pass "control: without --stop-at-kill every mutant of the writer survives ($w_n)" \
+  || fail "control: the writer's mutants should all survive in the usual order — got: $(stop_verdicts | tr '\n' ' ')"
+stop_reset
+fx_run "$RUN" "$CONF_W" "$FXS" "$TMP/wit-w1" --jobs 1 --controls 0 --stop-at-kill
+check "--stop-at-kill on that target runs (exit 0)" "0" "$FX_RC"
+check "  … the order was proved and handed out" "test-fx-w-quick.sh test-fx-0w-check.sh" "$(order_seen '^s[0-9]+\.m[0-9]+\.[0-9]')"
+[[ -n "$w_ref" && "$(stop_verdicts)" == "$w_ref" ]] \
+  && pass "  … and every mutant still SURVIVES: the order's kill is not recorded" \
+  || fail "  … the order changed a verdict — usual: $(tr '\n' ' ' <<< "$w_ref") ordered: $(stop_verdicts | tr '\n' ' ')"
+check "  … each was run again in the usual order, handed no order" "$w_n|unset" \
+  "$(grep -c '^NOTE|order-rerun|fixture-where.sh:' <<< "$FX_OUT")|$(order_seen '^s[0-9]+\.m[0-9]+\.u\.')"
+check "  … on a tree re-seeded first" "$w_n" "$(grep -c '^NOTE|reseed|fixture-where.sh:.*before the set ran again in the usual order' <<< "$FX_OUT")"
+check "  … and that run is still told to stop at a FAIL: line" "1" "$(stop_seen '^s[0-9]+\.m[0-9]+\.u\.')"
+check "  … the record says what the order gave" "$w_n" "$(grep -c '^NOTE|order-rerun|fixture-where.sh:[^|]*|KILLED quickest first' <<< "$FX_OUT")"
+# UNPROVEN hides a survivor as a kill does: check-ledger.sh asks no entry for a
+# mutant every record of which is UNPROVEN. Here the slow test's SETUP breaks on
+# what the writer left (and one that hung on it, stopped by its clock, is the
+# same case), so the order's verdict is UNPROVEN where the usual order's is
+# SURVIVED. Any verdict in the order but SURVIVED, from a run that left the tree
+# changed, is run again (re-review of 2c230b7).
+CONF_WS="$(conf wheres 'fixture-where.sh|EXECUTED-WHOLE|test-fx-0w-scaf.sh,test-fx-w-quick.sh')"
+fx_run "$RUN" "$CONF_WS" "$FXS" "$TMP/wit-w2" --jobs 1 --controls 0
+ws_ref="$(stop_verdicts)"
+check "control: with a reader whose setup breaks, every mutant survives the usual order" \
+  "$w_n|$w_n" "$(grep -c '^MUTANT|' <<< "$FX_OUT")|$(grep -c '^MUTANT|SURVIVED|' <<< "$FX_OUT")"
+fx_run "$RUN" "$CONF_WS" "$FXS" "$TMP/wit-w3" --jobs 1 --controls 0 --stop-at-kill
+[[ -n "$ws_ref" && "$(stop_verdicts)" == "$ws_ref" ]] \
+  && pass "  … and with the order too: an UNPROVEN from a run that left the tree changed is not recorded either" \
+  || fail "  … the order changed a verdict — usual: $(tr '\n' ' ' <<< "$ws_ref") ordered: $(stop_verdicts | tr '\n' ' ')"
+check "  … each was run again, and the record says the order gave UNPROVEN" "$w_n" \
+  "$(grep -c '^NOTE|order-rerun|fixture-where.sh:[^|]*|UNPROVEN quickest first' <<< "$FX_OUT")"
+# With --select-oracles the tree is looked at twice: after the selected subset,
+# where what it left is cleared before the rest runs, and at the end. A subset
+# that hung on another test's leftover has its UNPROVEN recorded after a rest
+# that ran green on the re-seeded tree, so the look at the end finds nothing:
+# either look finding the tree changed sends the mutant to the usual order
+# (third review, of a29e02a). The runs are stubbed, as in 12d: `ord` marks one
+# handed the order.
+check "a subset that hung in the order and left the tree changed: the whole set runs again in the usual order, on a tree seeded afresh, and decides" \
+  "run b.sh 15 MUTATED ord|reseed|run a.sh,c.sh 15 MUTATED ord|reseed|run a.sh,b.sh,c.sh 15 MUTATED|MUTANT|SURVIVED" \
+  "$(sel_decide ordhang | awk -F'|' '/^(run|reseed)/ { print } $1 == "MUTANT" { print $1 "|" $2 }' | paste -sd'|' -)"
+check "  … with the order's verdict on the record, and no selection-rerun note beside it" "1|0" \
+  "$(sel_decide ordhang | grep -c '^NOTE|order-rerun|t.sh:cond-negate:deadbeef|UNPROVEN quickest first (timeout)')|$(sel_decide ordhang | grep -c '^NOTE|selection-rerun|')"
+check "  … one that hung and left the tree as it was is not run again: the timeout stands" \
+  "run b.sh 15 MUTATED ord|run a.sh,c.sh 15 MUTATED ord|MUTANT|UNPROVEN|0" \
+  "$(sel_decide ordclean | awk -F'|' '/^(run|reseed)/ { print } $1 == "MUTANT" { print $1 "|" $2 }' | paste -sd'|' -)|$(sel_decide ordclean | grep -c '^NOTE|order-rerun|')"
+check "  … and a miss that the usual order's run decided says which run killed" "1" \
+  "$(sel_decide ordmiss | grep -c '^NOTE|selection-miss|t.sh:cond-negate:deadbeef|selected b.sh survived; the whole set, run again in the usual order, killed (exit+failline)')"
+
+# ── 12j. A RE-SEED THAT FAILS OUTSIDE A MUTANT'S RUN FAILS THE RUN TOO ────────
+# A slot that could not be re-seeded holds a tree that is not the repo, and the
+# run says so and exits non-zero (FR_RESEED_FAILED), because every verdict from
+# that slot afterwards is about another tree. That was counted from a mutant's
+# and a control's records only. The re-seed after the baseline (TST-35) and the
+# fresh seed for the second baseline happen in the run's own shell, and a
+# failure there went by with a NOTE and exit 0 (review of 9d07b9d). The runner
+# here is the real one with fr_seed_slot failing on the calls named.
+cat > "$TMP/run-seedfail.sh" <<EOF
+#!/usr/bin/env bash
+set +u
+# shellcheck source=/dev/null
+source "$RUN"
+eval "\$(declare -f fr_seed_slot | sed '1s/fr_seed_slot/fr_seed_slot_real/')"
+fr_seed_slot() {
+  local n; n=\$(( \$(cat "\$FX_SEEDN" 2>/dev/null || printf 0) + 1 )); printf '%s\n' "\$n" > "\$FX_SEEDN"
+  case " \$FX_SEEDFAIL " in *" \$n "*) return 1 ;; esac
+  fr_seed_slot_real "\$@"
+}
+set -uo pipefail
+falsify_main "\$@"
+exit \$?
+EOF
+export FX_SEEDN="$TMP/seed.n" FX_SEEDFAIL=""
+rm -f "$TMP/seed.n"
+fx_run "$TMP/run-seedfail.sh" "$CONF_LEFT" "$FXS" "$TMP/wit-sf0" --jobs 1 --controls 0
+check "control: the wrapped runner with no failing seed completes (exit 0)" "0" "$FX_RC"
+# Slot 0 is seeded once before the baseline; the re-seed after it is the second.
+rm -f "$TMP/seed.n"
+FX_SEEDFAIL=2 fx_run "$TMP/run-seedfail.sh" "$CONF_LEFT" "$FXS" "$TMP/wit-sf1" --jobs 1 --controls 0
+check "a re-seed that fails after the baseline is on the record" "1" \
+  "$(grep -c '^NOTE|reseed-failed|fixture-lib.sh|.*after the baseline' <<< "$FX_OUT")"
+[[ "$FX_RC" != 0 ]] && grep -q 'RESEED FAILED' <<< "$FX_ERR" \
+  && pass "  … and fails the run, named on stderr" \
+  || fail "  … the run did not fail for it (rc=$FX_RC) — stderr: $(tail -3 <<< "$FX_ERR" | tr '\n' ' ')"
+# The fresh seed for the second baseline: the baseline left nothing here, so it is the second call again.
+rm -f "$TMP/seed.n"
+stop_reset
+FX_SEEDFAIL=2 fx_run "$TMP/run-seedfail.sh" "$CONF_ORD" "$FXS" "$TMP/wit-sf2" --jobs 1 --controls 0 --stop-at-kill
+check "a fresh seed that fails before the second baseline is on the record" "1" \
+  "$(grep -c '^NOTE|reseed-failed|fixture-lib.sh|' <<< "$FX_OUT")"
+[[ "$FX_RC" != 0 ]] && grep -q 'RESEED FAILED' <<< "$FX_ERR" \
+  && pass "  … and fails the run, named on stderr" \
+  || fail "  … the run did not fail for it (rc=$FX_RC) — stderr: $(tail -3 <<< "$FX_ERR" | tr '\n' ' ')"
+grep -q '^NOTE|stop-at-kill|fixture-lib.sh|.*usual order' <<< "$FX_OUT" \
+  && pass "  … and the order is not used" || fail "  … the NOTE does not say the usual order was kept — got: $(grep '^NOTE|stop-at-kill|' <<< "$FX_OUT")"
+check "  … no run was handed one" "unset" "$(order_seen '^s[0-9]+\.m')"
+# And the re-seed after the second baseline: here the first baseline leaves a
+# file (the second call re-seeds), the third call is the fresh seed, and the
+# fourth clears what the baseline in the order left.
+rm -f "$TMP/seed.n"
+FX_SEEDFAIL=4 fx_run "$TMP/run-seedfail.sh" "$CONF_LEFTORD" "$FXS" "$TMP/wit-sf3" --jobs 1 --controls 0 --stop-at-kill
+check "a re-seed that fails after the baseline in the run's order is on the record" "1" \
+  "$(grep -c "^NOTE|reseed-failed|fixture-lib.sh|.*after the baseline in the run's order" <<< "$FX_OUT")"
+[[ "$FX_RC" != 0 ]] && grep -q 'RESEED FAILED' <<< "$FX_ERR" \
+  && pass "  … and fails the run, named on stderr" \
+  || fail "  … the run did not fail for it (rc=$FX_RC) — stderr: $(tail -3 <<< "$FX_ERR" | tr '\n' ' ')"
+unset FX_SEEDN FX_SEEDFAIL
 
 # ── 13. The REAL targets.conf is what an unfiltered run would read ────────────
 # No mutants are run here: --target with a name no active row carries must fail

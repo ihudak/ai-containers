@@ -417,5 +417,148 @@ out="$(cd "$START" && RA10_START="$START" RA10_PHYS="$(cd "$START" && pwd -P)" T
   && pass "a test starts in the runner's directory looked up again, not one gone stale under it" \
   || fail "a test starts in the runner's directory looked up again (rc=$rc) — got: $out"
 
+# ── 11. the run stops at the first test that printed a FAIL: line ─────────────
+# Only the mutation tier sets RA_STOP_AT_FAIL (tests/falsify/run.sh
+# --stop-at-kill, feature-gaps review GAP-2). One FAIL: line makes a mutant
+# KILLED, and the tests after it could add nothing to that verdict but their
+# run time: the whole-file measurement of sandbox.sh paid 30 minutes a mutant
+# for them. The line is the tier's own (`falsify_has_fail_line`): FAIL: at a
+# line's start or after whitespace.
+rm -f "$CORPUS"/test-*.sh
+export RA11_W="$TMP/ra11"; mkdir -p "$RA11_W"
+ra11() {  # <env's arguments> -- <run-all.sh's arguments> → $out, $rc
+  local -a e=()
+  while [[ "${1-}" != -- ]]; do e+=("$1"); shift; done; shift
+  rm -f "$RA11_W"/*
+  out="$(cd "$CORPUS" && env "${e[@]}" TMPDIR="$TMP/tmpdir" bash ./run-all.sh "$@" 2>&1)"; rc=$?
+}
+mkt aa-pass 'echo "PASS: first"'
+mkt bb-fail 'echo "PASS: something held"; echo "FAIL: an assertion"; exit 1'
+mkt cc-after ': > "$RA11_W/cc-ran"; echo "PASS: the third ran"'
+for v in -v ""; do
+  ra11 RA_STOP_AT_FAIL=1 -- $v
+  [[ ! -e "$RA11_W/cc-ran" ]] && has "$out" '^not run, after a test failed: test-cc-after.sh$' \
+    && has "$out" '2 test\(s\), 1 passed, 1 failed' && has "$out" '^Failing: test-bb-fail.sh$' && [[ "$rc" == 1 ]] \
+    && pass "RA_STOP_AT_FAIL${v:+ with -v}: the run stops after the first test that printed a FAIL: line, and names what it did not run" \
+    || fail "RA_STOP_AT_FAIL${v:+ with -v}: the run did not stop, or did not say so (rc=$rc) — got: $out"
+done
+ra11 -u RA_STOP_AT_FAIL -- -v
+[[ -e "$RA11_W/cc-ran" ]] && ! has "$out" 'not run' && has "$out" '3 test\(s\), 2 passed, 1 failed' \
+  && pass "… and without it every test runs, as always" \
+  || fail "… without RA_STOP_AT_FAIL a test was not run — got: $out"
+ra11 RA_STOP_AT_FAIL=0 -- -v
+[[ -e "$RA11_W/cc-ran" ]] && pass "… and RA_STOP_AT_FAIL=0 is off" || fail "… RA_STOP_AT_FAIL=0 stopped the run — got: $out"
+# A test that fails with no FAIL: line showed no assertion failing: the tier
+# counts such a kill apart (ASSERTLESS), and the rest of the set may hold the
+# assertion.
+mkt bb-fail 'echo "PASS: something held"; exit 1'
+ra11 RA_STOP_AT_FAIL=1 -- -v
+[[ -e "$RA11_W/cc-ran" ]] && ! has "$out" 'not run' \
+  && pass "a test that exits non-zero with no FAIL: line does not stop the run" \
+  || fail "a failure with no FAIL: line stopped the run — got: $out"
+# Exit 0 and a FAIL: line: the runner's own rule already counts it failed.
+mkt bb-fail 'echo "FAIL: an assertion, and the exit status forgotten"; exit 0'
+ra11 RA_STOP_AT_FAIL=1 -- -v
+[[ ! -e "$RA11_W/cc-ran" ]] && has "$out" '^not run, after a test failed: test-cc-after.sh$' && [[ "$rc" == 1 ]] \
+  && pass "a test that printed FAIL: and exited 0 stops the run too" \
+  || fail "FAIL: with exit 0 did not stop the run (rc=$rc) — got: $out"
+# FAIL: after whitespace is the tier's kill and not the runner's failure: the
+# runner reports this test PASS. Stopped there, the run must still not exit 0
+# with tests it never ran.
+mkt bb-fail 'echo "PASS: something held"; echo "  FAIL: an assertion, indented"; exit 0'
+ra11 RA_STOP_AT_FAIL=1 -- -v
+[[ ! -e "$RA11_W/cc-ran" ]] && has "$out" '^not run, after a test failed: test-cc-after.sh$' && [[ "$rc" == 1 ]] \
+  && pass "a FAIL: line after whitespace stops the run, which then exits 1 though the runner counted the test passed" \
+  || fail "an indented FAIL: line (rc=$rc) — got: $out"
+ra11 -u RA_STOP_AT_FAIL -- -v
+[[ -e "$RA11_W/cc-ran" && "$rc" == 0 ]] \
+  && pass "… and without RA_STOP_AT_FAIL that run is green, as it was" \
+  || fail "… the indented FAIL: line changed a run without RA_STOP_AT_FAIL (rc=$rc) — got: $out"
+# A setup that broke is in the output either way, and the tier reads UNPROVEN
+# from it wherever the run ends.
+mkt bb-fail 'echo "SCAFFOLD-FAILED: no workspace"; echo "FAIL: an assertion on the wreckage"; exit 1'
+ra11 RA_STOP_AT_FAIL=1 -- -v
+[[ ! -e "$RA11_W/cc-ran" ]] && has "$out" 'SCAFFOLD-FAILED: no workspace' \
+  && pass "a test with a FAIL: line and a SCAFFOLD-FAILED: line stops the run, its marker printed" \
+  || fail "FAIL: beside SCAFFOLD-FAILED: — got: $out"
+# Under a clock, which is how the tier runs it: a test inside its clock that
+# printed FAIL: stops the run the same way.
+mkt bb-fail 'echo "PASS: something held"; echo "FAIL: an assertion"; exit 1'
+ra11 RA_STOP_AT_FAIL=1 RA_TEST_CLOCK=30 -- -v
+[[ ! -e "$RA11_W/cc-ran" ]] && has "$out" '^FAIL: an assertion$' && has "$out" '^not run, after a test failed: test-cc-after.sh$' \
+  && ! has "$out" 'TEST-TIMEOUT' && [[ "$rc" == 1 ]] \
+  && pass "under a clock, with -v: a test that printed FAIL: stops the run" \
+  || fail "under a clock a FAIL: line did not stop the run (rc=$rc) — got: $out"
+# The clock wins: a test that printed FAIL: and then ran past its clock is a
+# timeout, reported as one, with the clock's own line for what was not run.
+mkt bb-fail 'echo "FAIL: an assertion, then a hang"; sleep 30'
+rm -f "$TMP/clocked"
+ra11 RA_STOP_AT_FAIL=1 RA_TEST_CLOCK=2 RA_CLOCKED_FILE="$TMP/clocked" -- -v
+[[ ! -e "$RA11_W/cc-ran" ]] && has "$out" '^TEST-TIMEOUT: test-bb-fail.sh ran past its 2s clock' \
+  && has "$out" '^not run, after a test ran past its clock: test-cc-after.sh$' && ! has "$out" 'not run, after a test failed' \
+  && [[ "$(cat "$TMP/clocked" 2>/dev/null)" == 'test-bb-fail.sh 2' ]] \
+  && pass "a test that printed FAIL: and then ran past its clock is reported as the timeout it is" \
+  || fail "FAIL: then a hang: the clock's report was lost — got: $out"
+# The decision reads the test's log, which under a clock with -v comes through
+# tee. Where tee could not finish (something the test started still holds its
+# output open), the log may not be whole, and the run goes on.
+export HANG_PIDF="$TMP/hang.pid"; rm -f "$HANG_PIDF"
+mkt bb-fail 'echo "FAIL: an assertion"; set -m; sleep 20 & echo $! > "$HANG_PIDF"; exit 1'
+ra11 RA_STOP_AT_FAIL=1 RA_TEST_CLOCK=30 -- -v
+[[ -s "$HANG_PIDF" && -e "$RA11_W/cc-ran" ]] && ! has "$out" 'not run' \
+  && pass "where the test's output could not be read to its end, the run does not stop on it" \
+  || fail "the run stopped on a log that was cut off — got: $out"
+reap_child
+unset HANG_PIDF
+# What the driver reads is its own.
+rm -f "$CORPUS"/test-*.sh
+mkt nn-env 'echo "PASS: env ${RA_STOP_AT_FAIL:-unset}"'
+ra11 RA_STOP_AT_FAIL=1 -- -v
+has "$out" '^PASS: env unset$' \
+  && pass "RA_STOP_AT_FAIL is not passed on to the tests" \
+  || fail "RA_STOP_AT_FAIL leaked into a test's environment — got: $out"
+
+# ── 12. the order of the run, which only the mutation tier sets ──────────────
+# RA_ORDER="<name> <name> ..." (tests/falsify/run.sh --stop-at-kill): the tests
+# it names run first, in its order, and the others after them in the usual
+# order. The tier puts a target's quickest tests first, so the run reaches the
+# test that fails, and stops, before it has paid for the slow ones.
+rm -f "$CORPUS"/test-*.sh
+export RA12_W="$TMP/ra12.order"
+for n in aa bb cc dd; do mkt "$n" "echo $n >> \"\$RA12_W\"; echo \"PASS: $n\""; done
+ra12() {  # <env's arguments> -- <run-all.sh's arguments> → $out, $rc, $ran
+  local -a e=()
+  while [[ "${1-}" != -- ]]; do e+=("$1"); shift; done; shift
+  : > "$RA12_W"
+  out="$(cd "$CORPUS" && env "${e[@]}" TMPDIR="$TMP/tmpdir" bash ./run-all.sh "$@" 2>&1)"; rc=$?
+  ran="$(tr '\n' ' ' < "$RA12_W")"
+}
+ra12 -u RA_ORDER --
+check_ran() { [[ "$ran" == "$2" ]] && pass "$1" || fail "$1 — ran: '$ran', expected '$2' — got: $out"; }
+check_ran "without RA_ORDER the tests run in the usual order" "aa bb cc dd "
+ra12 RA_ORDER="test-cc.sh test-aa.sh" --
+check_ran "RA_ORDER: the tests it names run first, in its order, and the rest after them in the usual order" "cc aa bb dd "
+has "$out" '4 test\(s\), 4 passed, 0 failed' && [[ "$rc" == 0 ]] \
+  && pass "… and every test still runs once, and the run is green" \
+  || fail "… RA_ORDER changed what ran or the result (rc=$rc) — got: $out"
+ra12 RA_ORDER="test-dd.sh test-nosuch.sh test-dd.sh test-bb.sh" --
+check_ran "… a name that is no test is passed over, and a name given twice runs once" "dd bb aa cc "
+ra12 RA_ORDER="test-dd.sh test-bb.sh test-aa.sh" -- aa dd
+check_ran "… only the selected tests run, in RA_ORDER's order among themselves" "dd aa "
+# With RA_STOP_AT_FAIL: what is not run is what came after the failing test in
+# this order, and is named in this order.
+mkt bb 'echo bb >> "$RA12_W"; echo "FAIL: bb"; exit 1'
+ra12 RA_ORDER="test-dd.sh test-bb.sh" RA_STOP_AT_FAIL=1 -- -v
+check_ran "with RA_STOP_AT_FAIL the run stops after the failing test in RA_ORDER's order" "dd bb "
+has "$out" '^not run, after a test failed: test-aa.sh test-cc.sh$' \
+  && pass "… and names what it did not run" \
+  || fail "… the tests not run are not named as expected — got: $out"
+rm -f "$CORPUS"/test-*.sh
+mkt nn-env 'echo "PASS: env ${RA_ORDER:-unset}"'
+ra12 RA_ORDER="test-nn-env.sh" -- -v
+has "$out" '^PASS: env unset$' \
+  && pass "RA_ORDER is not passed on to the tests" \
+  || fail "RA_ORDER leaked into a test's environment — got: $out"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
