@@ -1960,5 +1960,26 @@ EXTRA_MOUNTS="$R206" launch "$TMP/app"
   || fail "G206 core.worktree named from config ($(grep -A1 -F 'r206/dot.git' <<<"$first206" | head -3 | tr '\n' ' '))"
 rm -rf "$R206"
 
+# ── G208 (GIT-91): a key whose subsection is not valid UTF-8 is named ───────
+# Under a UTF-8 locale both git's --get-regexp and bash's =~ fail to match .+
+# over a byte no UTF-8 decoder takes, while git itself takes the key: a filter
+# so named went unnamed and unjudged, and an includeIf condition so spelled was
+# not walked. The listings run in the C locale, where a pattern sees bytes
+# (bugs review GIT-91). A byte that is valid UTF-8 (é) matched already.
+R208="$TMP/r208"; mkdir -p "$R208" && "${G[@]}" init -q "$R208/f" && "${G[@]}" init -q "$R208/i" \
+  && printf '[filter "\377"]\n\tclean = ./clean208.sh\n' >> "$R208/f/.git/config" \
+  && printf '[includeIf "onbranch:\377"]\n\tpath = %s\n' "$R208/inc208.cfg" >> "$R208/i/.git/config" \
+  || { printf 'SCAFFOLD-FAILED: G208\n'; exit 1; }
+k208="$(printf 'filter.\377.clean')"
+LC_ALL=C.UTF-8 EXTRA_MOUNTS="$R208" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -aqF -- "$k208" < <(grep -a -A1 -F 'NOTE: /workspace/r208/f/.git is protected for the first time' "$ERR") \
+  && grep -aqF "/workspace/r208/f/clean208.sh ($k208)" "$ERR" \
+  && pass "G208 under a UTF-8 locale a filter whose subsection is not UTF-8 is named and its program judged" \
+  || fail "G208 filter with a non-UTF-8 subsection (rc=$LAUNCH_RC; $(grep -a -A1 -F 'r208/f' "$ERR" | head -3 | tr '\n' ' '))"
+grep -aqF "inc208.cfg" < <(grep -a -A2 -F '/workspace/r208/i/.git/config' "$ERR") \
+  && pass "G208 … and an includeIf whose condition is not UTF-8 is walked" \
+  || fail "G208 includeIf with a non-UTF-8 condition not walked ($(grep -a -F 'r208/i' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$R208"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -5373,7 +5373,8 @@ _git_prog() {
 # file it only lists; with no git on this host, none. A boolean core.fsmonitor
 # is git's own daemon, and an alias or a submodule's update runs a program only
 # when it starts with '!'. A file that does not exist sets nothing. git lists
-# only the keys that count (--get-regexp, as _git_walk_keys does), at most 1200
+# only the keys that count (--get-regexp, as _git_walk_keys does, in the C
+# locale, GIT-91), at most 1200
 # of them a file, and a file cut there is named first: read whole, in this
 # loop, under the read bound, 300,000 aliases refused every launch as slow
 # (bugs review GIT-89), and counted among every entry, 1200 harmless ones hid a
@@ -5397,7 +5398,9 @@ _git_exec_keys() {
         if [[ -z "${had[long]:-}" ]]; then had[long]=1; out+=("(a key of more than 256 characters)"); fi
         continue
       fi
-      if [[ ! "$k" =~ $re || -n "${had[$k]:-}" ]]; then continue; fi
+      # git's own filter, in the C locale; bash's =~ in a UTF-8 one matched no
+      # key whose subsection is not valid UTF-8 (bugs review GIT-91).
+      if [[ -n "${had[$k]:-}" ]]; then continue; fi
       case "$k" in
         core.fsmonitor) if [[ "${v,,}" =~ ^(true|false|yes|no|on|off|-?[0-9]+)?$ ]]; then continue; fi ;;
         alias.*|submodule.*.update) if [[ "$v" != '!'* ]]; then continue; fi ;;
@@ -5409,7 +5412,7 @@ _git_exec_keys() {
       esac
       had[$k]=1
       _git_key_shown "$k" ks; out+=("$ks")
-    done < <(_git_file_config "$f" --null --get-regexp "$re" 2>/dev/null)
+    done < <(LC_ALL=C _git_file_config "$f" --null --get-regexp "$re" 2>/dev/null)
   done
   for k in ${cut[@]+"${cut[@]}"} ${out[@]+"${out[@]}"}; do printf '%s\0' "$k"; done
 }
@@ -5832,10 +5835,12 @@ _git_file_config() {
 # lower case, as git prints them), NUL-separated, in the file's order. One read
 # gives the include walk, the core.hooksPath check and the program check what
 # they need (a read each cost 150 repositories of six includes 27% more; review
-# of the GIT-35 fix). With no git, none.
+# of the GIT-35 fix). With no git, none. In the C locale, where git's pattern
+# sees bytes: in a UTF-8 one it matched no key whose subsection, an includeIf
+# condition say, is not valid UTF-8 (bugs review GIT-91).
 _git_walk_keys() {
   _git_usable || return 0
-  _git_file_config "$1" --null --get-regexp "^(include(if\\..*)?\\.path|core\\.(hookspath|worktree)|${_git_prog_keys})\$" 2>/dev/null || true
+  LC_ALL=C _git_file_config "$1" --null --get-regexp "^(include(if\\..*)?\\.path|core\\.(hookspath|worktree)|${_git_prog_keys})\$" 2>/dev/null || true
 }
 
 # Seed a per-workspace writable working-copy volume from a repo's shared base

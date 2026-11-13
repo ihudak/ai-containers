@@ -355,6 +355,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   GIT-89). A `core.worktree` set in `config.worktree` is named with them
   (GIT-88), and a repository whose path holds a newline is named once, not at
   every launch (GIT-90).
+- **A git config key whose subsection is not valid UTF-8 is named and judged.**
+  Under a UTF-8 locale neither git's key pattern nor bash's matched it, so a
+  `filter` or an `includeIf` so named went unnamed and unjudged; the launcher
+  now lists a config's keys in the C locale (bugs review GIT-91).
 
 - **On Ubuntu 26.04, a path that is not UTF-8 is read again.** Its default
   `timeout`, uutils', refuses such an argument and runs nothing, so every read
