@@ -1383,8 +1383,15 @@ launcher_ro_overlay() {
       if [[ -n "$cdir" && "$cdir" != ./ ]]; then
         if _cd_phys ocd "$t" "$cdir"; then
           ocfg="$ocd/config"
-          if [[ -z "${pgk[$ocd]:-}" ]] && ! _in_writable "$ocd" && _is_common_dir "$ocd"; then
-            pgk[$ocd]=1; pgd+=("$ocd"); pga+=("$ocd"); pgc+=("$ocd/config"); pgx[${#pgd[@]}-1]=1
+          # A common directory is judged with its own config, which git takes
+          # for this worktree, whether or not it was listed already as a $t
+          # above, with the config ITS commondir names (which git takes for a
+          # checkout whose .git names it). One mark for both left the second
+          # met unjudged, which hung on the order of the mounts (bugs review
+          # GIT-94; G213). Those protected in a writable mount are not judged
+          # here at all.
+          if [[ -z "${pgk[$ocd|own]:-}" ]] && ! _in_writable "$ocd" && _is_common_dir "$ocd"; then
+            pgk[$ocd|own]=1; pgd+=("$ocd"); pga+=("$ocd"); pgc+=("$ocd/config"); pgx[${#pgd[@]}-1]=1
           fi
         else
           ocfg=/nonexistent/ai-launcher-unresolved-commondir/config

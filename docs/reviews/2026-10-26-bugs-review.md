@@ -2787,6 +2787,14 @@ GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7'
 - **What's wrong:** the value is read only to tell a boolean `core.fsmonitor`, a `!` alias or `submodule.*.update`, and a path-valued `smtpserver` from harmless ones, and bash takes seconds over megabytes of it.
 - **Fix direction:** have git list names only (`--null --name-only --get-regexp`) and test the values as git value patterns (`'^!'`, `'^/'`, the boolean forms), as the reviewer checked prints only the matching names on git 2.34.1 and 2.56; or state it as a limit.
 
+
+### GIT-94: a git directory outside the mounts that git uses with two configs was judged with one, chosen by mount order
+- **Status: FIXED** (2026-11-14, WSL native agent, found by the final review of GAP-2's whole-file run, batch 1). In the GIT-44 loop a common directory that a linked worktree's `commondir` names is listed to be judged with its own `config` under a mark of its own (`pgk[$ocd|own]`), apart from the mark the loop puts on each git directory it takes through a `.git` file. G213 in `tests/test-git-internals-ro-index.sh`, both mount orders: both configs' `core.hooksPath` named. Seen red first, each order missing the other; each of the two changes undone alone fails one order.
+- **Was: OPEN** (2026-11-14).
+- **Severity: LOW.** It needs a layout git never writes: a git directory outside every mount with a store of its own and a `commondir` too, used by two checkouts in writable mounts. Confidence: CONFIRMED by the reviewer with git 2.53 (a `pre-commit` in the agent-writable `core.hooksPath` ran: `HOOK-RAN`) and by G213 here.
+- **Location:** `sandbox.sh: launcher_ro_overlay()`, the GIT-44 loop over the git directories outside every writable mount (`_gref_t`), below the comment "A git directory that a .git file in a writable mount names outside every".
+- **What happened:** X, outside every mount, with `objects/`, `refs/` and a `commondir` naming Y. A checkout whose `.git` names X has git read Y's `config`; a checkout of a worktree W whose `commondir` names X has git read X's own. The loop marked a directory once (`pgk[$t]`), for both roles: met first through the `.git` file, X was listed with Y's `config` and never with its own, so W's `core.hooksPath` from X's `config` was not named (a worktree takes its hooks path from its common directory's judging, `_hpv_g`); met first as W's common directory, X was listed with its own and its checkout's Y `config` was not. Which, hung on the order of the mounts.
+- **Found by:** the review of a test batch, from the GAP-2 survivor `sandbox.sh:logic-flip:4ed4212a…` (that condition's first `&&` turned `||`), which with this layout prints the NOTE the unchanged launcher left out.
 ## 30. Found while making the falsify tier cheaper for GAP-2
 
 ### TST-35: what the baseline or a control leaves in a worker tree is read by the next mutant in that slot

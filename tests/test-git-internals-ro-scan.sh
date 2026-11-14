@@ -1371,6 +1371,37 @@ EXTRA_MOUNTS="$D187" launch "$TMP/app"
   || fail "G187 submodule (rc=$LAUNCH_RC; commondir: $(cat "$D187/sup/.git/modules/s/commondir" 2>&1))"
 rm -rf "$D187"
 
+# ── G211: GIT-73's advice for a directory no printed command can enter ──────
+# A git directory whose name ends in a newline, which $(pwd -P) never gives
+# back, its config setting core.worktree and a ./ placeholder already there:
+# the WARNING says it cannot be entered by a command printed here, and prints
+# none (GAP-2's whole-file run, batch 1, item 2).
+D211="$TMP/d211"; N211="$D211/dot"$'\n'
+mkdir -p "$D211/wt" && "${G[@]}" init -q --bare "$N211" && "${G[@]}" --git-dir="$N211" config core.bare false \
+  && "${G[@]}" --git-dir="$N211" config core.worktree "$D211/wt" && printf './\n' > "$N211/commondir" \
+  || { printf 'SCAFFOLD-FAILED: G211\n'; exit 1; }
+EXTRA_MOUNTS="$D211" launch "$TMP/app"
+w211="$(grep -A6 -F "which an earlier launch made, has git ignore the core.worktree" "$ERR")"
+[[ "$LAUNCH_RC" == 0 && -n "$w211" ]] && grep -qF 'cannot be entered by a' <<<"$w211" \
+  && ! grep -qF 'in bash or zsh:' <<<"$w211" && ! grep -qF 'rm commondir' <<<"$w211" \
+  && pass "G211 a placeholder in a directory whose name ends in a newline is named, with no command to run" \
+  || fail "G211 newline-ended directory (rc=$LAUNCH_RC; $(tr '\n' ' ' <<<"$w211"); $(grep -E 'ERROR' "$ERR" | head -1))"
+rm -rf "$D211"
+
+# ── G214: a regular hook under a writable mount rooted in .git/hooks ─────────
+# A writable mount rooted at a repository's hooks/ leaves its hooks writable: the
+# launch says so, and calls none of them a link, which a regular file is not
+# (GAP-2's whole-file run, batch 1, item 3).
+R214="$TMP/r214"
+"${G[@]}" init -q "$R214" && printf '#!/bin/sh\n' > "$R214/.git/hooks/pre-commit" && chmod +x "$R214/.git/hooks/pre-commit" \
+  || { printf 'SCAFFOLD-FAILED: G214\n'; exit 1; }
+EXTRA_MOUNTS="$R214 $R214/.git/hooks" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "NOTE: $R214/.git/hooks lies inside a git directory and is mounted writable" "$ERR" \
+  && ! grep -qF "hooks/pre-commit, a hook your host's git runs, is a link" "$ERR" \
+  && pass "G214 a regular hook under a writable mount rooted in .git/hooks is not called a link" \
+  || fail "G214 hooks mount (rc=$LAUNCH_RC; $(grep -E 'NOTE|WARNING' "$ERR" | grep -F r214 | head -3 | tr '\n' ' '))"
+rm -rf "$R214"
+
 # ── G188: every directory under a git directory's worktrees/ is checked ───────
 # A linked worktree's directory holds no objects or refs: what made it a git
 # directory to the scan was a regular commondir, or inside a .git a regular

@@ -683,6 +683,35 @@ PATH="$TMP/fs116:$PATH" EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
   || fail "G116 hooks check timeout (rc=$LAUNCH_RC; stderr: $(grep ERROR "$ERR" | head -1))"
 rm -rf "$TMP/fs116" "$TMP/o116"
 
+# ── G210: a worktree under an overlay is judged by its common directory's config
+# A linked worktree's directory under a read-only overlay takes its config from
+# the common directory its commondir names, not its own: a relative
+# core.hooksPath set there is judged from the worktree's checkout, named by its
+# config.worktree's core.worktree or by its gitdir. G116 told the two configs
+# apart by whether config.worktree was judged, which every launch now does
+# (GIT-81), so a launcher reading the worktree's own config passed it (GAP-2's
+# whole-file run, batch 1, item 1).
+for k210 in config.worktree gitdir; do
+  mk116; "${G[@]}" -C "$TMP/o116/L" config extensions.worktreeConfig true \
+    && "${G[@]}" -C "$TMP/o116/L" config core.hooksPath hk \
+    && mkdir -p "$TMP/o116/L/.git/worktrees/x" \
+    && printf 'ref: refs/heads/main\n' > "$TMP/o116/L/.git/worktrees/x/HEAD" \
+    && printf '../..\n' > "$TMP/o116/L/.git/worktrees/x/commondir" \
+    || { printf 'SCAFFOLD-FAILED: G210\n'; exit 1; }
+  if [[ "$k210" == config.worktree ]]; then
+    printf '[core]\n\tworktree = %s\n' "$TMP/o116/w" > "$TMP/o116/L/.git/worktrees/x/config.worktree"
+  else
+    printf '%s\n' "$TMP/o116/w/.git" > "$TMP/o116/L/.git/worktrees/x/gitdir" \
+      && printf 'gitdir: %s\n' "$TMP/o116/L/.git/worktrees/x" > "$TMP/o116/w/.git"
+  fi
+  EXTRA_MOUNTS="$TMP/o116" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] \
+    && grep -qF "NOTE: /workspace/o116/L/.git/worktrees/x runs its git hooks from /workspace/o116/w/hk (core.hooksPath), which the agent" "$ERR" \
+    && pass "G210 a worktree under an overlay has its common directory's core.hooksPath judged, from its checkout ($k210)" \
+    || fail "G210 worktree under an overlay, $k210 (rc=$LAUNCH_RC; stderr: $(grep -F o116 "$ERR" | head -2 | tr '\n' ' '))"
+done
+rm -rf "$TMP/o116"
+
 # ── G118: what GIT-38's fix costs and keeps on a case-sensitive filesystem ──
 # No process per path: a case-sensitive filesystem needs no getcwd, and one per
 # walk step let an agent's tree stretch a launch tenfold (review of the GIT-38
