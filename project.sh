@@ -21,6 +21,9 @@ _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_here}/sandbox-common.sh"
 # Sourced BEFORE anything below is defined: repo.sh has its own usage(), cmd_rm()
 # and cmd_gc(), and the definitions that come later in this file must win.
+# Sourcing it brings more than its functions: its top level refuses a non-numeric
+# SANDBOX_UID/SANDBOX_GID (exit 1) and sets seed_selinux_opt="", so project.sh
+# inherits that check for every command, init, report and sync included.
 # shellcheck source=repo.sh
 source "${_here}/repo.sh"
 
@@ -149,7 +152,11 @@ _prj_rewrite() {
   else
     chmod 644 "$tmp" || { rm -f "$tmp"; return 1; }
   fi
-  if ! cat "$new" > "$tmp" || ! mv -f "$tmp" "$file"; then
+  # cp -p made the temp as read-only as the original: it must be writable to be
+  # written, and read-only again before it replaces a file that was.
+  local ro=0; [[ -f "$file" && ! -w "$file" ]] && ro=1
+  chmod u+w "$tmp" 2>/dev/null || true
+  if ! cat "$new" > "$tmp" || { (( ro )) && ! chmod u-w "$tmp"; } || ! mv -f "$tmp" "$file"; then
     rm -f "$tmp"
     printf 'ERROR: cannot rewrite %s.\n' "$file" >&2
     return 1
@@ -166,6 +173,10 @@ _prj_edit() {
   # No existence or type check here: a file this finds nothing to change is left
   # alone, and one it would change goes through _prj_rewrite's refusal of a link.
   [[ -e "$file" || -L "$file" || "$op" == add ]] || return 0
+  if [[ -f "$file" && ! -r "$file" ]]; then
+    printf 'ERROR: cannot read %s.\n' "$file" >&2
+    return 1
+  fi
   out="$(mktemp)" || return 1
   if [[ -f "$file" ]]; then
     while :; do
@@ -182,7 +193,7 @@ _prj_edit() {
       printf '%s' "$line" >> "$out"
       (( nl )) && printf '\n' >> "$out"
       last_nl=$nl
-    done < "$file"
+    done < "$file" || { rm -f "$out"; printf 'ERROR: cannot read %s.\n' "$file" >&2; return 1; }
   fi
   if [[ "$op" == add && "$hit" == 0 ]]; then
     hit=1

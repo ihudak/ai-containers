@@ -74,6 +74,16 @@ r="$(res "$TMP/nowhere" ok)"; rc=$?
 ok "resolve accepts an unregistered path when allowed" \
   bash -c '[ "$1" = 0 ] && [ "$2" = "$3|$3/.ai-containers" ]' _ "$rc" "$r" "$TMP/nowhere"
 
+# ── registered roots that no longer exist on disk (the rm case) ──
+GONE="$TMP/gone/vanished"; GONE2="$TMP/gone/crlf-gone"; GONE3="$TMP/gone/unique-name-gone"
+printf '%s/\n%s\r\n%s\n' "$GONE" "$GONE2" "$GONE3" > "$ENG/projects.conf"
+r="$(res "$GONE")"
+ok "resolve finds a missing root registered with a trailing slash (PRJ_ROOT is the line's text)" [ "$r" = "$GONE/|$GONE/.ai-containers" ]
+r="$(res "$GONE2")"
+ok "resolve finds a missing root on a CRLF line" [ "$r" = "$GONE2|$GONE2/.ai-containers" ]
+r="$(res "unique-name-gone")"
+ok "resolve finds a missing root by its unique basename" [ "$r" = "$GONE3|$GONE3/.ai-containers" ]
+
 # ── projects.conf edits ──
 cp "$ENG/projects.conf" "$TMP/conf.orig"
 printf '# comment\n\n/a/one\r\n/b/two words\n/c/three' > "$ENG/projects.conf"
@@ -124,6 +134,39 @@ rm -f "$IP"
 ( source "$P" && prj_image_projects_drop "sha256:aaa" ); rc=$?
 ok "prj_image_projects_drop with no file is rc 0 and writes nothing" \
   bash -c '[ "$1" = 0 ] && [ ! -e "$2" ]' _ "$rc" "$IP"
+
+# ── M3a: a linked image-projects.conf ──
+printf 'sha256:aaa|/p/one\n' > "$TMP/real-ip"; ln -s "$TMP/real-ip" "$IP"
+( source "$P" && prj_image_projects_drop "sha256:aaa" ) > "$TMP/err" 2>&1; rc=$?
+ok "a linked image-projects.conf is refused and its target unchanged" \
+  bash -c '[ "$1" = 1 ] && grep -q ERROR "$2" && [ "$(cat "$3")" = "sha256:aaa|/p/one" ] && [ -L "$4" ]' _ "$rc" "$TMP/err" "$TMP/real-ip" "$IP"
+rm -f "$IP"
+
+# ── M3b: a failed rewrite leaves no temp file ──
+mkdir -p "$TMP/rw"; printf 'x\n' > "$TMP/rw/target"
+( source "$P" && _prj_rewrite "$TMP/rw/target" "$TMP/rw/no-such-new-content" ) > /dev/null 2>&1; rc=$?
+ok "a failed rewrite is rc 1, leaves no temp file, and the target is unchanged" \
+  bash -c '[ "$1" = 1 ] && [ "$(ls -A "$2")" = target ] && [ "$(cat "$2/target")" = x ]' _ "$rc" "$TMP/rw"
+
+# ── M5: a read-only registry is rewritten and stays read-only ──
+source "$REPO_DIR/tests/portability.sh"
+printf '/a/one\n/b/two\n' > "$ENG/projects.conf"; chmod 444 "$ENG/projects.conf"
+( source "$P" && prj_conf_remove "/a/one" ) > "$TMP/err" 2>&1; rc=$?
+ok "a 0444 projects.conf has its line removed and is still 0444" \
+  bash -c '[ "$1" = 0 ] && [ "$(cat "$2")" = /b/two ] && [ "$3" = 444 ]' _ "$rc" "$ENG/projects.conf" "$(p_stat_mode "$ENG/projects.conf")"
+chmod 644 "$ENG/projects.conf"
+
+# ── M6: an unreadable registry is refused and leaks nothing ──
+if [[ "$(id -u)" == 0 ]]; then
+  printf 'SKIP: an unreadable projects.conf (running as root, chmod 000 does not stop reads)\n'
+else
+  printf '/a/one\n' > "$ENG/projects.conf"; chmod 000 "$ENG/projects.conf"
+  mkdir -p "$TMP/tmpd"
+  ( export TMPDIR="$TMP/tmpd"; source "$P" && prj_conf_remove "/a/one" ) > "$TMP/err" 2>&1; rc=$?
+  ok "an unreadable projects.conf is rc 1 with ERROR: and leaves no file in TMPDIR" \
+    bash -c '[ "$1" = 1 ] && grep -q "ERROR.*projects.conf" "$2" && [ -z "$(ls -A "$3")" ]' _ "$rc" "$TMP/err" "$TMP/tmpd"
+  chmod 644 "$ENG/projects.conf"
+fi
 
 echo
 [[ "$fails" == 0 ]] && { echo "ALL PASSED"; exit 0; } || { echo "$fails FAILED"; exit 1; }
