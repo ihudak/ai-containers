@@ -1,8 +1,10 @@
 # project.sh — removing, moving and tidying a project's container setup
 
-Date: 2026-11-14. Status: approved 2026-11-14; amended while planning (the
-image after `mv`, the `WORKTREE` record), see the plan
+**Status:** approved 2026-11-14; amended while planning (the image after `mv`,
+the `WORKTREE` record), see the plan
 `docs/superpowers/plans/2026-11-14-project-tool.md`.
+
+Date: 2026-11-14.
 
 ## Why
 
