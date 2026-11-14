@@ -33,7 +33,11 @@ export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LOG"
 # FAKE_PS_FAIL every `ps` (=ancestor: only the one with an ancestor= filter),
 # and FAKE_DOCKER_DOWN every call. The seed image is
 # there unless FAKE_NO_SEED, which also fails `build`; `info` says nothing, so no
-# SELinux option is chosen.
+# SELinux option is chosen. A volume's files are its `data` directory: a `run`
+# whose script is an rsync copies /src's to /dst's, and one with --dry-run prints
+# a change line when they differ; FAKE_COPY_BAD makes the copy add a file the
+# source does not have. `volume create` makes a volume with its --label values,
+# and leaves one that exists as it is, as docker does.
 export VOLS="$TMP/vols" IMGS="$TMP/imgs" FAKE_RUNNING="$TMP/running"
 mkdir -p "$VOLS" "$IMGS"; : > "$FAKE_RUNNING"
 cat > "$TMP/bin/docker" <<'FAKE'
@@ -50,13 +54,14 @@ lbl() {  # <labels file> <key> → its value; rc 1 when it has none
 }
 cmd="$1"; shift; sub=""
 case "$cmd" in volume|image) sub="$1"; shift ;; esac
-fmt=""; filt=(); vs=(); pos=()
+fmt=""; filt=(); vs=(); pos=(); labs=()
 while (( $# )); do
   case "$1" in
     --format) fmt="$2"; shift 2 ;;
     --filter) filt+=("$2"); shift 2 ;;
     -v) vs+=("$2"); shift 2 ;;
-    -e|--memory|--memory-swap|--pids-limit|--entrypoint|--mount|--label) shift 2 ;;
+    --label) labs+=("$2"); shift 2 ;;
+    -e|--memory|--memory-swap|--pids-limit|--entrypoint|--mount) shift 2 ;;
     -*) shift ;;
     *) pos+=("$1"); shift ;;
   esac
@@ -96,7 +101,26 @@ case "$cmd${sub:+ $sub}" in
       [[ -d "$VOLS/$v" ]] || { echo "Error: no such volume: $v" >&2; exit 1; }
       rm -rf "$VOLS/$v"
     done ;;
+  "volume create")
+    v="${pos[0]}"
+    if [[ ! -d "$VOLS/$v" ]]; then
+      mkdir -p "$VOLS/$v"; printf '%s\n' ${labs[@]+"${labs[@]}"} > "$VOLS/$v/labels"
+    fi ;;
   run)
+    if [[ "${pos[1]:-}" == *rsync* ]]; then
+      src="" dst=""
+      for m in ${vs[@]+"${vs[@]}"}; do
+        case "$m" in *:/src|*:/src:ro) src="${m%%:*}" ;; *:/dst|*:/dst:ro) dst="${m%%:*}" ;; esac
+      done
+      s="$VOLS/$src/data" d="$VOLS/$dst/data"
+      if [[ "${pos[1]}" == *--dry-run* ]]; then
+        if [[ -d "$s" || -d "$d" ]] && ! diff -r "$s" "$d" >/dev/null 2>&1; then printf '>f+++++++++ differs\n'; fi
+      else
+        if [[ -d "$s" ]]; then mkdir -p "$d"; cp -R "$s/." "$d/"; fi
+        if [[ -n "${FAKE_COPY_BAD:-}" ]]; then mkdir -p "$d"; printf 'x\n' > "$d/extra"; fi
+      fi
+      exit 0
+    fi
     for m in ${vs[@]+"${vs[@]}"}; do
       if [[ "$m" == *:/dst ]]; then
         v="${m%:/dst}"
@@ -328,6 +352,7 @@ world() {   # nothing registered, built, recorded, running or logged
   rm -rf "$VOLS" "$IMGS" "$W"; mkdir -p "$VOLS" "$IMGS" "$W"
   : > "$FAKE_RUNNING"; : > "$DOCKER_LOG"; rm -f "$ENG/projects.conf" "$IP" "$FAKE_RUNNING.count" "$FAKE_RUNNING.later"
   unset FAKE_FAIL_VOLUME_RM FAKE_FAIL_RMI FAKE_DOCKER_DOWN FAKE_PS_FAIL FAKE_RUNNING_AFTER FAKE_NO_SEED
+  unset FAKE_COPY_BAD FAKE_CP_CORRUPT AI_CONTAINERS_MV_COPY
 }
 # mkproj <root> [<sandbox.env text>] [<sandbox.local.env text>]: a registered project
 mkproj() {
@@ -754,6 +779,358 @@ rmrun "$O" --yes; rc=$?
 ok "rm removes a project under ~/.ai-containers-old, which only starts like ~/.ai-containers" \
   bash -c '[ "$1" = 0 ] && [ ! -e "$2/.ai-containers" ] && [ -f "$3/project-id.key" ]' _ "$rc" "$O" "$HOME/.ai-containers"
 rm -rf "$HOME/.ai-containers-old" "$HOME/.ai-containers/default"
+
+# ── mv ──
+# mv takes emit_env_list from project-init.sh, which the dispatch tests replaced
+# with a stub: the real one again.
+cp -p "$REPO_DIR/project-init.sh" "$ENG/project-init.sh"
+# cp, which FAKE_CP_CORRUPT=<file> makes change that file of a copy it makes to
+# a directory named .ai-containers: the copy a move across filesystems makes is
+# then not the original, though it holds the same names.
+REAL_CP="$(command -v cp)"; export REAL_CP
+cat > "$TMP/bin/cp" <<'FAKECP'
+#!/usr/bin/env bash
+"$REAL_CP" "$@" || exit
+last="${!#}"
+if [[ -n "${FAKE_CP_CORRUPT:-}" && "${last##*/}" == .ai-containers && -f "$last/$FAKE_CP_CORRUPT" ]]; then
+  printf 'x\n' >> "$last/$FAKE_CP_CORRUPT"
+fi
+exit 0
+FAKECP
+chmod +x "$TMP/bin/cp"
+mvrun() { ( cd "$TMP" && bash "$P" mv "$@" ) > "$TMP/out" 2>&1 < /dev/null; }
+# wcname <repo> <launch dir>: the working copy a launch from there uses
+wcname() { ( source "$P" && repo_workcopy_volume_name "$1" "$(workcopy_tag "$2")" ); }
+wcdata() { mkdir -p "$VOLS/$1/data"; printf '%s\n' "$2" > "$VOLS/$1/data/work"; }
+wcwork() { cat "$VOLS/$1/data/work" 2>/dev/null; }
+# moved_nothing <root> <projects.conf as it was>: no volume made or removed, no
+# copy run (a read-only check may be), no image removed, the registry as it was
+moved_nothing() {
+  [[ -d "$1/.ai-containers" ]] && cmp -s "$ENG/projects.conf" "$2" && ! logged '^docker (volume (rm|create)|rmi)' \
+    && ! grep '^docker run' "$DOCKER_LOG" | grep -qv -- '--dry-run'
+}
+# mvproj <root> [<sandbox.env text>] [<sandbox.local.env text>]: a registered
+# project in a directory that holds more than its setup, with one working copy of
+# app holding work; the registry saved to $TMP/conf.before
+mvproj() {
+  mkproj "$@"; printf 'hi\n' > "$1/README"; mkbase app
+  mkwc app 1 "$1/.ai-containers"; wcdata ai-containers-repo-app--wc-1 unpushed
+  cp "$ENG/projects.conf" "$TMP/conf.before"
+}
+OLDWC=ai-containers-repo-app--wc-1
+
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'
+mkdir -p "$A/.ai-containers/.agent-blocked"; printf 'log\n' > "$A/.ai-containers/.agent-blocked/blocked.log"
+printf '# head\n/x/before\n%s\n/x/after' "$A" > "$ENG/projects.conf"
+N="$W/new/place/alpha2"
+mvrun "$A" "$N" --yes; rc=$?
+printf '# head\n/x/before\n%s\n/x/after' "$N" > "$TMP/expect"
+ok "mv moves .ai-containers to <new-dir>, creating it, and rewrites the projects.conf line in place" \
+  bash -c '[ "$1" = 0 ] && [ ! -e "$2/.ai-containers" ] && [ "$(cat "$3/.ai-containers/sandbox.env")" = IMAGE_NAME=img-alpha ] \
+           && [ "$(cat "$3/.ai-containers/.agent-blocked/blocked.log")" = log ] && cmp -s "$4" "$5" && [ -f "$2/README" ]' \
+  _ "$rc" "$A" "$N" "$ENG/projects.conf" "$TMP/expect"
+ok "  … adds the old root to a sandbox.local.env it creates" \
+  bash -c '[ "$(cat "$1")" = "EXTRA_MOUNTS=\"$2\"" ]' _ "$N/.ai-containers/sandbox.local.env" "$A"
+ok "  … and says nothing of a repository tracking .ai-containers where none does" lacks "repository tracks"
+ok "  … printing what it does first, with --yes too" \
+  bash -c 'grep -qxF "About to move project $1 to $2:" "$3" && grep -qxF "  directory   $1/.ai-containers → $2/.ai-containers" "$3"' \
+  _ "$A" "$N" "$TMP/out"
+
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv copies each working copy to the new launch dir's volume name and label, then removes the old" \
+  bash -c '[ "$1" = 0 ] && [ -n "$3" ] && [ ! -d "$2/$5" ] && [ "$(cat "$2/$3/data/work")" = unpushed ] \
+           && grep -qxF "ai-containers.workcopy=1" "$2/$3/labels" && grep -qxF "ai-containers.repo=app" "$2/$3/labels" \
+           && grep -qxF "ai-containers.launch-dir=$4/.ai-containers" "$2/$3/labels"' _ "$rc" "$VOLS" "$nv" "$N" "$OLDWC"
+ok "  … removing the old one only after the copy's check" \
+  bash -c 'c="$(grep -n -- "--dry-run" "$1" | head -1 | cut -d: -f1)"; r="$(grep -nxF "docker volume rm $2" "$1" | cut -d: -f1)"
+           [ -n "$c" ] && [ -n "$r" ] && [ "$c" -lt "$r" ]' _ "$DOCKER_LOG" "$OLDWC"
+ok "  … and lists it first" hasx "  working copy $OLDWC (app) → $nv"
+
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
+N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+export FAKE_COPY_BAD=1
+mvrun "$A" "$N" --yes; rc=$?
+unset FAKE_COPY_BAD
+ok "mv keeps the old working copy and directory when a copy's check finds a difference" \
+  bash -c '[ "$1" = 1 ] && grep -q ERROR "$2" && [ "$(cat "$3/$9/data/work")" = unpushed ] && [ ! -e "$3/$4" ] \
+           && [ -d "$5/.ai-containers" ] && [ ! -e "$6/.ai-containers" ] && cmp -s "$7" "$8"' \
+  _ "$rc" "$TMP/out" "$VOLS" "$nv" "$A" "$N" "$ENG/projects.conf" "$TMP/conf.before" "$OLDWC"
+ok "  … and nothing else" bash -c '[ -e "$1" ] && ! grep -q "^docker rmi" "$2"' _ "$IMGS/img-alpha" "$DOCKER_LOG"
+
+world
+A="$W/alpha"; mvproj "$A" '' $'# mine\nEXTRA_MOUNTS="/x/one:ro /x/two"\nREPOS=lib:ro\n'
+N="$W/new/beta"
+mvrun "$A" "$N" --yes; rc=$?
+printf '# mine\nEXTRA_MOUNTS="\n  /x/one:ro\n  /x/two\n  %s\n"\nREPOS=lib:ro\n' "$A" > "$TMP/expect"
+ok "mv adds the old root to EXTRA_MOUNTS, one entry per line, keeping existing entries" \
+  bash -c '[ "$1" = 0 ] && cmp -s "$2" "$3"' _ "$rc" "$N/.ai-containers/sandbox.local.env" "$TMP/expect"
+world
+A="$W/alpha"; mvproj "$A" '' $'export EXTRA_MOUNTS="\n  /x/one\n\n  /x/two\n"\nPREVIEW_PORTS=3000\n'
+N="$W/new/beta"
+mvrun "$A" "$N" --yes; rc=$?
+printf 'export EXTRA_MOUNTS="\n  /x/one\n  /x/two\n  %s\n"\nPREVIEW_PORTS=3000\n' "$A" > "$TMP/expect"
+ok "mv replaces an EXTRA_MOUNTS written over several lines whole, its export kept" \
+  bash -c '[ "$1" = 0 ] && cmp -s "$2" "$3"' _ "$rc" "$N/.ai-containers/sandbox.local.env" "$TMP/expect"
+
+world
+A="$W/alpha"; mvproj "$A" '' "EXTRA_MOUNTS=\"/x/one $W:ro\""$'\n'
+cp "$A/.ai-containers/sandbox.local.env" "$TMP/expect"
+N="$W/new/beta"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv adds nothing when an entry already covers the old root" \
+  bash -c '[ "$1" = 0 ] && cmp -s "$2" "$3"' _ "$rc" "$N/.ai-containers/sandbox.local.env" "$TMP/expect"
+ok "  … and says which" hasx "  EXTRA_MOUNTS $A is already covered by $W:ro"
+
+world
+A="$W/setup/alpha"; mkproj "$A"; N="$W/dev/alpha"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv removes an old root it leaves empty, and adds nothing to EXTRA_MOUNTS" \
+  bash -c '[ "$1" = 0 ] && [ ! -e "$2" ] && [ -d "$3/setup" ] && [ -f "$4/.ai-containers/sandbox.env" ] \
+           && [ ! -e "$4/.ai-containers/sandbox.local.env" ]' _ "$rc" "$A" "$W" "$N"
+ok "  … listing it first" hasx "  directory   $A (it holds nothing else once .ai-containers is moved)"
+
+# a name the launcher would mount twice
+clash() {  # <sandbox.local.env text> <new-dir> <what the error names> <assertion>
+  world
+  A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n' "$1"; built "$A" img-alpha
+  : > "$DOCKER_LOG"
+  mvrun "$A" "$2" --yes; rc=$?
+  ok "$4" bash -c '[ "$1" = 1 ] && grep -qF "ERROR: " "$2" && grep -qF -- "$3" "$2" && [ ! -e "$4" ]' _ "$rc" "$TMP/out" "$3" "$2"
+  ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+}
+clash '' "$W/elsewhere/alpha" "/workspace/alpha" "mv refuses a <new-dir> with the old root's basename, changing nothing"
+clash $'EXTRA_MOUNTS="/x/gamma:ro"\n' "$W/new/gamma" "/workspace/gamma" "mv refuses a <new-dir> with an EXTRA_MOUNTS entry's basename"
+clash $'REPOS="lib:ro delta:rw"\n' "$W/new/delta" "/workspace/delta" "mv refuses a <new-dir> with a REPOS name"
+clash $'EXTRA_MOUNTS=/x/alpha\n' "$W/new/beta" "/workspace/alpha" "mv refuses when the old root it would add to EXTRA_MOUNTS has an entry's basename"
+
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; mkdir -p "$N/.ai-containers"; printf 'theirs\n' > "$N/.ai-containers/sandbox.env"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv refuses when both the old and the new .ai-containers exist" \
+  bash -c '[ "$1" = 1 ] && grep -q ERROR "$2" && [ "$(cat "$3/.ai-containers/sandbox.env")" = theirs ]' _ "$rc" "$TMP/out" "$N"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+
+# already moved: by hand, and with the old line gone (gc removed it)
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; ida="$(tid "$A/.ai-containers")"
+N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"; nv="$(wcname app "$N/.ai-containers")"
+printf '/x/before\n%s\n' "$A" > "$ENG/projects.conf"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv repairs a project already moved by hand" \
+  bash -c '[ "$1" = 0 ] && [ "$(cat "$2")" = "$(printf "/x/before\n%s" "$3")" ] && [ ! -d "$4/$9" ] && [ "$(cat "$4/$5/data/work")" = unpushed ] \
+           && [ "$(cat "$3/.ai-containers/sandbox.local.env")" = "EXTRA_MOUNTS=\"$6\"" ] && [ ! -e "$7" ] && [ -e "${10}" ] && ! grep -qF "$8" "${10}" \
+           && [ ! -e "$6/.ai-containers" ]' \
+  _ "$rc" "$ENG/projects.conf" "$N" "$VOLS" "$nv" "$A" "$IMGS/img-alpha" "$ida" "$OLDWC" "$IP"
+ok "  … saying there was nothing to move" hasx "  directory   $N/.ai-containers (already there; nothing to move)"
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; ida="$(tid "$A/.ai-containers")"
+N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"; nv="$(wcname app "$N/.ai-containers")"
+printf '/x/other\n' > "$ENG/projects.conf"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv repairs a project whose line gc removed" \
+  bash -c '[ "$1" = 0 ] && [ "$(cat "$2")" = "$(printf "/x/other\n%s" "$3")" ] && [ ! -d "$4/$9" ] && [ "$(cat "$4/$5/data/work")" = unpushed ] \
+           && [ "$(cat "$3/.ai-containers/sandbox.local.env")" = "EXTRA_MOUNTS=\"$6\"" ] && [ ! -e "$7" ] && [ -e "${10}" ] && ! grep -qF "$8" "${10}"' \
+  _ "$rc" "$ENG/projects.conf" "$N" "$VOLS" "$nv" "$A" "$IMGS/img-alpha" "$ida" "$OLDWC" "$IP"
+world
+A="$W/alpha"; mkdir -p "$A"; printf '/x/other\n' > "$ENG/projects.conf"; cp "$ENG/projects.conf" "$TMP/conf.before"
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv refuses a project that is not registered and was not moved" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*not a registered project" "$2" && [ ! -e "$3" ] && cmp -s "$4" "$5"' \
+  _ "$rc" "$TMP/out" "$W/beta" "$ENG/projects.conf" "$TMP/conf.before"
+
+# the image
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; printf 'sha256:keep-me|/elsewhere\n' >> "$IP"; built "$A" img-alpha
+ida="$(tid "$A/.ai-containers")"; N="$W/beta"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv removes the old image and its image-projects.conf line, and says the next build rebuilds it" \
+  bash -c '[ "$1" = 0 ] && [ ! -e "$2" ] && grep -qxF "docker rmi img-alpha" "$3" && ! grep -qF "$4" "$5" \
+           && grep -qxF "sha256:keep-me|/elsewhere" "$5"' _ "$rc" "$IMGS/img-alpha" "$DOCKER_LOG" "$ida" "$IP"
+ok "  … in those words" hasx "NOTE: the next ./build.sh (runme.sh runs it) builds img-alpha again, from the cache."
+( cd "$TMP" && source "$P" && ai_containers_image_portable=1 ai_containers_build_retag_guard img-alpha "$N/.ai-containers" ) > "$TMP/err" 2>&1; rc=$?
+ok "the retag guard passes for IMAGE_NAME right after mv" [ "$rc" = 0 ]
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; ida="$(tid "$A/.ai-containers")"; N="$W/beta"
+export FAKE_FAIL_RMI=1
+mvrun "$A" "$N" --yes; rc=$?
+unset FAKE_FAIL_RMI
+ok "mv keeps an image a stopped container references, and its line, and says so" \
+  bash -c '[ "$1" = 0 ] && [ -e "$2" ] && grep -qF "$3" "$4" && grep -qF "NOTE: could not remove the image img-alpha" "$5" \
+           && grep -qF "NOTE: an image still carries this project'"'"'s id" "$5" && ! grep -qF "builds img-alpha again" "$5"' \
+  _ "$rc" "$IMGS/img-alpha" "$ida" "$IP" "$TMP/out"
+( cd "$TMP" && source "$P" && ai_containers_image_portable=1 ai_containers_build_retag_guard img-alpha "$N/.ai-containers" ) > "$TMP/err" 2>&1; rc=$?
+ok "  … which the next build replaces, with a NOTE" bash -c '[ "$1" = 0 ] && grep -q "^NOTE: img-alpha was built for" "$2"' _ "$rc" "$TMP/err"
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-shared\n'; printf 'ai-containers.project=sha256:%064d\n' 7 > "$IMGS/img-shared"
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv keeps an IMAGE_NAME whose label is another project's id" \
+  bash -c '[ "$1" = 0 ] && [ -e "$2" ] && ! grep -q "^docker rmi" "$3" && grep -qF "  image       img-shared — kept: " "$4" \
+           && ! grep -qF "builds img-shared again" "$4"' _ "$rc" "$IMGS/img-shared" "$DOCKER_LOG" "$TMP/out"
+
+world
+O="$W/outer"; mkproj "$O"; mkproj "$O/inner"; mkbase app
+mkwc app 1 "$O/.ai-containers"; mkwc app 2 "$O/inner/.ai-containers"
+N="$W/newouter"; nv="$(wcname app "$N/.ai-containers")"
+mvrun "$O" "$N" --yes; rc=$?
+ok "mv leaves a working copy launched from a nested registered project" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/$3" ] && [ ! -d "$2/ai-containers-repo-app--wc-1" ] \
+           && grep -qxF "ai-containers.launch-dir=$4/inner/.ai-containers" "$2/ai-containers-repo-app--wc-2/labels" \
+           && [ -d "$4/inner/.ai-containers" ] && grep -qxF "$4/inner" "$5"' _ "$rc" "$VOLS" "$nv" "$O" "$ENG/projects.conf"
+
+world
+A="$W/alpha"; mvproj "$A"
+git -C "$A" init -q 2>/dev/null && git -C "$A" add .ai-containers README
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv notes that the old repository tracks .ai-containers" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "NOTE: $2'"'"'s repository tracks .ai-containers/; those files now show as deleted there." "$3"' \
+  _ "$rc" "$A" "$TMP/out"
+
+# what stops it
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
+printf 'ctr-one|other-image|/somewhere|%s/.ai-containers/.agent-blocked\n' "$A" > "$FAKE_RUNNING"
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv refuses while a container of the project runs" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*ctr-one" "$2" && [ ! -e "$3" ]' _ "$rc" "$TMP/out" "$W/beta"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
+printf 'ctr-late|img-alpha|/somewhere\n' > "$FAKE_RUNNING.later"
+export FAKE_RUNNING_AFTER=4
+mvrun "$A" "$W/beta" --yes; rc=$?
+unset FAKE_RUNNING_AFTER
+ok "mv checks again after the question, and refuses a container started meanwhile" \
+  bash -c '[ "$1" = 1 ] && grep -q "About to move" "$2" && grep -q "ERROR.*started after the listing.*ctr-late" "$2"' _ "$rc" "$TMP/out"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+world
+A="$W/alpha"; mvproj "$A"
+mvrun "$A" "$W/beta"; rc=$?
+ok "mv refuses on a non-TTY without --yes" \
+  bash -c '[ "$1" = 1 ] && grep -q ERROR "$2" && grep -q "About to move" "$2" && [ ! -e "$3" ]' _ "$rc" "$TMP/out" "$W/beta"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+world
+A="$W/alpha"; mvproj "$A"; export FAKE_DOCKER_DOWN=1
+mvrun "$A" "$W/beta" --yes; rc=$?
+unset FAKE_DOCKER_DOWN
+ok "mv refuses when docker cannot be reached" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR: docker cannot be reached" "$2" && [ -d "$3/.ai-containers" ] && [ ! -e "$4" ]' \
+  _ "$rc" "$TMP/out" "$A" "$W/beta"
+world
+A="$W/alpha"; mvproj "$A"; export FAKE_NO_SEED=1
+mvrun "$A" "$W/beta" --yes; rc=$?
+unset FAKE_NO_SEED
+ok "mv refuses when the seed image that copies the working copies cannot be had" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*seed helper image" "$2" && [ ! -e "$3" ]' _ "$rc" "$TMP/out" "$W/beta"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+world
+A="$W/alpha"; mvproj "$A"; printf 'EXTRA_MOUNTS=/x/mine\n' > "$TMP/real-local"
+ln -s "$TMP/real-local" "$A/.ai-containers/sandbox.local.env"
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv refuses a linked sandbox.local.env it would add the old root to, and its target is untouched" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*sandbox.local.env" "$2" && [ "$(cat "$3")" = EXTRA_MOUNTS=/x/mine ] && [ ! -e "$4" ]' \
+  _ "$rc" "$TMP/out" "$TMP/real-local" "$W/beta"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+world
+A="$W/alpha"; mvproj "$A"; mkdir -p "$W/same"; ln -s "$A" "$W/same/alias"
+mvrun "$A" "$W/same/alias" --yes; rc=$?
+ok "mv refuses a <new-dir> that is the project itself" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*already" "$2"' _ "$rc" "$TMP/out"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+mvrun "$A" "$W/nope/../beta" --yes; rc=$?
+ok "mv refuses a <new-dir> with .. where it does not exist yet" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*\.\. where it does not exist" "$2" && [ ! -e "$3" ] && [ ! -e "$4" ]' \
+  _ "$rc" "$TMP/out" "$W/nope" "$W/beta"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+if [[ "$(id -u)" == 0 ]]; then
+  printf 'SKIP: a <new-dir> that cannot be made (running as root)\n'
+else
+  mkdir -p "$W/locked"; chmod 555 "$W/locked"
+  mvrun "$A" "$W/locked/beta" --yes; rc=$?
+  chmod 755 "$W/locked"
+  ok "mv refuses a <new-dir> that cannot be made" \
+    bash -c '[ "$1" = 1 ] && grep -q "ERROR.*cannot be made" "$2" && [ ! -e "$3" ]' _ "$rc" "$TMP/out" "$W/locked/beta"
+  ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+fi
+world
+A="$W/alpha"; mkdir -p "$A"; printf '%s\n' "$A" > "$ENG/projects.conf"; cp "$ENG/projects.conf" "$TMP/conf.before"
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv refuses when neither the old nor the new .ai-containers exists" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR: neither" "$2" && [ ! -e "$3" ] && cmp -s "$4" "$5"' \
+  _ "$rc" "$TMP/out" "$W/beta" "$ENG/projects.conf" "$TMP/conf.before"
+
+# a working copy's new name already taken
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+mkvol "$nv" "ai-containers.workcopy=1" "ai-containers.repo=app" "ai-containers.launch-dir=$N/.ai-containers"; wcdata "$nv" unpushed
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv takes an exact copy already at the new name (a run cut short) as done, and removes the old" \
+  bash -c '[ "$1" = 0 ] && [ ! -d "$2/$5" ] && [ "$(cat "$2/$3/data/work")" = unpushed ] && ! grep -q "^docker volume create" "$4"' \
+  _ "$rc" "$VOLS" "$nv" "$DOCKER_LOG" "$OLDWC"
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+mkvol "$nv" "ai-containers.workcopy=1" "ai-containers.repo=app" "ai-containers.launch-dir=$N/.ai-containers"; wcdata "$nv" fresh
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv refuses a working copy whose new name another volume holds" \
+  bash -c '[ "$1" = 1 ] && grep -qF "ERROR: " "$2" && grep -qF "$5" "$2" && [ "$(cat "$3/$5/data/work")" = fresh ] \
+           && [ "$(cat "$3/$4/data/work")" = unpushed ]' _ "$rc" "$TMP/out" "$VOLS" "$OLDWC" "$nv"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+
+world
+S="$W/my proj"; mvproj "$S" $'IMAGE_NAME=img-space\n'; built "$S" img-space
+N="$W/new place/proj two"; nv="$(wcname app "$N/.ai-containers")"
+mvrun "$S" "$N" --yes; rc=$?
+ok "mv works when <new-dir> and the old root have spaces" \
+  bash -c '[ "$1" = 0 ] && [ -f "$2/.ai-containers/sandbox.env" ] && [ ! -e "$3/.ai-containers" ] && grep -qxF "$2" "$4" \
+           && ! grep -qxF "$3" "$4" && [ "$(cat "$5/$6/data/work")" = unpushed ] && [ ! -d "$5/$8" ] && [ ! -e "$7" ] \
+           && [ ! -e "$2/.ai-containers/sandbox.local.env" ]' \
+  _ "$rc" "$N" "$S" "$ENG/projects.conf" "$VOLS" "$nv" "$IMGS/img-space" "$OLDWC"
+ok "  … saying the old root, which holds a space, is not added to EXTRA_MOUNTS" has_line "not added: it holds whitespace"
+
+# never into or out of ~/.ai-containers, nor into the old .ai-containers
+world
+mkdir -p "$HOME/.ai-containers/default/.claude"; printf '%s\n' "$HOME" > "$ENG/projects.conf"
+mvrun "$HOME" "$W/newhome" --yes; rc=$?
+ok "mv refuses a project registered at HOME" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*where every group" "$2" && [ -f "$3/project-id.key" ] && [ -d "$3/default/.claude" ] \
+           && [ ! -e "$4" ] && [ "$(cat "$5")" = "$6" ]' _ "$rc" "$TMP/out" "$HOME/.ai-containers" "$W/newhome" "$ENG/projects.conf" "$HOME"
+world
+A="$W/alpha"; mvproj "$A"
+mvrun "$A" "$HOME/.ai-containers/x" --yes; rc=$?
+ok "mv refuses a <new-dir> inside ~/.ai-containers" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*where every group" "$2" && [ ! -e "$3" ]' _ "$rc" "$TMP/out" "$HOME/.ai-containers/x"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+mvrun "$A" "$A/.ai-containers/sub" --yes; rc=$?
+ok "mv refuses a <new-dir> inside the old .ai-containers" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*inside" "$2" && [ ! -e "$3" ]' _ "$rc" "$TMP/out" "$A/.ai-containers/sub"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+rm -rf "$HOME/.ai-containers/default"
+
+# across filesystems (forced: the test's directories are all on one)
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'
+mkdir -p "$A/.ai-containers/.agent-discovery"; printf 'pcap\n' > "$A/.ai-containers/.agent-discovery/cap.pcap"
+ln -s ../sandbox.env "$A/.ai-containers/.agent-discovery/link"
+N="$W/beta"; export AI_CONTAINERS_MV_COPY=1
+mvrun "$A" "$N" --yes; rc=$?
+unset AI_CONTAINERS_MV_COPY
+ok "mv across filesystems copies .ai-containers, checks the copy, then removes the old" \
+  bash -c '[ "$1" = 0 ] && [ ! -e "$2/.ai-containers" ] && [ "$(cat "$3/.ai-containers/sandbox.env")" = IMAGE_NAME=img-alpha ] \
+           && [ "$(cat "$3/.ai-containers/.agent-discovery/cap.pcap")" = pcap ] && [ -L "$3/.ai-containers/.agent-discovery/link" ] \
+           && [ "$(ls -A "$3")" = .ai-containers ] && grep -qxF "$3" "$4"' _ "$rc" "$A" "$N" "$ENG/projects.conf"
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
+N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"; export AI_CONTAINERS_MV_COPY=1 FAKE_CP_CORRUPT=sandbox.env
+mvrun "$A" "$N" --yes; rc=$?
+unset AI_CONTAINERS_MV_COPY FAKE_CP_CORRUPT
+ok "mv across filesystems keeps the old .ai-containers and removes the temp copy when the copy differs" \
+  bash -c '[ "$1" = 1 ] && grep -q ERROR "$2" && [ "$(cat "$3/.ai-containers/sandbox.env")" = IMAGE_NAME=img-alpha ] \
+           && [ -z "$(ls -A "$4" 2>/dev/null)" ] && cmp -s "$5" "$6"' _ "$rc" "$TMP/out" "$A" "$N" "$ENG/projects.conf" "$TMP/conf.before"
+ok "  … and the working copies as they were" \
+  bash -c '[ "$(cat "$1/$3/data/work")" = unpushed ] && [ ! -e "$1/$2" ] && [ -e "$4" ]' _ "$VOLS" "$nv" "$OLDWC" "$IMGS/img-alpha"
 
 echo
 [[ "$fails" == 0 ]] && { echo "ALL PASSED"; exit 0; } || { echo "$fails FAILED"; exit 1; }
