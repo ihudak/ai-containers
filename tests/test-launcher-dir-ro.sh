@@ -52,6 +52,9 @@ cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 # The endpoint sandbox.sh asks for to tell Colima's socket (T66); none otherwise.
 if [[ "\$1" == context ]]; then [[ -z "\${FAKE_DOCKER_ENDPOINT:-}" ]] || printf '%s\n' "\$FAKE_DOCKER_ENDPOINT"; exit 0; fi
+# A mode changed while the launch runs, as a concurrent container can change
+# one: sandbox.sh asks for the image between making its binds and judging them (T78).
+if [[ "\$1 \$2" == "image inspect" && -n "\${FAKE_CHMOD:-}" ]]; then chmod 000 "\$FAKE_CHMOD"; fi
 if [[ "\$1" == "run" ]]; then
   shift; printf '%s\n' "\$@" > "$CAPTURE"
   # Before sandbox.sh's EXIT trap removes it, copy out the verify dir's manifest
@@ -1923,6 +1926,203 @@ m75="$(mounts)"
   && pass "T75 nothing is bound in the read-only mount's own view" \
   || fail "T75 binds in the read-only view ($(grep -F ':/workspace/docs/' <<<"$m75" | tr '\n' ' '))"
 rm -rf "$O75"
+
+# ── T78: a read-only mount inside a writable one that you cannot list (GIT-93) ─
+# T75's mount is scanned in the writable mount's view. One whose own root you
+# cannot list could not be, and was passed over in silence: the agent, which
+# owns the directory, could make it so in one session, and in the next restore
+# the mode and write the launcher, or the .git/config, your host runs. Its root
+# is now taken as an unlistable directory a scan finds is: read-only whole in
+# the writable mount's view, its parents pinned, named with the chmod that
+# restores it; refused where you can search it but not list it.
+mkdir -p "$TMP/probe78"; chmod 000 "$TMP/probe78"
+if [[ -r "$TMP/probe78" ]]; then
+  printf 'SKIP: T78 — chmod does not constrain root\n'
+else
+  O78="$TMP/o78"
+  for md78 in 000 400; do
+    mk_launcher "$O78/node_modules/x"; chmod "$md78" "$O78/node_modules/x"
+    EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/node_modules/x" launch "$LAUNCHER" ..
+    m78="$(mounts)"
+    [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O78/node_modules/x:/workspace/o78/node_modules/x:ro" <<<"$m78" \
+      && grep -qxF -- "$O78/node_modules:/workspace/o78/node_modules:rw" <<<"$m78" \
+      && grep -qxF -- "$O78/node_modules/x:/workspace/docs:ro" <<<"$m78" \
+      && grep -qF "WARNING: $O78/node_modules/x cannot be listed by you" "$ERR" \
+      && grep -qF "Restore: chmod u+rx $O78/node_modules/x" "$ERR" \
+      && pass "T78 a read-only mount you cannot list (mode $md78) inside a writable one is read-only whole in that mount's view, and named" \
+      || fail "T78 mode $md78 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+    chmod 755 "$O78/node_modules/x"; rm -rf "$O78"
+  done
+  # Searchable but not listable: what is inside can be opened by name and cannot
+  # be checked, so the launch is refused, as for such a directory a scan finds.
+  mk_launcher "$O78/node_modules/x"; chmod 100 "$O78/node_modules/x"
+  EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/node_modules/x" launch "$LAUNCHER" ..
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$O78/node_modules/x can be searched but not listed by you" \
+    && pass "T78 one you can search but not list refuses the launch" \
+    || fail "T78 mode 100 (rc=$LAUNCH_RC; docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$O78/node_modules/x"; rm -rf "$O78"
+  # Only one the agent could reach into, by the scan's rule: with another
+  # identity for the agent, a directory of yours nobody else can enter hides
+  # nothing it can touch, and one its other bits let it search does.
+  for md78 in 000 001; do
+    mk_launcher "$O78/node_modules/x"; chmod "$md78" "$O78/node_modules/x"
+    SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/node_modules/x" launch "$LAUNCHER" ..
+    m78="$(mounts)"
+    if [[ "$md78" == 000 ]]; then
+      [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF ":/workspace/o78/node_modules" <<<"$m78" && ! grep -qF "$O78/node_modules/x cannot be listed" "$ERR" \
+        && pass "T78 one the agent cannot reach into is left alone" \
+        || fail "T78 another identity, mode 000 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+    else
+      [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O78/node_modules/x:/workspace/o78/node_modules/x:ro" <<<"$m78" \
+        && grep -qF "WARNING: $O78/node_modules/x cannot be listed by you" "$ERR" \
+        && pass "T78 one the agent's other bits let it search is read-only whole, and named" \
+        || fail "T78 another identity, mode 001 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+    fi
+    chmod 755 "$O78/node_modules/x"; rm -rf "$O78"
+  done
+  # The agent's group: its search bit lets it in, and then the other bits are
+  # not its class.
+  for md78 in 010 001; do
+    mk_launcher "$O78/node_modules/x"; chgrp "$(id -g)" "$O78/node_modules/x"; chmod "$md78" "$O78/node_modules/x"
+    SANDBOX_UID=4242 SANDBOX_GID="$(id -g)" EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/node_modules/x" launch "$LAUNCHER" ..
+    m78="$(mounts)"
+    if [[ "$md78" == 010 ]]; then
+      [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O78/node_modules/x:/workspace/o78/node_modules/x:ro" <<<"$m78" \
+        && grep -qF "WARNING: $O78/node_modules/x cannot be listed by you" "$ERR" \
+        && pass "T78 one the agent's group bit lets it search is read-only whole, and named" \
+        || fail "T78 the agent's group, mode 010 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+    else
+      [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF ":/workspace/o78/node_modules" <<<"$m78" && ! grep -qF "$O78/node_modules/x cannot be listed" "$ERR" \
+        && pass "T78 one of the agent's group that only others may search is left alone" \
+        || fail "T78 the agent's group, mode 001 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+    fi
+    chmod 755 "$O78/node_modules/x"; rm -rf "$O78"
+  done
+  # The same one directory up: a pointer you are not permitted to reach, behind
+  # a directory you cannot search, was taken for one that is not there, with a
+  # WARNING saying so, and left unmounted and unprotected; the agent, which can
+  # chmod a directory it owns, could restore the mode in that session. Each
+  # pointer now refuses. The launcher walks no path and judges no directory: it
+  # asks the kernel, through `cd`, and "Permission denied" is the answer that
+  # refuses. No chmod is printed, since it cannot say which directory.
+  for v78 in VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH; do
+    mk_launcher "$O78/node_modules/x"; chmod 000 "$O78/node_modules"
+    ( export "$v78=$O78/node_modules/x" EXTRA_MOUNTS="$O78"; launch "$LAUNCHER" ..; exit "$LAUNCH_RC" ); LAUNCH_RC=$?
+    [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$v78 is set to $O78/node_modules/x, which you are not permitted to reach" \
+      && ! grep -qF "does not exist" "$ERR" && ! grep -qF "chmod" "$ERR" && ! grep -qF "unset" "$ERR" \
+      && pass "T78 $v78 behind a directory you cannot search refuses the launch" \
+      || fail "T78 $v78 behind an unsearchable directory (rc=$LAUNCH_RC; docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+    chmod 755 "$O78/node_modules"; rm -rf "$O78"
+  done
+  # Whatever the way there is made of: the pointer a link of yours outside every
+  # mount, to a checkout an earlier launch protected (the third review's
+  # layout); a link in the middle of it; a link to a directory you cannot search.
+  mk_launcher "$O78/node_modules/x"; mkdir -p "$TMP/lock78/x"
+  ln -s "$O78/node_modules/x" "$TMP/dl78"; ln -s "$O78/node_modules" "$TMP/ml78"; ln -s "$TMP/lock78" "$O78/nm"
+  chmod 000 "$O78/node_modules" "$TMP/lock78"
+  for p78 in "$TMP/dl78" "$TMP/ml78/x" "$O78/nm/x"; do
+    EXTRA_MOUNTS="$O78" DOCS_PATH="$p78" launch "$LAUNCHER" ..
+    [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "DOCS_PATH is set to $p78, which you are not permitted to reach" \
+      && ! grep -qF "chmod" "$ERR" \
+      && pass "T78 a pointer through a link (${p78#"$TMP"/}) that you are not permitted to reach refuses the launch" \
+      || fail "T78 a pointer through a link, ${p78#"$TMP"/} (rc=$LAUNCH_RC; docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  done
+  # In whatever language the host speaks: the answer is read in the C locale.
+  # Only where a locale translates the message: one that is defined without
+  # glibc's message files prints English, and would prove nothing.
+  loc78=""
+  while IFS= read -r l78; do
+    m78="$( ( LC_ALL="$l78"; cd -- "$O78/node_modules/x" ) 2>&1 )" || true
+    if [[ -n "$m78" && "$m78" != *': Permission denied' ]]; then loc78="$l78"; break; fi
+  done < <(locale -a 2>/dev/null | grep -E '^[a-z][a-z]_[A-Z][A-Z]\.(utf8|UTF-8)$' | grep -v '^en_' || true)
+  if [[ -n "$loc78" ]]; then
+    LC_ALL="$loc78" LANG="$loc78" EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/node_modules/x" launch "$LAUNCHER" ..
+    [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "which you are not permitted to reach" \
+      && pass "T78 the refusal does not depend on the host's language ($loc78)" \
+      || fail "T78 under $loc78 (rc=$LAUNCH_RC; $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  else
+    printf 'SKIP: T78 another language — no installed locale translates the message\n'
+  fi
+  chmod 755 "$O78/node_modules" "$TMP/lock78"; rm -rf "$O78" "$TMP/lock78" "$TMP/dl78" "$TMP/ml78"
+  # A `..` after a link is the kernel's to follow, not bash's to work out on
+  # paper: there the path as written names a twin the agent could make, which
+  # can be entered, while the pointer's own way is closed (the fourth review).
+  mk_launcher "$O78/node_modules/pkg/y/x"; mkdir -p "$O78/node_modules/pkg/sub" "$TMP/u78/y/x"
+  ln -s "$O78/node_modules/pkg/sub" "$TMP/u78/cur"; chmod 000 "$O78/node_modules/pkg/y"
+  EXTRA_MOUNTS="$O78" DOCS_PATH="$TMP/u78/cur/../y/x" launch "$LAUNCHER" ..
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "DOCS_PATH is set to $TMP/u78/cur/../y/x, which you are not permitted to reach" \
+    && pass "T78 a pointer with .. after a link is followed as the kernel follows it, and refuses" \
+    || fail "T78 a pointer with .. after a link (rc=$LAUNCH_RC; docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$O78/node_modules/pkg/y"; rm -rf "$O78" "$TMP/u78"
+  # A mode changed while the launch runs, which a concurrent container can do.
+  # After the pointer's bind was made: the source is gone when the binds are
+  # judged, and was dropped in silence, while docker, which runs as root, would
+  # have mounted it. The fake docker changes the mode when asked for the image.
+  mk_launcher "$O78/node_modules/x"
+  FAKE_CHMOD="$O78/node_modules" EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/node_modules/x" launch "$LAUNCHER" ..
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$O78/node_modules/x, mounted read-only, was there when the launch looked" \
+    && pass "T78 a read-only source that vanishes while the launch runs refuses the launch" \
+    || fail "T78 a source gone meanwhile (rc=$LAUNCH_RC; docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$O78/node_modules"; rm -rf "$O78"
+  # And the other way, between the test that found no directory and the cd that
+  # asks why: a cd that succeeds is not "does not exist". A cd of the test's
+  # own, exported to the launcher, opens the way as it is asked.
+  mk_launcher "$O78/nm/x"; chmod 000 "$O78/nm"
+  # shellcheck disable=SC2164  # its status is cd's own, which every caller reads
+  cd() { if [[ "${*: -1}" == "${FAKE_CD_PATH:-}" ]]; then chmod 755 "$FAKE_CD_OPEN"; fi; builtin cd "$@"; }
+  export -f cd
+  FAKE_CD_PATH="$O78/nm/x" FAKE_CD_OPEN="$O78/nm" EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/nm/x" launch "$LAUNCHER" ..
+  unset -f cd
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "DOCS_PATH is set to $O78/nm/x, which was no directory when the launch" \
+    && pass "T78 a pointer that becomes reachable while the launch asks refuses the launch" \
+    || fail "T78 a pointer opened meanwhile (rc=$LAUNCH_RC; docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$O78/nm" 2>/dev/null; rm -rf "$O78"
+  # The path asked about is the resolved one: written with ~, it is still found.
+  mkdir -p "$HOME/t78/nm/x"; chmod 000 "$HOME/t78/nm"
+  # shellcheck disable=SC2088  # the tilde is meant to reach the launcher unexpanded
+  DOCS_PATH='~/t78/nm/x' launch "$LAUNCHER" ..
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "DOCS_PATH is set to ~/t78/nm/x, which you are not permitted to reach" \
+    && pass "T78 a pointer written with ~ that you are not permitted to reach refuses the launch" \
+    || fail "T78 a pointer written with ~ (rc=$LAUNCH_RC; $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$HOME/t78/nm"; rm -rf "$HOME/t78"
+  # One that is not there still only warns, and so does a link to nothing and a
+  # file in the way: none of them is a refusal of permission.
+  mkdir -p "$O78"; : > "$O78/file"; ln -s "$O78/nowhere" "$O78/dang"
+  for p78 in "$O78/none/x" "$O78/dang" "$O78/file/x"; do
+    EXTRA_MOUNTS="$O78" DOCS_PATH="$p78" launch "$LAUNCHER" ..
+    [[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] && grep -qF "WARNING: DOCS_PATH is set but directory does not exist: $p78" "$ERR" \
+      && pass "T78 a pointer that is not there (${p78#"$O78"/}) still warns and launches" \
+      || fail "T78 a missing pointer, ${p78#"$O78"/} (rc=$LAUNCH_RC; $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  done
+  rm -rf "$O78"
+  # One no writable mount holds is no way round a mount: nothing is said.
+  mkdir -p "$TMP/o78b"; chmod 000 "$TMP/o78b"
+  DOCS_PATH="$TMP/o78b" launch "$LAUNCHER" ..
+  m78="$(mounts)"
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$TMP/o78b:/workspace/docs:ro" <<<"$m78" && ! grep -qF "o78b" "$ERR" \
+    && pass "T78 a read-only mount you cannot list that no writable mount holds is mounted as before" \
+    || fail "T78 outside every writable mount (rc=$LAUNCH_RC; got: $(grep -F /o78b <<<"$m78" | tr '\n' ' '); $(grep -F o78b "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$TMP/o78b"; rmdir "$TMP/o78b"
+  # Where it lies is told by its name in its directory, which can be entered:
+  # with no `readlink -f` (an older macOS), the path arrives as it was written,
+  # through a link here. One that is itself a link cannot be placed, and refuses.
+  # (resolve_path asks greadlink first, Homebrew's on a Mac, so both stand in.)
+  mkdir -p "$TMP/rl78"; printf '#!/bin/sh\n[ "$1" = -f ] && exit 1\nexec %s "$@"\n' "$(command -v readlink)" > "$TMP/rl78/readlink"
+  cp "$TMP/rl78/readlink" "$TMP/rl78/greadlink"; chmod +x "$TMP/rl78/readlink" "$TMP/rl78/greadlink"
+  mk_launcher "$O78/node_modules/x"; chmod 000 "$O78/node_modules/x"; ln -s o78 "$TMP/l78"; ln -s x "$O78/node_modules/lk"
+  PATH="$TMP/rl78:$PATH" EXTRA_MOUNTS="$O78" DOCS_PATH="$TMP/l78/node_modules/x//" launch "$LAUNCHER" ..
+  m78="$(mounts)"
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O78/node_modules/x:/workspace/o78/node_modules/x:ro" <<<"$m78" \
+    && pass "T78 one written through a link, with trailing slashes, is placed by its directory" \
+    || fail "T78 through a link (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  PATH="$TMP/rl78:$PATH" EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/node_modules/lk" launch "$LAUNCHER" ..
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$O78/node_modules/lk" && err_names "cannot be entered by you" \
+    && grep -qF "cannot tell whether a writable mount holds it" "$ERR" \
+    && pass "T78 one that is a link to a directory you cannot enter refuses the launch" \
+    || fail "T78 a link (rc=$LAUNCH_RC; docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$O78/node_modules/x"; rm -rf "$O78" "$TMP/l78" "$TMP/rl78"
+fi
+chmod 755 "$TMP/probe78"; rmdir "$TMP/probe78"
 
 # ── T76: this launcher itself, where a mount's scan cannot reach it ──────────
 # The scan finds a launcher to six levels and not under a pruned name; this
