@@ -1,6 +1,6 @@
 # Feature-gaps review — 2026-10-26
 
-- **Review date:** 2026-10-26 (statuses updated through 2026-11-13)
+- **Review date:** 2026-10-26 (statuses updated through 2026-11-14)
 - **Last reviewed commit:** `bec1c57` (`bec1c5737acdc549143e2c55e4a4b945ae27a287`, main, 2026-10-18 — "Merge pull request #312")
 - **Scope:** every design, plan and backlog in the repository, wherever written — `docs/superpowers/specs/`, `docs/superpowers/plans/`, the follow-up and falsify backlogs, `tests/falsify/survivors.txt` / `targets.conf`, AGENTS.md, README.md, `docs/`, CHANGELOG.md, and TODO/deferred/follow-up markers in code.
 - **Companion:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md) (defects; doc errors that mislead users are filed there as `DOC-*`).
@@ -260,6 +260,60 @@ A gap is something a design promised that is not in the code at the reviewed com
   - **What the sample does not say:** its mutants are the first 442 lines of the file, the pointer mounts, the memory limits and the start of the launch. The git-internals code, most of the file, selects the slow tests for every kill, so its rate is not measured yet. At the sample's rate the file is about 250 hours of test time, 25 to 30 of wall time at `--jobs 10`.
   - **Found on the way:** TST-35 (LOW, tier only, fixed with the flag): the baseline and the controls left what their tests made in a worker's tree for the next mutant to run on. A re-seed that fails there now fails the run, as one after a mutant does.
   - **What this means for placement:** with or without the flag, one measurement of sandbox.sh is hundreds of hours of test time. CI's falsify jobs are capped at 90 minutes. sandbox.sh as an active target that CI scores on every PR, or nightly, is out of reach of this tier as it is built; what is in reach is a measurement on a developer's Linux host, run when the file has changed much, with its survivors classified in `tests/falsify/survivors.txt`. Whether that closes this gap is the user's decision.
+
+#### GAP-2, the whole-file run: batch 1 of its survivors, for the WSL native agent
+
+- **Status: OPEN** (handed over 2026-11-14 by the Linux agent, the user's choice). Base: `origin/main` at `14f42bd`.
+- **What this is:** the Linux machine is measuring all of sandbox.sh (3,312 mutants at `14f42bd`, about a third done on 2026-11-14, ending about 2026-11-16). Every mutant that survives is owed a test that kills it, or a stated reason why no test could. That machine cannot run tests while it measures, because load distorts verdicts, so this batch goes to another one. The tests are hermetic and need no docker. More batches may follow here.
+- **Rules for the batch:**
+  - **Demonstrate, do not score** ([docs/testing.md](../testing.md), "Per slice: demonstrate"): damage the line by hand as shown, see the new assertion go red, restore the line, see it green. Do not run `tests/falsify/run.sh` over sandbox.sh.
+  - **Numbers:** new checks from **G210** (G209 and T78 are taken by GIT-93's fix, found 2026-11-14 on Linux and not yet on `main`; its entry lands with it). A product bug found on the way is **GIT-94** or later, filed in the bugs review and fixed test-first.
+  - **Two places to leave alone** in `launcher_ro_overlay()`, which GIT-93's fix rewrites: the block that starts `if [[ ",$opts," == *,ro,* ]]; then`, where the binds are collected, and the loop over `rosrc` that calls `launcher_dirs_in`. The same fix adds a block after G157 in `tests/test-git-internals-ro-scan.sh` and one after T75 in `tests/test-launcher-dir-ro.sh`: add nothing next to those.
+  - **No entries in `tests/falsify/survivors.txt`:** sandbox.sh is not an active target. Record the results in this section, one line per item: killed by which check, or the reason no test could kill it. "Equivalent" says why no test could, not that none does.
+  - Otherwise as for any change: lint, the suite on that platform, a final review of the exact tree, fetch and rebase, push, follow CI.
+- **Item 1: six mutants, one test.** The design was run on Linux at `14f42bd`.
+  - **Where:** the branch of `launcher_ro_overlay()` for a git directory already under a read-only overlay, below the comment line "One that cannot be resolved names a path that cannot exist, as the" (it occurs once):
+    ```bash
+              ocfg="$g/config"
+              if [[ -f "$g/commondir" ]]; then
+                cdir=""; _git_ptr_read "$g/commondir" cdir || true
+                if [[ "$cdir" != ./ ]]; then
+                  if _cd_phys ocd "$g" "$cdir"; then ocfg="$ocd/config"
+                  else ocfg=/nonexistent/ai-launcher-unresolved-commondir/config; fi
+    ```
+  - **The survivors:**
+    - `sandbox.sh:cond-negate:cee146f794606441f3e24e3dee2d1bdc394fc943`: `if [[ ! -f "$g/commondir" ]]; then`, and its `if ! [[ … ]]` form.
+    - `sandbox.sh:cond-negate:d4f4036f5281968d7c30d55dd09fd74d5c5e348c`: `if [[ ! "$cdir" != ./ ]]; then`, and its `if ! [[ … ]]` form.
+    - `sandbox.sh:cmp-flip:d4f4036f5281968d7c30d55dd09fd74d5c5e348c`: `if [[ "$cdir" == ./ ]]; then`.
+    - `sandbox.sh:cond-negate:05741c8a616d2d7ec0e9f7a54b78b25e66d6fe97`: `if ! _cd_phys ocd "$g" "$cdir"; then ocfg="$ocd/config"`.
+  - **Why they survive:** G116 in `tests/test-git-internals-ro-reads.sh` told a worktree's own config from its common directory's by whether its `config.worktree` was judged. Since GIT-81 a `config.worktree` is walked whatever the extension says, so the two configs give the same output there.
+  - **A layout that tells them apart,** built on G116's `mk116` (a planted launcher `$TMP/o116/L` holding a repository, `$TMP/o116/w` beside it, launched with `EXTRA_MOUNTS=$TMP/o116`):
+    ```bash
+    git -C "$TMP/o116/L" config extensions.worktreeConfig true
+    git -C "$TMP/o116/L" config core.hooksPath hk            # relative
+    mkdir -p "$TMP/o116/L/.git/worktrees/x"
+    printf 'ref: refs/heads/main\n' > "$TMP/o116/L/.git/worktrees/x/HEAD"
+    printf '../..\n' > "$TMP/o116/L/.git/worktrees/x/commondir"
+    printf '[core]\n\tworktree = %s\n' "$TMP/o116/w" > "$TMP/o116/L/.git/worktrees/x/config.worktree"
+    ```
+  - **What it gives:** on unchanged `14f42bd` the launch prints `NOTE: /workspace/o116/L/.git/worktrees/x runs its git hooks from /workspace/o116/w/hk (core.hooksPath), which the agent`. With the first `if` negated, with `!=` made `==`, and with the `_cd_phys` test negated, that NOTE is gone (six launches on Linux). The relative `core.hooksPath` is read from the common directory's config and judged from the worktree's `core.worktree`; with the wrong `ocfg` there is no `core.hooksPath` to judge.
+  - **A second layout** gives the same NOTE and the same three results: no `config.worktree`, a `gitdir` in `worktrees/x` naming `$TMP/o116/w/.git`, and that file holding `gitdir: $TMP/o116/L/.git/worktrees/x`.
+  - **No test for one more there:** `|| true` turned `&& true` after that `_git_ptr_read` is equivalent. It is not the last command of its list, so errexit does not fire, and `cdir` is empty either way.
+- **Item 2: two mutants in GIT-73's advice.** The design was not run.
+  - **Where:** the WARNING for a `./` commondir an earlier launch made in a repository whose config sets `core.worktree`: `if _cd_bash wcd "$g" && [[ -n "$wcd" && "$wcd" != *$'\n' ]]; then`.
+  - **The survivors:** `sandbox.sh:logic-flip:60afbed08cfd26149c75d57cb49a9644e39af563`, twice: the first `&&` turned `||`, and the second.
+  - **What either does:** it prints the `rm commondir` command for a git directory whose physical path ends in a newline, where the launcher says that it "cannot be entered by a command printed here".
+  - **A layout to try:** G187 in `tests/test-git-internals-ro-scan.sh` has the ordinary case. A bare repository in a directory whose name ends in a newline, its config setting `core.worktree`, with a `./` commondir already there, should reach the line: assert the "cannot be entered" text, and that "in bash or zsh:" is absent. If no layout reaches the line with such a path, the record says why.
+- **Item 3: four mutants to decide,** each either killed or shown to be beyond any test.
+  - **Three** in the pass over git directories outside every writable mount that a `.git` file in one names (GIT-44), below the comment "A git directory that a .git file in a writable mount names outside every":
+    - `sandbox.sh:logic-flip:3eeba261af22b93b95de5d0004ddcbd29871cc7f`: `if [[ -n "$cdir" || "$cdir" != ./ ]]; then`. The Linux agent's reading, not checked: for `./` or an empty commondir it resolves the directory itself, already in `pgk`, so nothing differs unless `$t` is not spelled physically.
+    - `sandbox.sh:logic-flip:4ed4212aeeaf1a1a59c3c4d456fbe3fc2db04c4e`, the first `&&` of `[[ -z "${pgk[$ocd]:-}" ]] && ! _in_writable "$ocd" && _is_common_dir "$ocd"` turned `||`: a common directory already listed is listed again. Does anything print twice?
+    - the same identity, the second `&&` turned `||`: a directory that is no common directory, or one inside a writable mount, is listed to be judged. Does anything print for it?
+  - **One** in the walk of hook names (the loop over `git_hook_names`): `sandbox.sh:logic-flip:3877062bbb5de33005743dd6fa98cb567ed5e501`, `elif [[ -n "$hx" || -f "$f" ]]; then`. A regular hook in a repository's own `hooks/`, or a hook name that does not exist in a `core.hooksPath` directory, gets `walk=("=$f")`. Does either print what it should not?
+  - **How:** apply the damage, build the smallest layout that reaches the line, and compare the launch's stderr and mounts with the undamaged launcher's. A difference is a test to write. None after an honest try is recorded as equivalent, with the reason.
+- **Item 4, optional: one mutant only drvfs can kill.** `sandbox.sh:return-flip:7efad11ba695484504de3ae094a48e9b0f2d9a66`: the `exit 1` that ends the refusal "Windows looks names up (WSL's drvfs under /mnt/<drive>, or SMB)", turned `exit 0`. It survived on Linux again, as expected (slice 7: G121 kills it with `TMPDIR` on `/mnt/c`, run 2026-11-11). The refusal's lines last changed in `61af43b`, before that run, so a line here saying so is enough.
+- **Results:** none yet.
+
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
 - Status: DONE (2026-11-03).
