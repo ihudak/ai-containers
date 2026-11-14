@@ -329,8 +329,8 @@ A gap is something a design promised that is not in the code at the reviewed com
 - **Status: OPEN** (handed over 2026-11-14 by the Linux agent, as batch 1 was). Base: `origin/main` at `1915a91`, which has batch 1 and GIT-93's fix.
 - **What this is:** the next survivors of the measurement batch 1 describes, read when it stood at 1,395 of 3,312 mutants (1,321 killed, 55 survived, 19 unproven). Every line quoted below reads the same at `14f42bd`, where the run measures, and at `1915a91`.
 - **Rules:** those of batch 1, with these numbers.
-  - **New checks** from **G215** in the `tests/test-git-internals-ro-*.sh` files and from **T79** in `tests/test-launcher-dir-ro.sh`. G209 to G214 and T78 are taken.
-  - **A product bug** found on the way is **GIT-95** or later, or **LNCH-27** or later (GIT-93's fix filed LNCH-25 and LNCH-26).
+  - **New checks** from **G215** in the `tests/test-git-internals-ro-*.sh` files and **T79** to **T84**, then from T86, in `tests/test-launcher-dir-ro.sh`. G209 to G214, T78 and T85 (LNCH-26's fix) are taken.
+  - **A product bug** found on the way is **GIT-95** or later, or **LNCH-28** or later (LNCH-25 to LNCH-27 are filed).
   - **The two places** batch 1 had to leave alone are free again: GIT-93's fix is on `main`.
   - Demonstrate, do not score. No entries in `tests/falsify/survivors.txt`. Results in this section, one line per item.
 - **Item 1: the first index read of a launch.** The damage was run on Linux at `27777a6`.

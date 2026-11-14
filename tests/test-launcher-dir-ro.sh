@@ -55,6 +55,8 @@ if [[ "\$1" == context ]]; then [[ -z "\${FAKE_DOCKER_ENDPOINT:-}" ]] || printf 
 # A mode changed while the launch runs, as a concurrent container can change
 # one: sandbox.sh asks for the image between making its binds and judging them (T78).
 if [[ "\$1 \$2" == "image inspect" && -n "\${FAKE_CHMOD:-}" ]]; then chmod 000 "\$FAKE_CHMOD"; fi
+# A link swapped for a directory at the same moment (T85).
+if [[ "\$1 \$2" == "image inspect" && -n "\${FAKE_SWAP:-}" ]]; then rm -f "\$FAKE_SWAP" && mkdir "\$FAKE_SWAP"; fi
 if [[ "\$1" == "run" ]]; then
   shift; printf '%s\n' "\$@" > "$CAPTURE"
   # Before sandbox.sh's EXIT trap removes it, copy out the verify dir's manifest
@@ -2086,15 +2088,16 @@ else
     || fail "T78 a pointer written with ~ (rc=$LAUNCH_RC; $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
   chmod 755 "$HOME/t78/nm"; rm -rf "$HOME/t78"
   # One that is not there still only warns, and so does a link to nothing and a
-  # file in the way: none of them is a refusal of permission.
-  mkdir -p "$O78"; : > "$O78/file"; ln -s "$O78/nowhere" "$O78/dang"
-  for p78 in "$O78/none/x" "$O78/dang" "$O78/file/x"; do
+  # file in the way: none of them is a refusal of permission. The link lies
+  # outside every writable mount: one the agent can reach refuses (LNCH-26; T85).
+  mkdir -p "$O78"; : > "$O78/file"; ln -s "$TMP/nowhere78" "$TMP/dang78"
+  for p78 in "$O78/none/x" "$TMP/dang78" "$O78/file/x"; do
     EXTRA_MOUNTS="$O78" DOCS_PATH="$p78" launch "$LAUNCHER" ..
     [[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] && grep -qF "WARNING: DOCS_PATH is set but directory does not exist: $p78" "$ERR" \
-      && pass "T78 a pointer that is not there (${p78#"$O78"/}) still warns and launches" \
-      || fail "T78 a missing pointer, ${p78#"$O78"/} (rc=$LAUNCH_RC; $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+      && pass "T78 a pointer that is not there (${p78#"$TMP"/}) still warns and launches" \
+      || fail "T78 a missing pointer, ${p78#"$TMP"/} (rc=$LAUNCH_RC; $(grep -E 'WARNING: DOCS|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
   done
-  rm -rf "$O78"
+  rm -rf "$O78" "$TMP/dang78"
   # One no writable mount holds is no way round a mount: nothing is said.
   mkdir -p "$TMP/o78b"; chmod 000 "$TMP/o78b"
   DOCS_PATH="$TMP/o78b" launch "$LAUNCHER" ..
@@ -2123,6 +2126,125 @@ else
   chmod 755 "$O78/node_modules/x"; rm -rf "$O78" "$TMP/l78" "$TMP/rl78"
 fi
 chmod 755 "$TMP/probe78"; rmdir "$TMP/probe78"
+
+# ── T85: a host path reached through a link the agent can repoint (LNCH-26) ───
+# Every host path a launch mounts is resolved afresh at each launch. One whose
+# way passes through a symlink inside a writable mount (pnpm's node_modules/d ->
+# .pnpm/d@1/node_modules/d) is the agent's to redirect: it replaces the link in
+# one session, and the next launch mounts whatever the link then leads to, your
+# ~/.ssh as the vault say, or takes a pointer for one that is not there. Such a
+# way refuses the launch, for the four pointers, an EXTRA_MOUNTS entry, the
+# working directory and a repo's bind source alike.
+W85="$TMP/w85"; O85="$TMP/out85"
+mk85() {
+  rm -rf "$W85" "$O85" "$TMP/v85" "$TMP/d85rel"
+  mkdir -p "$W85/nm/.pnpm/d1" "$W85/sub" "$W85/docs85" "$O85/real" "$TMP/v85" "$TMP/d85rel" \
+    && ln -s .pnpm/d1 "$W85/nm/d" && ln -s real "$O85/l" && ln -s "$W85/nm/d" "$O85/l2" \
+    && ln -s b "$O85/a" && ln -s a "$O85/b" \
+    || { printf 'SCAFFOLD-FAILED: T85\n'; exit 1; }
+}
+refused85() {  # $1 = what the ERROR line says, $2 = words the refusal holds, $3 = where the agent sees the step ('' = not asked)
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$1" && grep -qF -- "$2" "$ERR" \
+    && { [[ -z "$3" ]] || grep -qF -- "$3" "$ERR"; }
+}
+said85() { printf 'rc=%s; docker run reached: %s; %s' "$LAUNCH_RC" "$([[ -s "$CAPTURE" ]] && echo yes || echo no)" "$(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' ')"; }
+mk85
+# Each pointer, through pnpm's kind of link.
+for v85 in VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH; do
+  export "$v85=$W85/nm/d"; EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"; unset "$v85"
+  refused85 "$v85 ($W85/nm/d) is reached through the link $W85/nm/d" "in a writable mount" "/workspace/w85/nm/d" \
+    && grep -qF "ls -l -- $W85/nm/d" "$ERR" && ! grep -qF ".pnpm/d1" "$ERR" \
+    && pass "T85 $v85 through a link in a writable mount refuses the launch, naming the link and never where it leads" \
+    || fail "T85 $v85 through a link ($(said85))"
+done
+# With a trailing slash, and through a path relative to where the launch runs.
+DOCS_PATH="$W85/nm/d/" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+refused85 "DOCS_PATH ($W85/nm/d/) is reached through the link $W85/nm/d" "in a writable mount" "" \
+  && pass "T85 a trailing slash changes nothing" || fail "T85 trailing slash ($(said85))"
+DOCS_PATH="../../w85/nm/d" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+refused85 "DOCS_PATH (../../w85/nm/d) is reached through the link $W85/nm/d" "in a writable mount" "" \
+  && pass "T85 a relative pointer through such a link refuses too" || fail "T85 relative pointer through a link ($(said85))"
+# A link that leads nowhere is the same link: before, the pointer "did not exist".
+ln -sfn .pnpm/gone "$W85/nm/d"
+DOCS_PATH="$W85/nm/d" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+refused85 "DOCS_PATH ($W85/nm/d) is reached through the link $W85/nm/d" "in a writable mount" "/workspace/w85/nm/d" \
+  && pass "T85 a link that leads nowhere refuses the launch, where the pointer only did not exist before" \
+  || fail "T85 dangling link ($(said85))"
+mk85
+# A link out of reach, whose target comes back through one the agent can reach.
+DOCS_PATH="$O85/l2" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+refused85 "DOCS_PATH ($O85/l2) is reached through the link $W85/nm/d" "in a writable mount" "/workspace/w85/nm/d" \
+  && pass "T85 a link out of reach whose target passes through one the agent can reach refuses" \
+  || fail "T85 link through a link ($(said85))"
+# A launcher planted around the link earns it nothing: its read-only overlay is
+# the agent's to arrange (two empty files), and it chose the target before.
+ln -s ../nm/.pnpm/d1 "$W85/sub/l" && : > "$W85/sub/sandbox.sh" && : > "$W85/sub/sandbox-common.sh"
+DOCS_PATH="$W85/sub/l" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+refused85 "DOCS_PATH ($W85/sub/l) is reached through the link $W85/sub/l" "in a writable mount" "/workspace/w85/sub/l" \
+  && pass "T85 a launcher planted around the link does not make it safe" \
+  || fail "T85 planted launcher around the link ($(said85))"
+rm -f "$W85/sub/l" "$W85/sub/sandbox.sh" "$W85/sub/sandbox-common.sh"
+# Out (..) of a directory the agent can swap for a link.
+DOCS_PATH="$W85/sub/../docs85" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+refused85 "DOCS_PATH ($W85/sub/../docs85) steps out (..) of $W85/sub" "in a writable mount" "/workspace/w85/sub" \
+  && pass "T85 a way that steps out of a directory in a writable mount refuses" \
+  || fail "T85 .. out of a directory ($(said85))"
+# A way never followed to its end is not known to be safe.
+DOCS_PATH="$O85/a" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+refused85 "DOCS_PATH ($O85/a) could not be followed to its end" "not known to be safe" "" \
+  && pass "T85 a way that could not be followed to its end refuses" || fail "T85 link loop ($(said85))"
+# The other host paths a launch mounts: an EXTRA_MOUNTS entry, the working
+# directory, a repo's bind source.
+EXTRA_MOUNTS="$W85 $W85/nm/d" launch "$LAUNCHER" "$TMP/app"
+refused85 "EXTRA_MOUNTS entry ($W85/nm/d) is reached through the link $W85/nm/d" "in a writable mount" "/workspace/w85/nm/d" \
+  && pass "T85 an EXTRA_MOUNTS entry through such a link refuses" || fail "T85 EXTRA_MOUNTS entry ($(said85))"
+EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$W85/nm/d"
+refused85 "the working directory ($W85/nm/d) is reached through the link $W85/nm/d" "in a writable mount" "/workspace/w85/nm/d" \
+  && pass "T85 a working directory through such a link refuses" || fail "T85 working directory ($(said85))"
+mkdir -p "$HOME/.ai-containers"; cp -p "$HOME/.ai-containers/repos.conf" "$TMP/repos85.bak" 2>/dev/null
+printf 'r85|path|%s|2026-11-14|2026-11-14|bind\n' "$W85/nm/d" >> "$HOME/.ai-containers/repos.conf"
+REPOS="r85:rw" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+refused85 "repo 'r85' bind source ($W85/nm/d) is reached through the link $W85/nm/d" "in a writable mount" "/workspace/w85/nm/d" \
+  && pass "T85 a repo's bind source through such a link refuses" || fail "T85 repo bind source ($(said85))"
+if [[ -f "$TMP/repos85.bak" ]]; then mv "$TMP/repos85.bak" "$HOME/.ai-containers/repos.conf"; else rm -f "$HOME/.ai-containers/repos.conf"; fi
+# A pointer that is the working directory is mounted once, and judged all the same.
+DOCS_PATH="$W85/nm/d" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$W85/nm/.pnpm/d1"
+refused85 "DOCS_PATH ($W85/nm/d) is reached through the link $W85/nm/d" "in a writable mount" "" \
+  && pass "T85 a pointer that is the working directory is judged too" || fail "T85 pointer equal to the working directory ($(said85))"
+# The link swapped for a directory while the launch runs: nothing on the way is
+# a link any more, and what the launch resolved is not where the way leads.
+FAKE_SWAP="$W85/nm/d" DOCS_PATH="$W85/nm/d" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "DOCS_PATH ($W85/nm/d) led somewhere else when the launch resolved it" \
+  && pass "T85 a way that leads elsewhere than what the launch resolved refuses" \
+  || fail "T85 swapped while the launch runs ($(said85); now: $(ls -ld "$W85/nm/d" 2>&1 | cut -c1-10))"
+mk85
+# What must still launch. A writable pointer with no link on the way: its own
+# directory is the agent's to write, and is not what is judged.
+VAULT_PATH="$TMP/v85" SPECS_PATH="$W85/docs85" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+m85="$(mounts)"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$TMP/v85:/workspace/vault:rw" <<<"$m85" && grep -qxF -- "$W85/docs85:/workspace/specs:rw" <<<"$m85" \
+  && pass "T85 writable pointers with no link on the way launch, one inside a writable mount too" \
+  || fail "T85 plain writable pointers ($(said85); $(grep -E 'vault|specs' <<<"$m85" | tr '\n' ' '))"
+# A link the agent cannot reach, in no mount or in a read-only one.
+DOCS_PATH="$O85/l" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O85/real:/workspace/docs:ro" <<<"$(mounts)" \
+  && pass "T85 a link outside every writable mount is followed as before" || fail "T85 link out of reach ($(said85))"
+DOCS_PATH="$W85/nm/d" EXTRA_MOUNTS="$W85:ro" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$W85/nm/.pnpm/d1:/workspace/docs:ro" <<<"$(mounts)" \
+  && pass "T85 a link in a read-only mount is followed as before" || fail "T85 link in a read-only mount ($(said85))"
+# Out (..) of a mount's own root, which cannot be swapped; and a relative path,
+# which is taken from where the launch physically runs: the launcher's own
+# directory, in the writable project, is no step the way takes.
+DOCS_PATH="$W85/../d85rel" EXTRA_MOUNTS="$W85" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$TMP/d85rel:/workspace/docs:ro" <<<"$(mounts)" \
+  && pass "T85 a way that steps out of a mount's own root launches" || fail "T85 .. out of a mount root ($(said85))"
+for r85 in ../../d85rel ./../../d85rel; do
+  DOCS_PATH="$r85" launch "$LAUNCHER" ..
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$TMP/d85rel:/workspace/docs:ro" <<<"$(mounts)" \
+    && pass "T85 a relative pointer ($r85) from the launcher's directory in a writable project launches" \
+    || fail "T85 relative pointer $r85 ($(said85))"
+done
+rm -rf "$W85" "$O85" "$TMP/v85" "$TMP/d85rel"
 
 # ── T76: this launcher itself, where a mount's scan cannot reach it ──────────
 # The scan finds a launcher to six levels and not under a pruned name; this

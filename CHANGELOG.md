@@ -150,6 +150,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A mounted host path reached through a link the agent can repoint refuses
+  the launch.** `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH`,
+  `ARCHITECTURE_REPO_PATH`, an `EXTRA_MOUNTS` entry, the working directory and
+  a repo's bind source are resolved afresh at every launch. Where the path
+  passed through a symlink inside a writable mount (pnpm's
+  `node_modules/<pkg>` is one), the agent could replace the link in one
+  session, and the next launch mounted whatever it then led to: any directory
+  of the host, writable for a read-write mount. Pointed at nothing, a pointer
+  was reported as a directory that does not exist. Such a path, and one that
+  steps out (`..`) of a directory in a writable mount, is now refused, naming
+  the link or the directory. **This stops a launch that used to work:** give
+  the path without that step. A path through a link loop, which only "did not
+  exist", is refused too. The refusal does not print where the link leads as the path to
+  use, because the agent may have chosen it; look first (`ls -l`). A link
+  that no writable mount of the launch holds, or in a read-only one, is
+  followed as before (bugs review LNCH-26).
+
 - **A git directory outside the mounts that two checkouts use with two
   different configs is checked with both.** One with a `commondir` of its own,
   named by one checkout's `.git` and by another worktree's `commondir`, was
