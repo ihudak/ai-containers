@@ -368,7 +368,7 @@ launcher_ro_overlay() {
   _rd_prep; _git_usable || true
   local reached="$3" self src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
   local _br_src _br_dst _br_opts
-  local x f e q w c inner how
+  local x f e q w c inner how fin
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a _xm_t=() _xm_by=() _xm_j=() _xm_k=() ro_srcs=() _gdi_nowt=() rosrc=()
@@ -487,6 +487,32 @@ launcher_ro_overlay() {
         break
       fi
     done
+  done
+
+  # A host path the launch mounts, reached through a step the agent can change
+  # from inside: a link in a writable mount, or a directory there that the way
+  # steps out of with `..`. It is resolved afresh at every launch, so the agent
+  # repoints the link in one session and the next mounts what it then leads to,
+  # your ~/.ssh as the vault say; pointed at nothing, a pointer was taken for
+  # one that is not there (LNCH-26; T85). Judged here, before any overlay is
+  # decided, so that none counts: a launcher's read-only overlay is the agent's
+  # to arrange around a link whose target it chose the session before (ro_dsts
+  # and pinned are empty; a mount's own root still counts as a mount point).
+  # The walk's last record, where the way ends, is not judged: that directory
+  # being writable is what the mount is for. It is compared with what the launch
+  # resolved and bound, for a link swapped for a directory in between.
+  for (( i = 0; i + 3 < ${#_host_ways[@]}; i += 4 )); do
+    walk=(); mapfile -d '' -t walk < <(_path_walk "" "${_host_ways[i+2]}")
+    fin=""
+    if (( ${#walk[@]} )) && [[ "${walk[${#walk[@]}-1]}" == =* ]]; then
+      fin="${walk[${#walk[@]}-1]#=}"; unset "walk[${#walk[@]}-1]"
+    fi
+    if _walk_exposed how q w "" ${walk[@]+"${walk[@]}"}; then
+      _host_way_refuse "${_host_ways[i]}" "${_host_ways[i+1]}" "$how" "$q" "$w"
+    fi
+    if [[ -d "${_host_ways[i+3]}" ]] && ! [[ -n "$fin" && "$fin" -ef "${_host_ways[i+3]}" ]]; then
+      _host_way_refuse "${_host_ways[i]}" "${_host_ways[i+1]}" changed "" ""
+    fi
   done
 
   # The agent's output directories, by source (LNCH-9).
@@ -6176,6 +6202,10 @@ _ro_snap_src=() _ro_snap_mode=()
 # like any other (G92). Set by run_container.
 _git_skip_root=""
 _gir_tmp="" _gir_tmp_warned=""
+# Every host path the launch mounts, four fields each: what it is, as it was
+# set, that made absolute, and what the launch resolved it to (_host_way_add;
+# judged by launcher_ro_overlay, LNCH-26).
+_host_ways=()
 _git_ok=""                  # whether git runs here, asked once (_git_usable)
 declare -A _gir_cache=()   # git directory → its read index, once per launch
 _fs_deadline=""             # the FIFO search's deadline, once per launch (_ro_fifo_search)
@@ -6243,6 +6273,56 @@ _git_watch_add() {
   _git_watch_had[$1]=1; _git_watch+=("$1")
 }
 trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
+
+# _host_way_add <what> <path as set> <what the launch resolved it to>: records a
+# host path the launch mounts, for launcher_ro_overlay to judge the way to it
+# (LNCH-26). A relative one is taken from where the launch physically runs, its
+# leading ./ and ../ resolved on paper, which is exact against a physical
+# directory: joined to $PWD as written, the default launch's `..` would be a
+# step out of the launcher's own directory, inside the writable project.
+_host_way_add() {
+  local w="$2" base
+  if [[ "$w" != /* ]]; then
+    base="$(pwd -P 2>/dev/null)" || base="$PWD"
+    while :; do
+      case "$w" in
+        ./*)  w="${w#./}" ;;
+        ../*) base="${base%/*}"; w="${w#../}" ;;
+        ..)   base="${base%/*}"; w="" ;;
+        *)    break ;;
+      esac
+    done
+    w="$base/$w"
+  fi
+  _host_ways+=("$1" "$2" "$w" "$3")
+}
+
+# _host_way_refuse <what> <path as set> <how> <step> <where the agent sees it>:
+# the refusal for a host path whose way the agent can change (LNCH-26). Built
+# from fixed parts: where the way leads now is never offered as the path to use
+# instead, since the agent may have chosen it already.
+_host_way_refuse() {
+  case "$3" in
+    repoint)
+      printf 'ERROR: %s (%s) is reached through the link %s,\n' "$1" "$(_term "$2")" "$(_term "$4")" >&2
+      printf '       which lies in a writable mount (%s in the container): the agent can repoint it,\n' "$(_term "$5")" >&2
+      printf '       so where it leads may be the agent'\''s choice already, and the launch would mount that;\n' >&2
+      printf '       refusing the launch. On the host, see where it leads before you use it\n' >&2
+      printf '       (ls -l -- %s), and give a path with no link the agent can reach on the way.\n' "$(_q "$4")" >&2 ;;
+    replace)
+      printf 'ERROR: %s (%s) steps out (..) of %s,\n' "$1" "$(_term "$2")" "$(_term "$4")" >&2
+      printf '       a directory in a writable mount (%s in the container): the agent can swap it for a\n' "$(_term "$5")" >&2
+      printf '       link, so where the way leads may be the agent'\''s choice already, and the launch would\n' >&2
+      printf '       mount that; refusing the launch. Give the path without that step.\n' >&2 ;;
+    changed)
+      printf 'ERROR: %s (%s) led somewhere else when the launch resolved it than it\n' "$1" "$(_term "$2")" >&2
+      printf '       does now: something is changing it; refusing the launch.\n' >&2 ;;
+    *)
+      printf 'ERROR: %s (%s) could not be followed to its end at %s\n' "$1" "$(_term "$2")" "$(_term "$4")" >&2
+      printf '       (too many links or steps), so it is not known to be safe; refusing the launch.\n' >&2 ;;
+  esac
+  exit 1
+}
 
 # _pointer_missing <variable> <as set> <resolved>: a pointer (VAULT_PATH and the
 # rest) whose directory is not there is not mounted, with a WARNING. One you are
@@ -6438,6 +6518,7 @@ run_container() {
         printf 'ERROR: primary workspace directory does not exist: %s\n' "$primary_arg" >&2
         exit 1
       fi
+      _host_way_add "the working directory" "${primary_arg/#\~/$HOME}" "$primary_path"
       workdir="/workspace/$(basename "$primary_path")"
     fi
   fi
@@ -6459,6 +6540,7 @@ run_container() {
         printf 'ERROR: EXTRA_MOUNTS path does not exist: %s\n' "$dir" >&2
         exit 1
       fi
+      _host_way_add "EXTRA_MOUNTS entry" "${dir/#\~/$HOME}" "$real_dir"
       base="$(basename "$dir")"
       if [[ -n "${repos_used[$base]:-}" ]]; then
         printf "ERROR: name '%s' (EXTRA_MOUNTS) collides with %s at /workspace/%s.\n" "$base" "${repos_used[$base]}" "$base" >&2
@@ -6598,6 +6680,7 @@ run_container() {
           exit 1
         fi
         local rreal; rreal="$(resolve_path "$rsource")"
+        _host_way_add "repo '$rname' bind source" "$rsource" "$rreal"
         if [[ ! -d "$rreal" ]]; then
           printf "ERROR: repo '%s' bind source does not exist on this host: %s\n" "$rname" "$rsource" >&2
           printf "       Re-point it: ./repo.sh rm %s && ./repo.sh add %s <host-path>\n" "$rname" "$rname" >&2
@@ -6662,6 +6745,7 @@ run_container() {
   if [[ -n "${VAULT_PATH:-}" ]]; then
     local vault_real
     vault_real="$(resolve_path "${VAULT_PATH/#\~/$HOME}")"
+    _host_way_add VAULT_PATH "${VAULT_PATH/#\~/$HOME}" "$vault_real"
     if [[ -d "$vault_real" ]]; then
       local vault_at
       if vault_at="$(pointer_already_mounted_as "$vault_real")"; then
@@ -6692,6 +6776,7 @@ run_container() {
     else
       local specs_real
       specs_real="$(resolve_path "${specs_src/#\~/$HOME}")"
+      _host_way_add SPECS_PATH "${specs_src/#\~/$HOME}" "$specs_real"
       if [[ -d "$specs_real" ]]; then
         local specs_at
         if [[ -n "$primary_path" && "$specs_real" == "$primary_path" ]]; then
@@ -6726,6 +6811,7 @@ run_container() {
     else
       local docs_real
       docs_real="$(resolve_path "${docs_src/#\~/$HOME}")"
+      _host_way_add DOCS_PATH "${docs_src/#\~/$HOME}" "$docs_real"
       if [[ -n "$primary_path" && "$docs_real" == "$primary_path" ]]; then
         # Docs repo IS the working dir: already mounted rw by the primary at
         # $workdir. Re-point DOCS_PATH there; any :ro/:rw suffix is moot.
@@ -6772,6 +6858,7 @@ run_container() {
     else
       local arch_real
       arch_real="$(resolve_path "${arch_src/#\~/$HOME}")"
+      _host_way_add ARCHITECTURE_REPO_PATH "${arch_src/#\~/$HOME}" "$arch_real"
       if [[ -n "$primary_path" && "$arch_real" == "$primary_path" ]]; then
         # It IS the working dir: already mounted rw at $workdir, so the :ro
         # default and any suffix are moot — authoring an ADR there just works.

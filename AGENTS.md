@@ -424,7 +424,16 @@ profile; their effective default is the host-exported value (unset → mount ski
 directory that doesn't exist warns; one you are not permitted to reach, behind a
 directory you cannot search, refuses the launch: the agent can make a directory it owns
 so, and what lay behind it went unmounted and unprotected — `sandbox.sh: _pointer_missing()`,
-which asks the kernel by `cd -P` and walks no path itself, GIT-93).
+which asks the kernel by `cd -P` and walks no path itself, GIT-93). A host path a launch
+mounts — one of these four, an `EXTRA_MOUNTS` entry, the working directory, a repo's bind
+source — whose way passes through a link in a writable mount, or steps out (`..`) of a
+directory there, or cannot be followed to its end (a link loop), refuses the launch: the agent
+repoints the link in one session, and the next launch would mount whatever it then leads
+to, any directory of the host. It is judged before
+any overlay is decided, so a launcher planted around the link earns it nothing; where the way
+ends is compared with what the launch resolved, for a link swapped meanwhile; and the
+refusal never offers where the link leads as the path to use (`sandbox.sh: _host_way_refuse()`,
+LNCH-26; T85).
 
 The four pointers form a personal / team / product / architecture tier:
 
