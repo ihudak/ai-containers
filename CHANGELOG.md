@@ -150,6 +150,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A git directory outside the mounts that two checkouts use with two
+  different configs is checked with both.** One with a `commondir` of its own,
+  named by one checkout's `.git` and by another worktree's `commondir`, was
+  checked with whichever config the launch met first, depending on the order
+  of the mounts, and a `core.hooksPath` the other checkout's git follows went
+  unnamed (bugs review GIT-94).
+
 - **In restricted mode, a `git clone` from GitHub is no longer blocked on first
   contact in an image without Copilot.** GitHub answers from several addresses,
   and the ranges it publishes for them were allowed only when `copilot=ON`;

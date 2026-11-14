@@ -1997,5 +1997,56 @@ EXTRA_MOUNTS="$O176/w" launch "$TMP/app"
   || fail "G176 outside bare repository (rc=$LAUNCH_RC; $(grep -E 'NOTE|WARNING|ERROR' "$ERR" | head -3 | tr '\n' ' '))"
 rm -rf "$M176" "$O176"
 
+# ── G212: what an outside worktree's commondir names is judged only as git takes it
+# A worktree's directory outside every writable mount, named by a .git file in
+# one, has its common directory judged with it (GIT-44) only where git would
+# take it: a directory outside that is no common directory (git refuses the
+# worktree) is not judged, and one inside the mount, which the launch protects
+# there, is not judged again as one outside, under its host path (GAP-2's
+# whole-file run, batch 1, item 3).
+B212="$TMP/b212"; O212="$TMP/o212"
+mkdir -p "$B212/co4" "$B212/hk4" "$B212/co3" "$O212/wt4" "$O212/nc" "$O212/wt3" \
+  && git config --file "$O212/nc/config" core.hooksPath "$B212/hk4" \
+  && printf 'ref: refs/heads/main\n' > "$O212/wt4/HEAD" && printf '%s\n' "$O212/nc" > "$O212/wt4/commondir" \
+  && printf '%s\n' "$B212/co4/.git" > "$O212/wt4/gitdir" && printf 'gitdir: %s\n' "$O212/wt4" > "$B212/co4/.git" \
+  && "${G[@]}" init -q "$B212/node_modules/c" && "${G[@]}" -C "$B212/node_modules/c" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$B212/node_modules/c" config core.hooksPath hk3 \
+  && printf 'ref: refs/heads/main\n' > "$O212/wt3/HEAD" && printf '%s\n' "$B212/node_modules/c/.git" > "$O212/wt3/commondir" \
+  && printf '%s\n' "$B212/co3/.git" > "$O212/wt3/gitdir" && printf 'gitdir: %s\n' "$O212/wt3" > "$B212/co3/.git" \
+  || { printf 'SCAFFOLD-FAILED: G212\n'; exit 1; }
+EXTRA_MOUNTS="$B212" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "NOTE: $O212/wt3 runs its git hooks from /workspace/b212/co3/hk3 (core.hooksPath)" "$ERR" \
+  && ! grep -qF "NOTE: $O212/nc runs its git hooks" "$ERR" \
+  && pass "G212 a directory an outside worktree's commondir names that is no common directory is not judged" \
+  || fail "G212 not a common directory (rc=$LAUNCH_RC; $(grep -F 'o212' "$ERR" | head -3 | tr '\n' ' '))"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "NOTE: /workspace/b212/node_modules/c/.git runs its git hooks from" "$ERR" \
+  && ! grep -qF "NOTE: $B212/node_modules/c/.git runs its git hooks" "$ERR" \
+  && pass "G212 a common directory in the mount it names is judged where it is protected, not again outside" \
+  || fail "G212 judged twice (rc=$LAUNCH_RC; $(grep -F 'node_modules/c/.git runs' "$ERR" | tr '\n' ' '))"
+rm -rf "$B212" "$O212"
+
+# ── G213: a git directory outside the mounts that git uses with two configs ──
+# X, outside every mount, has a store and a commondir naming Y: git takes Y's
+# config for the checkout whose .git names X, and X's own for the checkout of a
+# worktree W whose commondir names X. Each is judged, whichever mount is
+# scanned first: the launcher listed X once, with the config it met first, so
+# the other checkout's core.hooksPath went unnamed (bugs review GIT-94).
+O213="$TMP/o213"; B213a="$TMP/b213a"; B213b="$TMP/b213b"
+mkdir -p "$B213a/coa" "$B213a/hkx" "$B213a/hky" "$B213b/cob" "$O213/W" && "${G[@]}" init -q --bare "$O213/X" \
+  && "${G[@]}" init -q --bare "$O213/Y" && printf '%s\n' "$O213/Y" > "$O213/X/commondir" \
+  && git config --file "$O213/X/config" core.hooksPath "$B213a/hkx" && git config --file "$O213/Y/config" core.hooksPath "$B213a/hky" \
+  && printf 'ref: refs/heads/main\n' > "$O213/W/HEAD" && printf '%s\n' "$O213/X" > "$O213/W/commondir" \
+  && printf '%s\n' "$B213b/cob/.git" > "$O213/W/gitdir" \
+  && printf 'gitdir: %s\n' "$O213/X" > "$B213a/coa/.git" && printf 'gitdir: %s\n' "$O213/W" > "$B213b/cob/.git" \
+  || { printf 'SCAFFOLD-FAILED: G213\n'; exit 1; }
+for o213 in "$B213a $B213b" "$B213b $B213a"; do
+  EXTRA_MOUNTS="$o213" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qF "runs its git hooks from /workspace/b213a/hkx (core.hooksPath)" "$ERR" \
+    && grep -qF "runs its git hooks from /workspace/b213a/hky (core.hooksPath)" "$ERR" \
+    && pass "G213 a git directory git uses with two configs is judged with each (mounts: ${o213//$TMP\//})" \
+    || fail "G213 two configs, mounts ${o213//$TMP\//} (rc=$LAUNCH_RC; $(grep -F 'runs its git hooks' "$ERR" | tr '\n' ' '))"
+done
+rm -rf "$O213" "$B213a" "$B213b"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
