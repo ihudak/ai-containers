@@ -254,7 +254,15 @@ git_helper_run() {   # $1 = volume  $2... = repo-git-reset.sh arguments
   # so it takes its base volume's, named by the repo its own label records.
   if [[ -z "$url" && "$(docker_volume_label "$vol" 'ai-containers.workcopy')" == 1 ]]; then
     local _wc_repo; _wc_repo="$(docker_volume_label "$vol" 'ai-containers.repo')"
-    [[ -z "$_wc_repo" ]] || url="$(docker_volume_label "$(repo_volume_name "$_wc_repo")" 'ai-containers.source')"
+    # Only that base volume's own label may vouch for it: under a nested
+    # REPO_VOLUME_PREFIX two repos' base volumes share a name (REPO-11), and
+    # another repo's URL must never be fetched into this one's volume.
+    if [[ -n "$_wc_repo" ]]; then
+      local _wc_base; _wc_base="$(repo_volume_name "$_wc_repo")"
+      if [[ "$(docker_volume_label "$_wc_base" 'ai-containers.repo')" == "$_wc_repo" ]]; then
+        url="$(docker_volume_label "$_wc_base" 'ai-containers.source')"
+      fi
+    fi
   fi
   if [[ -z "$url" ]]; then
     printf "ERROR: volume %s carries no recorded source URL (no ai-containers.source label), so its\n" "$vol" >&2

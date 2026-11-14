@@ -240,6 +240,11 @@ _wt_dir="/home/u/my proj"
 _wt_sum="$(printf '%s' "$_wt_dir" | cksum | awk '{print substr($1,1,8)}')"
 check "workcopy_tag gives the tag sandbox.sh names working copies with" \
   "my_proj_${_wt_sum}" "$(workcopy_tag "$_wt_dir")"
+# The edge: production takes the digits of cksum's WHOLE output (crc and size)
+# and keeps 8, so a sum under 8 digits keeps them all. `cksum` of "/x5356" prints
+# "156625 6"; the expected tag is spelled out, not derived.
+check "  … and keeps every digit when cksum prints fewer than 8" \
+  "x5356_1566256" "$(workcopy_tag /x5356)"
 check "  … so the volume name carries it" \
   "ai-containers-repo-r--wc-my_proj_${_wt_sum}" "$(repo_workcopy_volume_name r "$(workcopy_tag "$_wt_dir")")"
 

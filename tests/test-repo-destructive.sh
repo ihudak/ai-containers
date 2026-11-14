@@ -1798,6 +1798,23 @@ check "git_helper_run refuses a working copy whose base volume records no URL (r
   "1 1" "$(tr '\n' ' ' < "$TMP/wc.rc" | sed 's/ $//')"
 check "  … and runs no container" "" "$(runs)"
 
+# A working copy whose same-named base volume belongs to ANOTHER repo (nested
+# REPO_VOLUME_PREFIX collision, REPO-11) must not borrow that repo's URL.
+: > "$VOLS/ai-containers-repo-clash"
+printf 'ai-containers.repo=someone-else\nai-containers.source=git@x:other.git\n' > "$VOLS/ai-containers-repo-clash.labels"
+: > "$VOLS/ai-containers-repo-clash--wc-wcA"
+printf 'ai-containers.repo=clash\nai-containers.workcopy=1\n' > "$VOLS/ai-containers-repo-clash--wc-wcA.labels"
+: > "$DOCKER_LOG"
+(
+  export PATH="$FAKE_BIN:$PATH"
+  # shellcheck disable=SC1090
+  source "$REPO_SH" </dev/null
+  set +e
+  inspect_git ai-containers-repo-clash--wc-wcA >/dev/null 2>&1; echo "$?" > "$TMP/wc.rc"
+)
+check "git_helper_run refuses a working copy whose base volume belongs to another repo (rc 1)" "1" "$(cat "$TMP/wc.rc")"
+check "  … and runs no container" "" "$(runs)"
+
 # ── Hermeticity ───────────────────────────────────────────────────────────────
 export HOME="$REAL_HOME"
 if [[ -n "$REAL_REGISTRY_BEFORE" ]]; then
