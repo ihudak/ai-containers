@@ -110,10 +110,10 @@ prj_resolve() {
   if [[ -z "$found" && "$arg" != */* ]]; then
     for r in "${roots[@]+"${roots[@]}"}"; do
       base="${r%/}"; base="${base##*/}"
-      if [[ "$base" == "$arg" ]]; then n=$((n + 1)); found="$r"; cands+="  $r"$'\n'; fi
+      if [[ "$base" == "$arg" ]]; then n=$((n + 1)); found="$r"; cands+="  $(_ac_term "$r")"$'\n'; fi
     done
     if (( n > 1 )); then
-      printf 'ERROR: "%s" is the name of %d registered projects:\n%s' "$arg" "$n" "$cands" >&2
+      printf 'ERROR: "%s" is the name of %d registered projects:\n%s' "$(_ac_term "$arg")" "$n" "$cands" >&2
       printf 'Give the path of the one you mean.\n' >&2
       exit 1
     fi
@@ -124,10 +124,10 @@ prj_resolve() {
   elif [[ -n "$ok" ]]; then
     PRJ_ROOT="${phys:-$abs}"
   else
-    printf 'ERROR: "%s" is not a registered project (see %s).\n' "$arg" "$prj_conf" >&2
+    printf 'ERROR: "%s" is not a registered project (see %s).\n' "$(_ac_term "$arg")" "$prj_conf" >&2
     if (( ${#roots[@]} )); then
       printf 'Registered:\n' >&2
-      for r in "${roots[@]}"; do printf '  %s\n' "$r" >&2; done
+      for r in "${roots[@]}"; do printf '  %s\n' "$(_ac_term "$r")" >&2; done
     fi
     exit 1
   fi
@@ -293,28 +293,47 @@ _prj_only_dot() (
 # those that bind-mount its .ai-containers or anything under it (a launch from
 # runme.sh mounts its output directories there, and its launcher read-only), in
 # either spelling of the path, and those whose image is its IMAGE_NAME. rc 0 when
-# it named any. With no settings to read, by mounts only: the default image name
-# is no evidence that a container is this project's.
+# it named any, 1 when none runs, 2 when docker could not list them: that is
+# never read as "none". With no settings to read, by mounts only: the default
+# image name is no evidence that a container is this project's.
 prj_running() {
-  local dot phys name src
+  local dot phys name src names
   local -A seen=()
   dot="$(_prj_strip "$1")/.ai-containers"
   phys="$(_prj_phys "$dot")"
+  names="$(docker ps --format '{{.Names}}' 2>/dev/null)" || return 2
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
+    # One that stopped since the listing has no mounts to read, and is not running.
     while IFS= read -r src; do
       if [[ -n "$src" ]] && { _prj_within "$src" "$dot" || _prj_within "$src" "$phys"; }; then
         seen["$name"]=1; break
       fi
     done < <(docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$name" 2>/dev/null || true)
-  done < <(docker ps --format '{{.Names}}' 2>/dev/null || true)
+  done <<< "$names"
   if _prj_has_env "$dot"; then
+    names="$(docker ps --filter "ancestor=$(prj_env "$dot" IMAGE_NAME ai-sandbox)" --format '{{.Names}}' 2>/dev/null)" || return 2
     while IFS= read -r name; do
       if [[ -n "$name" ]]; then seen["$name"]=1; fi
-    done < <(docker ps --filter "ancestor=$(prj_env "$dot" IMAGE_NAME ai-sandbox)" --format '{{.Names}}' 2>/dev/null || true)
+    done <<< "$names"
   fi
   (( ${#seen[@]} )) || return 1
   printf '%s\n' "${!seen[@]}" | LC_ALL=C sort
+}
+
+# _prj_refuse_running <when>: exit 1, naming them, while a container of the
+# project being removed runs, or when docker cannot tell.
+_prj_refuse_running() {
+  local running rc=0
+  running="$(prj_running "$PRJ_ROOT")" || rc=$?
+  case "$rc" in
+    1) return 0 ;;
+    0) printf 'ERROR: a container of this project is running%s: %s. Stop it first; nothing was removed.\n' \
+         "$1" "$(_ac_term "$(printf '%s' "$running" | tr '\n' ' ' | sed 's/ $//')")" >&2 ;;
+    *) printf 'ERROR: docker could not list the running containers, so whether one of this project runs\n' >&2
+       printf '       cannot be told; refusing. Nothing was removed.\n' >&2 ;;
+  esac
+  exit 1
 }
 
 # prj_workcopies <root>: the :rwcopy working copies launched from that project —
@@ -365,25 +384,45 @@ _prj_within_any() {
   return 1
 }
 
+# prj_seed_ready: resolve the seed helper image (ensure_seed_image(), which may
+# build it) once, in this shell, so the per-copy inspections reuse it and its
+# seed_selinux_opt. ensure_seed_image exits when the image cannot be had; run in
+# a command substitution, that is _prj_seed_state=failed — the copies are then
+# not checked — never the end of the command.
+_prj_seed_state=""
+prj_seed_ready() {
+  local opt
+  [[ -z "$_prj_seed_state" ]] || return 0
+  if opt="$(ensure_seed_image; printf '%s' "$seed_selinux_opt")"; then
+    seed_selinux_opt="$opt"; _prj_seed_state=ok
+  else
+    _prj_seed_state=failed
+  fi
+  return 0
+}
+
 # prj_copy_risk <vol>: one line saying what removing that working copy would
 # lose; rc 1 when it may lose something or could not be checked, 0 when nothing
 # is at risk. Checked by repo-git-reset.sh's read-only inspect pass, as
 # `repo.sh reset` does, against the URL its base volume records — never by git on
-# the copy's own .git. Not being able to check is never read as safe.
+# the copy's own .git. Not being able to check is never read as safe, and what
+# an inspection cut short had already reported is still said.
 prj_copy_risk() {
   local vol="$1" repo base type recs line kind rest br unpushed tname tkept ton
-  local ended="" stale="" worktree="" i out=""
-  local -a items=()
+  local ended="" stale="" wt_got="" i out="" known=""
+  local -a items=() held=()
   repo="$(docker_volume_label "$vol" 'ai-containers.repo')"
   if [[ -z "$repo" ]]; then
     printf 'NOT CHECKED: it carries no ai-containers.repo label\n'; return 1
   fi
   base="$(repo_volume_name "$repo")"
   if ! docker_volume_present "$base"; then
-    printf 'NOT CHECKED: its base volume %s is gone, and with it the remote to compare with\n' "$base"; return 1
+    printf 'NOT CHECKED: its base volume %s is gone, and with it the remote to compare with\n' "$(_ac_term "$base")"; return 1
   fi
+  # Under a nested REPO_VOLUME_PREFIX two repos' base volumes share a name
+  # (REPO-11): another repo's URL is never the one to compare with.
   if [[ "$(docker_volume_label "$base" 'ai-containers.repo')" != "$repo" ]]; then
-    printf 'NOT CHECKED: %s is not labelled as repo %s'"'"'s base volume\n' "$base" "$repo"; return 1
+    printf 'NOT CHECKED: %s is not labelled as repo %s'"'"'s base volume\n' "$(_ac_term "$base")" "$(_ac_term "$repo")"; return 1
   fi
   type="$(docker_volume_label "$base" 'ai-containers.type')"
   if [[ "$type" == path ]]; then
@@ -392,9 +431,13 @@ prj_copy_risk() {
   if [[ "$type" != git ]]; then
     printf 'NOT CHECKED: its base volume records no repo type\n'; return 1
   fi
-  # In a subshell: ensure_seed_image exits when the seed image cannot be had,
-  # which here means "not checked", not the end of the command.
-  recs="$(ensure_seed_image; inspect_git "$vol")" || true
+  prj_seed_ready
+  if [[ "$_prj_seed_state" != ok ]]; then
+    printf 'NOT CHECKED: the seed helper image (%s) could not be had\n' "$(_ac_term "$seed_image")"; return 1
+  fi
+  recs="$(inspect_git "$vol")" || true
+  # items: everything at risk; held: what is at risk whatever the rest says, kept
+  # for a line that ends up "not checked".
   while IFS= read -r line; do
     kind="${line%%|*}"; rest="${line#*|}"
     case "$kind" in
@@ -402,8 +445,10 @@ prj_copy_risk() {
       BRANCH)
         br="${rest%%|*}"; rest="${rest#*|}"; unpushed="${rest%%|*}"
         if [[ ! "$unpushed" =~ ^[0-9]+$ ]]; then items+=("$br: unpushed count unknown")
-        elif (( 10#$unpushed > 0 )); then items+=("$br: $unpushed unpushed commit(s)"); fi ;;
-      STASH) items+=("a stash (${rest} entr(y/ies))") ;;
+        elif (( 10#$unpushed > 0 )); then
+          items+=("$br: $unpushed unpushed commit(s)"); held+=("$br: $unpushed unpushed commit(s)")
+        fi ;;
+      STASH) items+=("a stash (${rest} entr(y/ies))"); held+=("a stash (${rest} entr(y/ies))") ;;
       TAG)
         # At risk as `repo.sh reset` counts it (collect_inspections()): unless the
         # remote has the tag (yes) or another on its commit (same), or keeps the
@@ -412,23 +457,28 @@ prj_copy_risk() {
         if [[ "$tkept" != yes && "$tkept" != same && "$ton" != yes ]]; then
           items+=("tag $tname: its commit may be on no remote branch or tag")
         fi ;;
-      NESTED) items+=("$rest: a git repository inside the checkout") ;;
-      NESTED-MORE) items+=("$rest more git repositories inside the checkout") ;;
-      WORKTREE) worktree="$rest" ;;
+      NESTED) items+=("$rest: a git repository inside the checkout"); held+=("$rest: a git repository inside the checkout") ;;
+      NESTED-MORE) items+=("$rest more git repositories inside the checkout"); held+=("$rest more git repositories inside the checkout") ;;
+      WORKTREE)
+        wt_got=1
+        case "$rest" in
+          clean) ;;
+          changed) items+=("uncommitted work in the checkout"); held+=("uncommitted work in the checkout") ;;
+          *) items+=("uncommitted work unknown (the checkout could not be compared)")
+             held+=("uncommitted work unknown (the checkout could not be compared)") ;;
+        esac ;;
       END) ended=1 ;;
     esac
   done <<< "$recs"
+  for i in ${held[@]+"${held[@]}"}; do known+="${known:+, }$i"; done
+  [[ -z "$known" ]] || known=" — and it holds: $(_ac_term "$known")"
   if [[ -n "$stale" ]]; then
-    printf 'NOT CHECKED: the remote could not be reached (%s)\n' "$(_ac_term "$stale")"; return 1
+    printf 'NOT CHECKED: the remote could not be reached (%s)%s\n' "$(_ac_term "$stale")" "$known"; return 1
   fi
   if [[ -z "$ended" ]]; then
-    printf 'NOT CHECKED: the inspection was cut short or did not run\n'; return 1
+    printf 'NOT CHECKED: the inspection was cut short or did not run%s\n' "$known"; return 1
   fi
-  case "$worktree" in
-    clean) ;;
-    changed) items+=("uncommitted work in the checkout") ;;
-    *) items+=("uncommitted work unknown (the checkout could not be compared)") ;;
-  esac
+  [[ -n "$wt_got" ]] || items+=("uncommitted work unknown (the checkout could not be compared)")
   if (( ${#items[@]} )); then
     for i in "${items[@]}"; do out+="${out:+, }$i"; done
     printf 'AT RISK: %s\n' "$(_ac_term "$out")"; return 1
@@ -467,15 +517,16 @@ _prj_image_why() {
 # <id>: IMAGE_NAME is portable, and may name a base image or another project's.
 # Says what it did or why not; never fails the caller.
 prj_image_remove() {
-  local img="$1" id="$2" why
+  local img="$1" id="$2" why err
   if ! why="$(_prj_image_why "$img" "$id")"; then
     printf 'Image %s not removed: %s.\n' "$(_ac_term "$img")" "$why"
     return 0
   fi
-  if docker rmi "$img" >/dev/null 2>&1; then
+  if err="$(docker rmi "$img" 2>&1 >/dev/null)"; then
     printf 'Removed the image %s.\n' "$(_ac_term "$img")"
   else
-    printf 'NOTE: could not remove the image %s (a container still references it); ./project.sh gc removes it later.\n' "$(_ac_term "$img")" >&2
+    printf 'NOTE: could not remove the image %s (docker said: %s); ./project.sh gc removes it later.\n' \
+      "$(_ac_term "$img")" "$(_ac_term "$err")" >&2
   fi
   return 0
 }
@@ -505,18 +556,21 @@ _prj_shared() {
 # A registered project whose .ai-containers is gone uses nothing; one whose
 # settings cannot be read at all is said to use nothing either way.
 prj_unused_shared() {
-  local root dot r what name
+  local root rootp dot r what name
   local -A used=()
-  root="$(_prj_strip "$1")"; dot="$root/.ai-containers"
+  root="$(_prj_strip "$1")"; dot="$root/.ai-containers"; rootp="$(_prj_phys "$root")"
   _prj_has_env "$dot" || return 0
   while IFS= read -r r; do
-    [[ "$r" != "$1" ]] || continue
-    [[ -d "$(_prj_strip "$r")/.ai-containers" ]] || continue
-    while IFS= read -r what; do used["$what"]=1; done < <(_prj_shared "$(_prj_strip "$r")/.ai-containers")
+    r="$(_prj_strip "$r")"
+    # This project under another spelling is not another project.
+    [[ "$(_prj_phys "$r")" != "$rootp" ]] || continue
+    [[ -d "$r/.ai-containers" ]] || continue
+    while IFS= read -r what; do used["$what"]=1; done < <(_prj_shared "$r/.ai-containers")
   done < <(prj_roots)
   while IFS= read -r what; do
     [[ -z "${used["$what"]+x}" ]] || continue
-    name="${what#* }"
+    # The names come from the project's files, which the agent can write.
+    name="$(_ac_term "${what#* }")"
     case "$what" in
       group\ *) printf 'NOTE: group %s is used by no other registered project; remove it with ./group.sh rm %s\n' "$name" "$name" ;;
       repo\ *)  printf 'NOTE: repo %s is used by no other registered project; remove it with ./repo.sh rm %s\n' "$name" "$name" ;;
@@ -536,24 +590,42 @@ cmd_rm() {
   for a in "$@"; do
     case "$a" in
       --yes|-y) assume_yes=1 ;;
-      -*) printf 'ERROR: unknown flag %s\n' "$a" >&2; exit 1 ;;
-      *) if [[ -n "$arg" ]]; then printf 'ERROR: unexpected argument %s\n' "$a" >&2; exit 1; fi; arg="$a" ;;
+      -*) printf 'ERROR: unknown flag %s\n' "$(_ac_term "$a")" >&2; exit 1 ;;
+      *) if [[ -n "$arg" ]]; then printf 'ERROR: unexpected argument %s\n' "$(_ac_term "$a")" >&2; exit 1; fi; arg="$a" ;;
     esac
   done
   [[ -n "$arg" ]] || { printf 'ERROR: usage: ./project.sh rm <project> [--yes]\n' >&2; exit 1; }
   prj_resolve "$arg"
+  # Printed through _ac_term: projects.conf is a file anyone may have edited.
+  local t_root t_dot
+  t_root="$(_ac_term "$PRJ_ROOT")"; t_dot="$(_ac_term "$PRJ_DOT")"
 
   # projects.conf is edited by hand too: a line that is not an absolute path, or
   # is the root directory, names nothing rm may take apart.
   if [[ "$PRJ_ROOT" != /* || "$(_prj_strip "$PRJ_ROOT")" == / || "$(_prj_phys "$PRJ_ROOT")" == / ]]; then
-    printf 'ERROR: the registered root "%s" is not an absolute path to a project directory; refusing.\n' "$PRJ_ROOT" >&2
+    printf 'ERROR: the registered root "%s" is not an absolute path to a project directory; refusing.\n' "$t_root" >&2
     printf '       Fix or remove its line in %s.\n' "$prj_conf" >&2
+    exit 1
+  fi
+  # Nor one whose .ai-containers is ~/.ai-containers (a project registered at
+  # $HOME, or at a link to it) or lies in it or around it: that directory holds
+  # every group, the project-id key and every registry. Nor one whose
+  # .ai-containers holds this engine.
+  local dot_p acr_p eng_p
+  dot_p="$(_prj_phys "$PRJ_DOT")"; acr_p="$(_prj_phys "$ai_containers_root")"; eng_p="$(_prj_phys "$_here")"
+  if _prj_within "$dot_p" "$acr_p" || _prj_within "$acr_p" "$dot_p"; then
+    printf 'ERROR: %s is, holds or lies in %s, where every group, the project-id key\n' "$t_dot" "$(_ac_term "$ai_containers_root")" >&2
+    printf '       and the registries live; refusing. Remove its line from %s by hand.\n' "$prj_conf" >&2
+    exit 1
+  fi
+  if _prj_within "$eng_p" "$dot_p"; then
+    printf 'ERROR: %s holds this engine (%s); refusing to remove it.\n' "$t_dot" "$(_ac_term "$_here")" >&2
     exit 1
   fi
   # A link would send the removal into wherever it points, which the agent may
   # have chosen (as sync-to-projects.sh refuses one).
   if [[ -L "$PRJ_DOT" ]] || { [[ -e "$PRJ_DOT" ]] && [[ ! -d "$PRJ_DOT" ]]; }; then
-    printf 'ERROR: %s is a link or not a directory; refusing to remove anything through it.\n' "$PRJ_DOT" >&2
+    printf 'ERROR: %s is a link or not a directory; refusing to remove anything through it.\n' "$t_dot" >&2
     exit 1
   fi
   if ! docker volume ls --quiet >/dev/null 2>&1; then
@@ -561,11 +633,7 @@ cmd_rm() {
     printf '       copies can be checked; refusing. Start docker and run this again.\n' >&2
     exit 1
   fi
-  local running
-  if running="$(prj_running "$PRJ_ROOT")"; then
-    printf 'ERROR: a container of this project is running: %s. Stop it first.\n' "$(printf '%s' "$running" | tr '\n' ' ' | sed 's/ $//')" >&2
-    exit 1
-  fi
+  _prj_refuse_running ""
 
   # What is there, and what removing it would lose — gathered before anything goes.
   # img stays empty when nothing says which image the project used.
@@ -582,24 +650,28 @@ cmd_rm() {
   fi
   docker_volume_labels_load
   local -a copies=() risks=()
-  local wc risk at_risk=0
+  local wc risk at_risk=0 i
   while IFS= read -r wc; do
-    [[ -n "$wc" ]] || continue
-    if risk="$(prj_copy_risk "$wc")"; then :; else at_risk=$((at_risk + 1)); fi
-    copies+=("$wc"); risks+=("$risk")
+    if [[ -n "$wc" ]]; then copies+=("$wc"); fi
   done < <(prj_workcopies "$PRJ_ROOT")
+  # Once for every copy; a seed image that cannot be had makes them "not checked".
+  if (( ${#copies[@]} )); then prj_seed_ready; fi
+  for i in "${!copies[@]}"; do
+    if risk="$(prj_copy_risk "${copies[i]}")"; then :; else at_risk=$((at_risk + 1)); fi
+    risks[i]="$risk"
+  done
   local notes; notes="$(prj_unused_shared "$PRJ_ROOT")"
   # The root goes only if .ai-containers is all it holds now (a setup kept in a
   # directory of its own); a repository it was added to stays.
-  local root rm_root=0
+  local root rm_root=0 repo
   root="$(_prj_strip "$PRJ_ROOT")"
   if [[ -d "$root" && ! -L "$root" ]] && _prj_only_dot "$root"; then rm_root=1; fi
 
-  printf 'About to remove project %s:\n' "$PRJ_ROOT"
-  if [[ -d "$PRJ_DOT" ]]; then printf '  directory   %s\n' "$PRJ_DOT"
-  else printf '  directory   %s (already gone)\n' "$PRJ_DOT"; fi
-  if (( rm_root )); then printf '  directory   %s (it holds nothing else)\n' "$root"; fi
-  printf '  registry    %s (projects.conf)\n' "$PRJ_ROOT"
+  printf 'About to remove project %s:\n' "$t_root"
+  if [[ -d "$PRJ_DOT" ]]; then printf '  directory   %s\n' "$t_dot"
+  else printf '  directory   %s (already gone)\n' "$t_dot"; fi
+  if (( rm_root )); then printf '  directory   %s (it holds nothing else)\n' "$(_ac_term "$root")"; fi
+  printf '  registry    %s (projects.conf)\n' "$t_root"
   if [[ -n "$ip_path" ]]; then
     printf '  registry    %s (image-projects.conf, once no image carries its id)\n' "$(_ac_term "$ip_path")"
   fi
@@ -610,10 +682,9 @@ cmd_rm() {
   else
     printf '  image       %s — kept: %s\n' "$(_ac_term "$img")" "$why"
   fi
-  local i
   for i in "${!copies[@]}"; do
-    printf '  working copy %s (%s) — %s\n' "${copies[i]}" \
-      "$(_ac_term "$(docker_volume_label "${copies[i]}" 'ai-containers.repo')")" "${risks[i]}"
+    repo="$(docker_volume_label "${copies[i]}" 'ai-containers.repo')"
+    printf '  working copy %s (%s) — %s\n' "$(_ac_term "${copies[i]}")" "$(_ac_term "${repo:-?}")" "${risks[i]}"
   done
   if (( at_risk )); then printf '%d working cop(y/ies) at risk or not checked.\n' "$at_risk"; fi
 
@@ -621,33 +692,36 @@ cmd_rm() {
     printf 'Nothing was removed.\n' >&2
     exit 1
   fi
+  # A launch during the question (runme.sh started in another terminal) would
+  # find its setup gone under it.
+  _prj_refuse_running " (it started after the listing)"
 
   # 1. The working copies. A failure stops everything: the line stays, so a
   #    re-run finds the project and the copies it has left.
   for wc in ${copies[@]+"${copies[@]}"}; do
     if ! docker volume rm "$wc" >/dev/null; then
-      printf 'ERROR: could not remove the working copy %s (in use?). Nothing else was removed;\n' "$wc" >&2
-      printf '       run ./project.sh rm %s again once it can be.\n' "$PRJ_ROOT" >&2
+      printf 'ERROR: could not remove the working copy %s (in use?). Nothing else was removed;\n' "$(_ac_term "$wc")" >&2
+      printf '       run ./project.sh rm %s again once it can be.\n' "$t_root" >&2
       exit 1
     fi
-    printf 'Removed the working copy %s.\n' "$wc"
+    printf 'Removed the working copy %s.\n' "$(_ac_term "$wc")"
   done
-  # 2. The image, if it is this project's.
-  if [[ -n "$img" ]]; then prj_image_remove "$img" "$id"; fi
+  # 2. The image, only if the listing said it goes (prj_image_remove checks again).
+  if (( img_ok )); then prj_image_remove "$img" "$id"; fi
   # 3. The directory. rm -rf removes a link it meets inside, never what it points
   #    to; one that has replaced the directory itself since it was checked stops it.
   if [[ -L "$PRJ_DOT" ]]; then
-    printf 'ERROR: %s has become a link since it was checked; it is left alone, and so are its\n' "$PRJ_DOT" >&2
+    printf 'ERROR: %s has become a link since it was checked; it is left alone, and so are its\n' "$t_dot" >&2
     printf '       registry lines.\n' >&2
     exit 1
   fi
   if [[ -e "$PRJ_DOT" ]]; then
     if ! rm -rf -- "$PRJ_DOT" || [[ -e "$PRJ_DOT" || -L "$PRJ_DOT" ]]; then
-      printf 'ERROR: could not remove %s (see above). Its registry lines are kept;\n' "$PRJ_DOT" >&2
-      printf '       fix what stopped it and run ./project.sh rm %s again.\n' "$PRJ_ROOT" >&2
+      printf 'ERROR: could not remove %s (see above). Its registry lines are kept;\n' "$t_dot" >&2
+      printf '       fix what stopped it and run ./project.sh rm %s again.\n' "$t_root" >&2
       exit 1
     fi
-    printf 'Removed %s.\n' "$PRJ_DOT"
+    printf 'Removed %s.\n' "$t_dot"
   fi
   # 4. Its image-projects.conf line, once no image carries the id: another
   #    project's build, or gc, still needs the line to name an image that does.
@@ -660,7 +734,7 @@ cmd_rm() {
     else
       prj_image_projects_drop "$id" || {
         printf 'ERROR: could not drop its line from %s. The projects.conf line is kept;\n' "$image_projects_file" >&2
-        printf '       run ./project.sh rm %s again.\n' "$PRJ_ROOT" >&2
+        printf '       run ./project.sh rm %s again.\n' "$t_root" >&2
         exit 1
       }
       printf 'Removed %s from image-projects.conf.\n' "$(_ac_term "$ip_path")"
@@ -668,13 +742,13 @@ cmd_rm() {
   fi
   # 5. Its projects.conf line.
   prj_conf_remove "$PRJ_ROOT" || exit 1
-  printf 'Removed %s from projects.conf.\n' "$PRJ_ROOT"
+  printf 'Removed %s from projects.conf.\n' "$t_root"
   # 6. The root, if it was listed: rmdir removes it only while it is empty.
   if (( rm_root )) && [[ -d "$root" && ! -L "$root" ]] && rmdir -- "$root" 2>/dev/null; then
-    printf 'Removed the empty directory %s.\n' "$root"
+    printf 'Removed the empty directory %s.\n' "$(_ac_term "$root")"
   fi
   if [[ -n "$notes" ]]; then printf '%s\n' "$notes"; fi
-  printf 'OK: removed project %s.\n' "$PRJ_ROOT"
+  printf 'OK: removed project %s.\n' "$t_root"
 }
 
 cmd_mv() { printf 'ERROR: mv is not yet implemented.\n' >&2; exit 1; }

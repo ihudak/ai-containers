@@ -25,10 +25,15 @@ export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LOG"
 # lines) and, for a working copy, an `inspect` file holding the records the git
 # helper's `inspect` prints for it (none: the helper printed nothing); images
 # are files under $IMGS holding their labels; running containers are the lines
-# of $FAKE_RUNNING, `name|image|mount source|…`. FAKE_FAIL_VOLUME_RM (a glob)
-# makes `volume rm` of a matching volume fail, FAKE_FAIL_RMI every `rmi`, and
-# FAKE_DOCKER_DOWN every call. The seed image is always there; `info` says
-# nothing, so no SELinux option is chosen.
+# of $FAKE_RUNNING, `name|image|mount source|…`, and once more than
+# $FAKE_RUNNING_AFTER `ps` calls (not counting a volume= filter) have been made,
+# those of $FAKE_RUNNING.later. An image file with a `.next` beside it is
+# replaced by that after its first `image inspect`. FAKE_FAIL_VOLUME_RM (a glob)
+# makes `volume rm` of a matching volume fail, FAKE_FAIL_RMI every `rmi`,
+# FAKE_PS_FAIL every `ps` (=ancestor: only the one with an ancestor= filter),
+# and FAKE_DOCKER_DOWN every call. The seed image is
+# there unless FAKE_NO_SEED, which also fails `build`; `info` says nothing, so no
+# SELinux option is chosen.
 export VOLS="$TMP/vols" IMGS="$TMP/imgs" FAKE_RUNNING="$TMP/running"
 mkdir -p "$VOLS" "$IMGS"; : > "$FAKE_RUNNING"
 cat > "$TMP/bin/docker" <<'FAKE'
@@ -103,22 +108,30 @@ case "$cmd${sub:+ $sub}" in
     for f in ${filt[@]+"${filt[@]}"}; do
       case "$f" in ancestor=*) anc="${f#ancestor=}" ;; volume=*) exit 0 ;; esac
     done
+    if [[ -n "${FAKE_PS_FAIL:-}" ]] && [[ "$FAKE_PS_FAIL" != ancestor || -n "$anc" ]]; then
+      echo "Error: cannot list containers" >&2; exit 1
+    fi
+    n=0; [[ -f "$FAKE_RUNNING.count" ]] && n="$(cat "$FAKE_RUNNING.count")"
+    n=$((n + 1)); printf '%s\n' "$n" > "$FAKE_RUNNING.count"
+    src="$FAKE_RUNNING"
+    if [[ -n "${FAKE_RUNNING_AFTER:-}" ]] && (( n > FAKE_RUNNING_AFTER )); then src="$FAKE_RUNNING.later"; fi
     while IFS='|' read -r n img _; do
       [[ -n "$n" ]] || continue
       if [[ -z "$anc" || "$img" == "$anc" ]]; then printf '%s\n' "$n"; fi
-    done < "$FAKE_RUNNING" ;;
+    done < "$src" ;;
   inspect)
-    while IFS= read -r l; do
+    cat "$FAKE_RUNNING" "$FAKE_RUNNING.later" 2>/dev/null | while IFS= read -r l; do
       [[ "${l%%|*}" == "${pos[0]}" ]] || continue
       rest="${l#*|}"; rest="${rest#*|}"
       IFS='|' read -r -a srcs <<< "$rest"
       for s in ${srcs[@]+"${srcs[@]}"}; do printf '%s\n' "$s"; done
-    done < "$FAKE_RUNNING" ;;
+    done ;;
   "image inspect")
     i="${pos[0]}"
-    [[ "$i" == ai-containers-seed ]] && exit 0
+    if [[ "$i" == ai-containers-seed ]]; then [[ -z "${FAKE_NO_SEED:-}" ]]; exit; fi
     f="$IMGS/$i"
     [[ -f "$f" ]] || { echo "Error: No such image: $i" >&2; exit 1; }
+    if [[ -f "$f.next" ]]; then trap 'mv "$f.next" "$f"' EXIT; fi
     case "$fmt" in
       *'json .Config.Labels'*)
         j=""
@@ -137,6 +150,7 @@ case "$cmd${sub:+ $sub}" in
     for f in ${filt[@]+"${filt[@]}"}; do
       [[ "$f" == label=* ]] || continue
       for g in "$IMGS"/*; do
+        [[ "$g" != *.next ]] || continue
         if [[ -f "$g" ]] && grep -qxF -- "${f#label=}" "$g"; then printf '%s\n' "${g##*/}"; fi
       done
     done ;;
@@ -146,6 +160,7 @@ case "$cmd${sub:+ $sub}" in
       [[ -f "$IMGS/$i" ]] || { echo "Error: No such image: $i" >&2; exit 1; }
       rm -f "$IMGS/$i"
     done ;;
+  build) [[ -z "${FAKE_NO_SEED:-}" ]] || { echo "Error: cannot pull alpine" >&2; exit 1; } ;;
 esac
 exit 0
 FAKE
@@ -311,8 +326,8 @@ W="$TMP/rmw"
 world() {   # nothing registered, built, recorded, running or logged
   [[ -d "$W" ]] && chmod -R u+rwx "$W" 2>/dev/null
   rm -rf "$VOLS" "$IMGS" "$W"; mkdir -p "$VOLS" "$IMGS" "$W"
-  : > "$FAKE_RUNNING"; : > "$DOCKER_LOG"; rm -f "$ENG/projects.conf" "$IP"
-  unset FAKE_FAIL_VOLUME_RM FAKE_FAIL_RMI FAKE_DOCKER_DOWN
+  : > "$FAKE_RUNNING"; : > "$DOCKER_LOG"; rm -f "$ENG/projects.conf" "$IP" "$FAKE_RUNNING.count" "$FAKE_RUNNING.later"
+  unset FAKE_FAIL_VOLUME_RM FAKE_FAIL_RMI FAKE_DOCKER_DOWN FAKE_PS_FAIL FAKE_RUNNING_AFTER FAKE_NO_SEED
 }
 # mkproj <root> [<sandbox.env text>] [<sandbox.local.env text>]: a registered project
 mkproj() {
@@ -339,6 +354,7 @@ mkwc() {
 CLEAN=$'PRIMARY|main\nBRANCH|main|0|current\nWORKTREE|clean\nEND|inspect\n'
 rmrun() { ( cd "$TMP" && bash "$P" rm "$@" ) > "$TMP/out" 2>&1 < /dev/null; }
 hasx()  { grep -qxF -- "$1" "$TMP/out"; }
+has_line() { grep -qF -- "$1" "$TMP/out"; }
 lacks() { ! grep -qF -- "$1" "$TMP/out"; }
 logged() { grep -qE -- "$1" "$DOCKER_LOG"; }
 
@@ -346,7 +362,8 @@ logged() { grep -qE -- "$1" "$DOCKER_LOG"; }
 world
 A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'
 mkdir -p "$W/beta/.ai-containers"; printf '%s\n' "$W/beta" >> "$ENG/projects.conf"
-printf 'sha256:keep-me|/elsewhere\n' >> "$IP"; built "$A" img-alpha
+printf 'sha256:keep-me|/elsewhere\n' >> "$IP"; built "$A" img-alpha; mkbase app
+mkwc app 1 "$A/.ai-containers" "$CLEAN"
 ida="$(tid "$A/.ai-containers")"
 rmrun "$A" --yes; rc=$?
 ok "rm removes .ai-containers, its projects.conf line and its image-projects.conf line" \
@@ -356,7 +373,10 @@ ok "rm removes .ai-containers, its projects.conf line and its image-projects.con
 ok "rm removes the image whose label is this project's id, without --force" \
   bash -c '[ ! -e "$1" ] && grep -qxF "docker rmi img-alpha" "$2" && ! grep "^docker rmi" "$2" | grep -q -- "-f"' \
   _ "$IMGS/img-alpha" "$DOCKER_LOG"
-listing() { hasx "  directory   $A/.ai-containers" && hasx "  registry    $A (projects.conf)" && hasx "  image       img-alpha"; }
+listing() {
+  hasx "  directory   $A/.ai-containers" && hasx "  registry    $A (projects.conf)" && hasx "  image       img-alpha" \
+    && hasx "  working copy ai-containers-repo-app--wc-1 (app) — nothing at risk: every branch pushed, no stash, the checkout clean"
+}
 ok "rm --yes still prints the listing" listing
 
 # the image: only the one this project's id is on
@@ -434,6 +454,34 @@ ok "rm lists a copy whose tags the remote keeps as nothing at risk" \
 risk git $'PRIMARY|main\nBRANCH|main|0|current\n'
 ok "rm lists a copy whose inspection was cut short as not checked" \
   bash -c '[[ "$1" == *"NOT CHECKED"*"cut short"* ]] && grep -qxF "1 working cop(y/ies) at risk or not checked." "$2"' _ "$(copy_line 1)" "$TMP/out"
+risk git $'STALE|could not clone\nBRANCH|main|?|current\nSTASH|1\nWORKTREE|?\nEND|inspect\n'
+ok "rm lists what a STALE inspection had already seen (a stash) on its not-checked line" \
+  bash -c '[[ "$1" == *"NOT CHECKED"*"could not clone"*"a stash (1"* ]]' _ "$(copy_line 1)"
+# the copies that cannot be checked at all, each counted
+unchecked() {  # <copy line pattern> <assertion name>
+  ok "$2" bash -c '[[ "$1" == *"NOT CHECKED"*$3* ]] && grep -qxF "1 working cop(y/ies) at risk or not checked." "$2"' \
+    _ "$(grep -F "  working copy ai-containers-repo-app--wc-1 (" "$TMP/out")" "$TMP/out" "$1"
+}
+world; A="$W/alpha"; mkproj "$A"; mkbase app
+mkvol ai-containers-repo-app--wc-1 "ai-containers.workcopy=1" "ai-containers.launch-dir=$A/.ai-containers"
+rmrun "$A"; unchecked "no ai-containers.repo label" "rm lists a copy with no repo label as not checked"
+world; A="$W/alpha"; mkproj "$A"; mkwc app 1 "$A/.ai-containers" "$CLEAN"
+rmrun "$A"; unchecked "is gone" "rm lists a copy whose base volume is gone as not checked"
+world; A="$W/alpha"; mkproj "$A"; mkwc app 1 "$A/.ai-containers" "$CLEAN"
+mkvol ai-containers-repo-app "ai-containers.repo=other" "ai-containers.type=git" "ai-containers.source=https://example.invalid/other.git"
+rmrun "$A"; unchecked "not labelled as repo app" "rm lists a copy whose base volume is labelled for another repo as not checked (REPO-11)"
+world; A="$W/alpha"; mkproj "$A"; mkbase app svn; mkwc app 1 "$A/.ai-containers" "$CLEAN"
+rmrun "$A"; unchecked "records no repo type" "rm lists a copy whose base volume is neither git nor path as not checked"
+# a seed image that cannot be had makes the copies not checked, never stops rm
+world; A="$W/alpha"; mkproj "$A"; mkbase app; mkwc app 1 "$A/.ai-containers" "$CLEAN"; mkwc app 2 "$A/.ai-containers" "$CLEAN"
+export FAKE_NO_SEED=1
+rmrun "$A" --yes; rc=$?
+unset FAKE_NO_SEED
+ok "rm lists copies as not checked when the seed image cannot be had, and finishes" \
+  bash -c '[ "$1" = 0 ] && grep -qF "(app) — NOT CHECKED: the seed helper image" "$2" && [ ! -d "$3/ai-containers-repo-app--wc-1" ]' \
+  _ "$rc" "$TMP/out" "$VOLS"
+ok "  … resolving the seed image once, not per copy" \
+  bash -c '[ "$(grep -c "^docker image inspect ai-containers-seed" "$1")" = 1 ]' _ "$DOCKER_LOG"
 
 # the question, and what stops it
 unchanged() {  # <root> <id>: nothing of the project was removed
@@ -444,7 +492,7 @@ world; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
 mkwc app 1 "$A/.ai-containers" "$CLEAN"; ida="$(tid "$A/.ai-containers")"
 rmrun "$A"; rc=$?
 ok "rm refuses on a non-TTY without --yes and changes nothing" \
-  bash -c '[ "$1" != 0 ] && grep -q "ERROR" "$2" && [ -d "$3/ai-containers-repo-app--wc-1" ] && [ -e "$4" ]' \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR" "$2" && [ -d "$3/ai-containers-repo-app--wc-1" ] && [ -e "$4" ]' \
   _ "$rc" "$TMP/out" "$VOLS" "$IMGS/img-alpha"
 ok "  … and the directory and both lines are intact" unchanged "$A" "$ida"
 
@@ -464,6 +512,32 @@ printf 'ctr-three|other-image|%s/.ai-containers\n' "$(cd "$W/real/alpha" && pwd 
 rmrun "$L" --yes; rc=$?
 ok "rm refuses while a container mounts the project's .ai-containers by its physical path" \
   bash -c '[ "$1" = 1 ] && grep -q "ERROR.*ctr-three" "$2" && [ -d "$3/.ai-containers" ]' _ "$rc" "$TMP/out" "$L"
+# docker that cannot list containers is no evidence that none runs
+world; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; ida="$(tid "$A/.ai-containers")"
+export FAKE_PS_FAIL=ancestor
+rmrun "$A" --yes; rc=$?
+unset FAKE_PS_FAIL
+ok "rm refuses when docker cannot list the containers running its image" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR: docker could not list the running containers" "$2"' _ "$rc" "$TMP/out"
+ok "  … and changes nothing" unchanged "$A" "$ida"
+world; A="$W/alpha"; mkdir -p "$A/.ai-containers"; printf '%s\n' "$A" > "$ENG/projects.conf"
+export FAKE_PS_FAIL=1
+rmrun "$A" --yes; rc=$?
+unset FAKE_PS_FAIL
+ok "rm refuses when docker cannot list the running containers, for a project with no settings too" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR: docker could not list the running containers" "$2" && [ -d "$3/.ai-containers" ]' \
+  _ "$rc" "$TMP/out" "$A"
+# a container launched while the question was asked: the first check makes two
+# `ps` calls (mounts, then the image), the one after the question sees it
+world; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; ida="$(tid "$A/.ai-containers")"
+mkbase app; mkwc app 1 "$A/.ai-containers" "$CLEAN"
+printf 'ctr-late|img-alpha|%s/.ai-containers/.agent-blocked\n' "$A" > "$FAKE_RUNNING.later"
+export FAKE_RUNNING_AFTER=2
+rmrun "$A" --yes; rc=$?
+unset FAKE_RUNNING_AFTER
+ok "rm checks again after the question, and refuses a container started meanwhile" \
+  bash -c '[ "$1" = 1 ] && grep -q "About to remove" "$2" && grep -q "ERROR.*started after the listing.*ctr-late" "$2"' _ "$rc" "$TMP/out"
+ok "  … and changes nothing" unchanged "$A" "$ida"
 world; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'
 export FAKE_DOCKER_DOWN=1
 rmrun "$A" --yes; rc=$?
@@ -535,6 +609,8 @@ mkwc app 1 "$A/.ai-containers" "$CLEAN"
 rmrun "$A" --yes; rc=$?
 ok "rm takes the same directory registered under another spelling as this project, not a nested one" \
   bash -c '[ "$1" = 0 ] && [ "$(sed -n "s/^docker volume rm //p" "$2")" = ai-containers-repo-app--wc-1 ]' _ "$rc" "$DOCKER_LOG"
+ok "  … and does not count that spelling as another project using its group" \
+  hasx "NOTE: group default is used by no other registered project; remove it with ./group.sh rm default"
 
 # an image that cannot be removed keeps the record that names it
 world
@@ -545,6 +621,17 @@ unset FAKE_FAIL_RMI
 ok "rm keeps the image-projects.conf line while the image it could not remove carries the id, and finishes the rest" \
   bash -c '[ "$1" = 0 ] && [ -e "$2" ] && grep -qF "$3" "$4" && ! grep -qxF "$5" "$6" && [ ! -e "$5/.ai-containers" ]' \
   _ "$rc" "$IMGS/img-alpha" "$ida" "$IP" "$A" "$ENG/projects.conf"
+ok "  … and says what docker said" has_line "NOTE: could not remove the image img-alpha (docker said: Error: conflict: the image is used by a stopped container)"
+
+# the listing's decision on the image holds: one it said it keeps is not removed,
+# though its label has become this project's by the time of removal
+world
+A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
+mv "$IMGS/img-alpha" "$IMGS/img-alpha.next"; printf 'org.opencontainers.image.title=Other\n' > "$IMGS/img-alpha"
+rmrun "$A" --yes; rc=$?
+ok "rm never removes an image the listing said it keeps" \
+  bash -c '[ "$1" = 0 ] && grep -qF "  image       img-alpha — kept: " "$2" && ! grep -q "^docker rmi" "$3" && [ -e "$4" ]' \
+  _ "$rc" "$TMP/out" "$DOCKER_LOG" "$IMGS/img-alpha"
 
 world
 printf '/\n' > "$ENG/projects.conf"
@@ -615,6 +702,58 @@ ok "rm finishes a project whose .ai-containers is already gone" \
   bash -c '[ "$1" = 0 ] && ! grep -qxF "$2" "$3" && ! grep -qF "$4" "$5" && [ ! -d "$6/ai-containers-repo-app--wc-1" ] \
            && grep -qxF "  image       (unknown — no sandbox.env; ./project.sh gc removes it by its label)" "$7"' \
   _ "$rc" "$A" "$ENG/projects.conf" "$ida" "$IP" "$VOLS" "$TMP/out"
+
+# what the agent can write reaches the terminal without its escapes
+ESC=$'\e'
+world
+mkproj "$W/a1" "AI_CONTAINER_GROUP=${ESC}[31mred"$'\n'
+rmrun "$W/a1" --yes; rc=$?
+ok "rm prints an AI_CONTAINER_GROUP holding an ESC byte without it" \
+  bash -c '[ "$1" = 0 ] && grep -q "^NOTE: group ?\[31mred " "$2" && ! grep -q "$3" "$2"' _ "$rc" "$TMP/out" "$ESC"
+world
+mkproj "$W/x/dup${ESC}[2Jn"; mkproj "$W/y/dup${ESC}[2Jn"
+rmrun "dup${ESC}[2Jn" --yes; rc=$?
+ok "rm names the projects sharing a basename without their ESC bytes" \
+  bash -c '[ "$1" = 1 ] && grep -q "is the name of 2 registered projects" "$2" && ! grep -q "$3" "$2"' _ "$rc" "$TMP/out" "$ESC"
+rmrun "$W/nope${ESC}[2Jx" --yes; rc=$?
+ok "rm names an unregistered project and the registered ones without their ESC bytes" \
+  bash -c '[ "$1" = 1 ] && grep -q "is not a registered project" "$2" && grep -q "dup?\[2Jn" "$2" && ! grep -q "$3" "$2"' \
+  _ "$rc" "$TMP/out" "$ESC"
+world
+E="$W/esc${ESC}[2Jdir"; mkproj "$E"
+rmrun "$E" --yes; rc=$?
+ok "rm prints a registered root holding an ESC byte without it" \
+  bash -c '[ "$1" = 0 ] && grep -q "About to remove" "$2" && ! grep -q "$3" "$2" && [ ! -e "$4" ]' _ "$rc" "$TMP/out" "$ESC" "$E"
+
+# never ~/.ai-containers, which holds every group, the id key and the registries,
+# nor the engine itself
+world
+mkdir -p "$HOME/.ai-containers/default/.claude"
+printf '%s\n' "$HOME" > "$ENG/projects.conf"
+rmrun "$HOME" --yes; rc=$?
+ok "rm refuses a project registered at \$HOME, and ~/.ai-containers is untouched" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*where every group" "$2" && [ -f "$3/project-id.key" ] && [ -d "$3/default/.claude" ] \
+           && [ "$(cat "$4")" = "$5" ]' _ "$rc" "$TMP/out" "$HOME/.ai-containers" "$ENG/projects.conf" "$HOME"
+world
+ln -s "$HOME" "$W/homelink"; printf '%s\n' "$W/homelink" > "$ENG/projects.conf"
+rmrun "$W/homelink" --yes; rc=$?
+ok "rm refuses a project whose root is a symlink to \$HOME" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*where every group" "$2" && [ -f "$3/project-id.key" ] && [ -d "$3/default/.claude" ]' \
+  _ "$rc" "$TMP/out" "$HOME/.ai-containers"
+world
+mkdir -p "$W/eroot/.ai-containers"; cp -a "$ENG" "$W/eroot/.ai-containers/base"
+printf '%s\n' "$W/eroot" > "$W/eroot/.ai-containers/base/projects.conf"
+( cd "$TMP" && bash "$W/eroot/.ai-containers/base/project.sh" rm "$W/eroot" --yes ) > "$TMP/out" 2>&1 < /dev/null; rc=$?
+ok "rm refuses a project whose .ai-containers holds the engine it runs from" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*holds this engine" "$2" && [ -f "$3/project.sh" ]' \
+  _ "$rc" "$TMP/out" "$W/eroot/.ai-containers/base"
+# compared per path component: ~/.ai-containers-old is not ~/.ai-containers
+world
+O="$HOME/.ai-containers-old/proj"; mkproj "$O"
+rmrun "$O" --yes; rc=$?
+ok "rm removes a project under ~/.ai-containers-old, which only starts like ~/.ai-containers" \
+  bash -c '[ "$1" = 0 ] && [ ! -e "$2/.ai-containers" ] && [ -f "$3/project-id.key" ]' _ "$rc" "$O" "$HOME/.ai-containers"
+rm -rf "$HOME/.ai-containers-old" "$HOME/.ai-containers/default"
 
 echo
 [[ "$fails" == 0 ]] && { echo "ALL PASSED"; exit 0; } || { echo "$fails FAILED"; exit 1; }
