@@ -59,6 +59,10 @@ inspect  Clone the recorded remote privately, then report on stdout, one
                                            same commit, another tag object) or ?;
                                            <on-remote> yes when the remote keeps
                                            its commit
+           WORKTREE|<state>                clean, changed (a tracked file differs from the
+                                           branch's tip, or an untracked file the checkout's
+                                           own ignore rules do not cover exists) or ? (not
+                                           cloned, detached HEAD, or a git step failed)
            END|inspect                     last, once everything was reported
          reset: DELETED|<branch>, ON|<branch>, AT|<commit>, DELETED-COUNT|<n>,
            REMOVED|<path> for each git repository inside the checkout it removed
@@ -333,6 +337,35 @@ remote_primary() {
   return 1
 }
 
+# worktree_state <dir> <branch> <cloned>: clean, changed or ? — whether the
+# checkout's files differ from its branch's tip. Read by the private clone's git
+# against the volume's files, as cmd_pull() does, never by git on the volume's
+# own .git. changed: a tracked file differs, or an untracked file the
+# checkout's own ignore rules do not cover exists. ?: not cloned, a detached
+# HEAD, an unreadable tip, or any git step failing.
+worktree_state() {
+  local dir="$1" b="$2" cloned="$3" name oid tip="" rc
+  [[ -n "$cloned" && -n "$b" ]] || { printf '?'; return 0; }
+  while IFS=$'\t' read -r name oid; do [[ "$name" == "$b" ]] && tip="$oid"; done < <(volume_branches "$dir")
+  [[ "$tip" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || { printf '?'; return 0; }
+  mark_safe_directory "$dir"
+  git --git-dir="$F/.git" --work-tree="$dir" read-tree "$tip" >/dev/null 2>&1 || { printf '?'; return 0; }
+  git --git-dir="$F/.git" --work-tree="$dir" update-index -q --ignore-submodules --refresh >/dev/null 2>&1 || true
+  git --git-dir="$F/.git" --work-tree="$dir" diff-files --ignore-submodules=all --quiet >/dev/null 2>&1; rc=$?
+  case $rc in
+    0) ;;
+    1) printf 'changed'; return 0 ;;
+    *) printf '?'; return 0 ;;
+  esac
+  # One byte is enough to say "changed"; head closing the pipe early makes git
+  # exit 141 (SIGPIPE) when there is more, which is an answer, not a failure.
+  local others
+  others="$(git --git-dir="$F/.git" --work-tree="$dir" ls-files --others --exclude-standard -z 2>/dev/null | head -c 1; exit "${PIPESTATUS[0]}")"
+  rc=$?
+  [[ "$rc" == 0 || "$rc" == 141 ]] || { printf '?'; return 0; }
+  [[ -n "$others" ]] && printf 'changed' || printf 'clean'
+}
+
 cmd_inspect() {
   local dir="${1:-}"
   [[ -n "$dir" ]] || { usage >&2; die "inspect needs a directory"; }
@@ -406,6 +439,7 @@ cmd_inspect() {
     fi
     printf 'TAG|%s|%s|%s\n' "$(shown "$name")" "$kept" "$on"
   done < <(volume_refs "$dir" tags)
+  printf 'WORKTREE|%s\n' "$(worktree_state "$dir" "$current" "$cloned")"
   # Last, so a reader can tell a finished inspection from one cut short: repo.sh
   # reads these records through a process substitution and never sees this
   # script's exit status (REPO-16).

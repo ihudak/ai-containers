@@ -286,6 +286,53 @@ run_script inspect "$W"
   || fail "spurious STASH/TAG records
 $OUT"
 
+# ── 1c. inspect: do the checkout's files differ from its branch (WORKTREE) ──────
+# One record, before END: clean, changed (a tracked file edited, or an untracked
+# file the checkout's own ignore rules do not cover) or ? (unknown).
+wt_check() {  # $1 = label, $2 = expected record value; reads OUT
+  local got; got="$(grep '^WORKTREE|' <<<"$OUT")"
+  if [[ "$got" == "WORKTREE|$2" && "$(grep -n '^WORKTREE|' <<<"$OUT" | head -n1 | cut -d: -f1)" -lt "$(grep -n '^END|inspect$' <<<"$OUT" | cut -d: -f1)" ]]; then
+    pass "$1"
+  else
+    fail "$1
+$OUT"
+  fi
+}
+W="$(mk_repo wt-clean)"
+run_script inspect "$W"
+wt_check "inspect reports WORKTREE|clean for a checkout matching its branch" clean
+printf 'edited\n' >> "$W/first"
+run_script inspect "$W"
+wt_check "inspect reports WORKTREE|changed for an edited tracked file" changed
+W="$(mk_repo wt-untracked)"
+printf 'x\n' > "$W/new-file"
+run_script inspect "$W"
+wt_check "inspect reports WORKTREE|changed for an untracked file" changed
+W="$(mk_repo wt-ignored)"
+printf '*.log\n' > "$W/.gitignore"; g "$W" add .gitignore >/dev/null 2>&1; g "$W" commit -qm ignore >/dev/null 2>&1
+g "$W" push -q origin main >/dev/null 2>&1
+printf 'x\n' > "$W/debug.log"
+run_script inspect "$W"
+wt_check "inspect reports WORKTREE|clean when the only extra file is ignored by the checkout's .gitignore" clean
+W="$(mk_repo wt-offline)"
+rm -rf "$TMP/wt-offline.git"
+run_script inspect "$W"
+wt_check "inspect reports WORKTREE|? when the remote cannot be cloned" '?'
+W="$(mk_repo wt-detached)"
+g "$W" checkout -q --detach >/dev/null 2>&1
+run_script inspect "$W"
+wt_check "inspect reports WORKTREE|? on a detached HEAD" '?'
+W="$(mk_repo wt-readonly)"
+printf 'edited\n' >> "$W/first"; printf 'x\n' > "$W/new-file"; g "$W" add first >/dev/null 2>&1
+snap() { (cd "$1" && find . -type f -exec cksum {} + | sort); }
+before="$(snap "$W")"
+run_script inspect "$W"
+after="$(snap "$W")"
+[[ -n "$before" && "$before" == "$after" ]] \
+  && pass "inspect changes nothing in the checkout" \
+  || fail "inspect changed the checkout (or reported nothing)
+$OUT"
+
 # ── 2. reset: on primary, at the remote tip, other branches gone ──────────────
 
 W="$(mk_repo doreset)"
