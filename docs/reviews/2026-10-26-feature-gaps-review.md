@@ -267,7 +267,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - **What this is:** the Linux machine is measuring all of sandbox.sh (3,312 mutants at `14f42bd`, about a third done on 2026-11-14, ending about 2026-11-16). Every mutant that survives is owed a test that kills it, or a stated reason why no test could. That machine cannot run tests while it measures, because load distorts verdicts, so this batch goes to another one. The tests are hermetic and need no docker. More batches may follow here.
 - **Rules for the batch:**
   - **Demonstrate, do not score** ([docs/testing.md](../testing.md), "Per slice: demonstrate"): damage the line by hand as shown, see the new assertion go red, restore the line, see it green. Do not run `tests/falsify/run.sh` over sandbox.sh.
-  - **Numbers:** new checks from **G210** (G209 and T78 are taken by GIT-93's fix, found 2026-11-14 on Linux and not yet on `main`; its entry lands with it). A product bug found on the way is **GIT-94** or later, filed in the bugs review and fixed test-first.
+  - **Numbers:** new checks from **G210** (G209 and T78 are taken by GIT-93's fix, found 2026-11-14 on Linux; it landed that day as `f1758af`, after this batch). A product bug found on the way is **GIT-94** or later, filed in the bugs review and fixed test-first.
   - **Two places to leave alone** in `launcher_ro_overlay()`, which GIT-93's fix rewrites: the block that starts `if [[ ",$opts," == *,ro,* ]]; then`, where the binds are collected, and the loop over `rosrc` that calls `launcher_dirs_in`. The same fix adds a block after G157 in `tests/test-git-internals-ro-scan.sh` and one after T75 in `tests/test-launcher-dir-ro.sh`: add nothing next to those.
   - **No entries in `tests/falsify/survivors.txt`:** sandbox.sh is not an active target. Record the results in this section, one line per item: killed by which check, or the reason no test could kill it. "Equivalent" says why no test could, not that none does.
   - Otherwise as for any change: lint, the suite on that platform, a final review of the exact tree, fetch and rebase, push, follow CI.
@@ -323,6 +323,60 @@ A gap is something a design promised that is not in the code at the reviewed com
   - **Item 4:** `return-flip:7efad11b…` survives here as expected and is ENV-DEPENDENT: G121 kills it with `TMPDIR` on `/mnt/c` (run 2026-11-11, Slice 7), and the refusal's lines have not changed since (`61af43b`).
   - **One product bug** found, by the final review: **GIT-94** (LOW), fixed with G213 (bugs review).
   - **In all:** of the 13, 10 killed (G210 six, G211 two, G212 and G214 one each), 2 equivalent with the reason (`3eeba261`, and `4ed4212a`'s first `&&` once GIT-94 is fixed), 1 ENV-DEPENDENT (item 4). Item 1's `|| true` turned `&& true`, outside the 13, is equivalent as the brief says.
+
+#### GAP-2, the whole-file run: batch 2 of its survivors, for the WSL native agent
+
+- **Status: OPEN** (handed over 2026-11-14 by the Linux agent, as batch 1 was). Base: `origin/main` at `1915a91`, which has batch 1 and GIT-93's fix.
+- **What this is:** the next survivors of the measurement batch 1 describes, read when it stood at 1,395 of 3,312 mutants (1,321 killed, 55 survived, 19 unproven). Every line quoted below reads the same at `14f42bd`, where the run measures, and at `1915a91`.
+- **Rules:** those of batch 1, with these numbers.
+  - **New checks** from **G215** in the `tests/test-git-internals-ro-*.sh` files and from **T79** in `tests/test-launcher-dir-ro.sh`. G209 to G214 and T78 are taken.
+  - **A product bug** found on the way is **GIT-95** or later, or **LNCH-27** or later (GIT-93's fix filed LNCH-25 and LNCH-26).
+  - **The two places** batch 1 had to leave alone are free again: GIT-93's fix is on `main`.
+  - Demonstrate, do not score. No entries in `tests/falsify/survivors.txt`. Results in this section, one line per item.
+- **Item 1: the first index read of a launch.** The damage was run on Linux at `27777a6`.
+  - **Where:** `_git_index_read()`, where it makes its throwaway repository:
+    ```bash
+      if [[ ! -d "$_gir_tmp/$fmt/.git" ]]; then
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+          git init -q --object-format="$fmt" "$_gir_tmp/$fmt" >/dev/null 2>&1 || return 1
+      fi
+    ```
+  - **The survivor:** `sandbox.sh:logic-flip:5276480f83717163471865e1ef3f9c492ab20d3d`: `… >/dev/null 2>&1 && return 1`.
+  - **What it does:** the read that makes that repository fails, once for each object format, and every later read finds it made and goes on. So the first index a launch reads, the project's own, is reported as unreadable.
+  - **What was seen:** on G22's layout (the project with a submodule under `vendor/`) the damaged launcher prints `WARNING: cannot read the index of <project>/.git; submodules recorded in it are not followed,` and exits 0. All 163 checks of `tests/test-git-internals-ro-index.sh` still pass. G22 among them: the same launch reads that index again later, and that read follows the gitlink.
+  - **Why it survives:** every check that looks for `cannot read the index of` names another repository, or only needs one such line (G33), or caps how many there are (G83). None says the project's is absent. That index is read first: the output directories come first among the mounts, and the walk up from them reaches the project's `.git`.
+  - **A check:** after G22's launch, stderr holds no `cannot read the index of $PROJ/.git;`. Keep the `;`, so that a line for a directory under `.git/modules` cannot match.
+- **Item 2: the index read with no temporary directory.** The design was not run.
+  - **Where:** `_git_index_read()`, the block for a `mktemp -d` that failed, which warns once (`git indexes are not read, so the submodules they record are not followed`) and ends in `return 1`.
+  - **The survivor:** `sandbox.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db`, that `return 1` turned `return 0`. The identity is the hash of the text `return 1`, which many lines share; the run's record names this one by its place.
+  - **What it does:** the caller takes the index for read and empty, so the WARNING it prints for a failed read, `cannot read the index of`, is gone.
+  - **A layout:** T51 in `tests/test-launcher-dir-ro.sh` has it. Its third launch runs with a `TMPDIR` that is not there over two repositories, `r51a` and `r51b`, and counts the temporary directory's warning. By the code, the unchanged launcher also prints `cannot read the index of` for each of the two there: assert both.
+- **Item 3: a `commondir` with a NUL in it.** The design was not run.
+  - **Where:** `_cd_ours()`, which answers whether a `commondir` holds the `./` a launch writes: `if IFS= read -r -d '' _cw_v < <(_rd 4097 "$1" 2>/dev/null) || (( ${#_cw_v} > 4096 )); then return 1; fi`.
+  - **The survivor:** `sandbox.sh:logic-flip:519f49ee9d25b86e246905657aba46520d281f54`, the `||` turned `&&`.
+  - **What it does:** a file whose bytes before its first NUL are `./` and then only CRs and LFs counts as the launch's own placeholder. So does one longer than 4096 bytes whose first 4097 are `./` and then only CRs and LFs, whatever follows them. The unchanged function says no to any NUL and to any such length. To git, `./`, a newline, a NUL and a newline name a directory called by a newline (GIT-30); `./` and a NUL at once is `./` to git too.
+  - **A layout:** G193 in `tests/test-git-internals-ro-scan.sh` has a plain directory with a file named `commondir` and no `HEAD`, which launches with nothing made or bound beside it; another of G193's files, `up/commondir`, already holds a NUL (`a\0b\n`). Give such a directory a `commondir` holding `./`, a newline, a NUL and a newline. The unchanged launcher leaves it alone. The damaged one takes it for a git directory an earlier launch protected, and then refuses over the NUL.
+- **Item 4, to decide: a shared index that is not a regular file.**
+  - **Where:** `_git_index_read()`: `if [[ ( -e "$si" || -L "$si" ) && ! -f "$si" ]]; then return 1; fi`, in the loop over `sharedindex.*`.
+  - **The survivor:** `sandbox.sh:logic-flip:42c18e81958a89add158bf63a3c6dad0162082de` in the form `( -e "$si" && -L "$si" )`. The other form, the second `&&` turned `||`, is killed by G94.
+  - **What differs:** a `sharedindex.*` that is no regular file and no link (a FIFO, a device, a directory, a socket): the unchanged launcher fails the read at once, the damaged one runs git on the index. And one that is a dangling link: the unchanged launcher fails the read, the damaged one runs git, which fails only if the index names that file. A link to a regular file or to a FIFO, and a pattern that matched nothing, give the same answer under both.
+  - **Why G37 does not tell:** its FIFO is the shared part the index names. Where `timeout` exists, git is cut off and the same WARNING follows.
+  - **A layout to try:** an ordinary index, not split, with a dangling link named `sharedindex.` and forty zeros beside it. The unchanged launcher should print `cannot read the index of` for that repository, and the damaged one nothing. A check there pins that no git runs on an index beside a shared part that is no regular file. If you judge that not worth pinning, say so in the record.
+- **Item 5: which mounts inside a writable mount are listed.** The design was not run.
+  - **Where:** `_fs_linked_in()`, in the loop over the filesystems mounted inside a writable mount:
+    ```bash
+          if [[ -z "${_fs_ml_dev[$_fl_q]}" ]] || [[ "${_fs_ml_dev[$_fl_q]}" == "${_fl_di%% *}" \
+                && "${_fs_ml_dev[${_fl_pp:-/}]}" != "${_fl_di%% *}" ]]; then _fl_on+=("$_fl_q"); fi
+    ```
+  - **The survivor:** `sandbox.sh:logic-flip:e85126a6b88bfb910c9111ef10a92ee5d80ced7f`, the `&&` that starts the second line turned `||`. The `!=` there turned `==` is killed.
+  - **What it does:** a filesystem mounted inside a writable mount is listed on its own in two more cases. One on the file's device whose parent directory is on that device too, which the outer listing already covers. And one on another device whose parent directory is not on the file's device, where no name of the file can be.
+  - **A layout:** G128 in `tests/test-git-internals-ro-reads.sh` runs `_fs_linked_in` on its own, fakes one mount's device by overriding `_launcher_dev_ino`, and logs each listing through a fake `timeout`; it already asserts that a mount off the file's device is not listed. In the same way, set `_fs_mp_read=1` and `_fs_mp` to one directory inside a writable mount, give it and its parent devices that are not the file's, and assert from that log that it is not listed. The damaged function lists it. A parent whose device cannot be read is empty, which counts as not the file's. The directory itself needs a readable device that is not the file's: one that is empty is listed by both forms. G131 is the check with a real mount inside a mount.
+- **Read on Linux and recorded here, no test owed:**
+  - `sandbox.sh:return-flip:e6066cd1…`, `_git_usable || return 0` at the top of `_git_index_read()`: equivalent. One caller asks `_git_usable` itself just before, and the other skips on a failed read and does nothing with an empty one. Four lines share that text and so that hash; the run's record names this one by its place.
+  - `sandbox.sh:logic-flip:04423fe2…`, `_git_ptr_read "$g/commondir" fcd && true` in `_git_index_read()`: equivalent, as every `|| true` turned `&& true` that is not the last command of its list. `fcd` is empty either way.
+  - `sandbox.sh:return-flip:4924778e…`, `_q()` returning 1 after it printed the name: equivalent. Each of its 85 calls is a command substitution inside an argument of `printf`, whose status nothing reads.
+  - `sandbox.sh:cmp-flip:58aa6fab…`, `_q()`'s loop made `qi > ${#1}`, so it never runs: the loop is not reached on Linux. `_q()` sets `LC_ALL=C`, where `printf %q` writes every byte outside printable ASCII as an octal escape, so `_term` changes nothing and the early return is always taken (15 names tried under three locales, bash 5.3.20). T52 accepts the octal form or the `\xHH` form, so it passes either way. **For a Mac** (with PLAT-10): with the bash the suite runs there (5.1 or later, not `/bin/bash`), run `LC_ALL=C bash -c 'printf "%q\n" "$(printf "a\342\200\256b")"'`. If it prints the octal escapes, the loop is dead there too and the mutant is equivalent everywhere. If it prints the bytes raw, the loop runs on macOS, and T52 should then require the `\xHH` form there.
+  - Ten more match equivalents that slices 3 and 4 recorded, the same line and the same damage. The Linux agent writes them up with the run's record.
 
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
