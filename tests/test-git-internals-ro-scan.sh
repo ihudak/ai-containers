@@ -838,6 +838,35 @@ EXTRA_MOUNTS="$O157" DOCS_PATH="$O157/node_modules/x" launch ..
   || fail "G157 binds in the read-only view ($(mounts | grep -F ':/workspace/docs/' | tr '\n' ' '))"
 rm -rf "$O157"
 
+# ── G209: such a mount whose root, or whose .git, you cannot list (GIT-93) ───
+# G157's mount with its own root unlistable was passed over in silence: the
+# agent, which owns the directory, could make it so in one session, and in the
+# next restore the mode and write the .git/config your host's git reads. The
+# root is now read-only whole in the writable mount's view, and named (T78 in
+# tests/test-launcher-dir-ro.sh has the rule). A .git there that you can read
+# but not search is as unlistable as G144's.
+mkdir -p "$TMP/probe209"; chmod 000 "$TMP/probe209"
+if [[ -r "$TMP/probe209" ]]; then
+  printf 'SKIP: G209 — chmod does not constrain root\n'
+else
+  O209="$TMP/o209"; mkdir -p "$O209/node_modules/x" && "${G[@]}" init -q "$O209/node_modules/x" \
+    || { printf 'SCAFFOLD-FAILED: G209\n'; exit 1; }
+  chmod 000 "$O209/node_modules/x"
+  EXTRA_MOUNTS="$O209" DOCS_PATH="$O209/node_modules/x" launch ..
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$O209/node_modules/x:/workspace/o209/node_modules/x:ro" \
+    && grep -qF "WARNING: $O209/node_modules/x cannot be listed by you" "$ERR" \
+    && pass "G209 a repository mounted read-only inside a writable mount, its root unlistable, is read-only whole through that mount" \
+    || fail "G209 unlistable root (rc=$LAUNCH_RC; $(mounts | grep -F /o209/ | sed "s#$TMP#T#g" | tr '\n' ' '); $(grep -E 'WARNING: /|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$O209/node_modules/x"; chmod 0600 "$O209/node_modules/x/.git"
+  EXTRA_MOUNTS="$O209" DOCS_PATH="$O209/node_modules/x" launch ..
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$O209/node_modules/x/.git:/workspace/o209/node_modules/x/.git:ro" \
+    && grep -qF "WARNING: $O209/node_modules/x/.git cannot be listed by you" "$ERR" \
+    && pass "G209 a .git there you can read but not search is read-only whole, and named" \
+    || fail "G209 .git 0600 (rc=$LAUNCH_RC; $(mounts | grep -F /o209/ | sed "s#$TMP#T#g" | tr '\n' ' '); $(grep -E 'WARNING: /|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$O209/node_modules/x/.git"; rm -rf "$O209"
+fi
+chmod 755 "$TMP/probe209"; rmdir "$TMP/probe209"
+
 # ── G144: what the scan takes for a git directory inside a .git ──────────────
 # GAP-2 slice 6: each condition here, turned, survived every test.
 # A .git, or a directory inside one, that you can read but not search is as

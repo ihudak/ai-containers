@@ -438,6 +438,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   writable at the outer mount's path (bugs review GIT-56). So did a launcher
   there, its `sandbox.sh` the host runs next (bugs review LNCH-24).
 
+- **Such a mount is protected when its own root cannot be listed, too.** A
+  read-only mount inside a writable one whose root you cannot list was passed
+  over in silence, so an agent could make the directory unlistable in one
+  session and, in the next, restore the mode and write the `.git` config or the
+  launcher your host runs. The root is now read-only whole in the writable
+  mount's view, with a `WARNING:` naming the `chmod` that restores it, and the
+  launch is refused where you can search it but not list it and the agent could
+  have written into it. A `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH` or
+  `ARCHITECTURE_REPO_PATH` that you are not permitted to reach, behind a
+  directory you cannot search, now refuses the launch: it was reported as a
+  directory that does not exist, and left unmounted and unprotected. **This
+  also stops a launch that used to warn:** a pointer exported in your profile
+  that leads into a directory you may not enter (another user's home) is
+  refused until you unset it or fix the path. One that really is not there
+  warns as before (bugs review GIT-93).
+
 - **Fewer false "no worktree is known" warnings.** It was said for a linked
   worktree whose checkout is in another writable mount, though that mount's
   scan read its index and protected its submodules. For one whose checkout was

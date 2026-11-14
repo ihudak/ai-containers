@@ -425,7 +425,32 @@ launcher_ro_overlay() {
     src="$_br_src"; dst="$_br_dst"; opts="$_br_opts"
     if [[ ",$opts," == *,ro,* ]]; then
       # Kept to be scanned where it lies inside a writable mount (GIT-56).
-      if [[ "$src" == /* && -d "$src" ]] && _cd_phys rs "$src"; then rosrc+=("$rs"); fi
+      if [[ "$src" == /* && -d "$src" ]]; then
+        if _cd_phys rs "$src"; then rosrc+=("$rs")
+        else
+          # One you cannot enter is kept too, placed by its name in its
+          # directory: dropped here, it was passed over in silence, and the
+          # agent, which owns a directory it can write, can make one so (bugs
+          # review GIT-93; T78). One that is a link, or whose directory cannot
+          # be entered either, cannot be placed, and is refused wherever it lies.
+          rest="${src%"${src##*[!/]}"}"
+          if [[ ! -L "$rest" ]] && _cd_phys rs "${rest%/*}/"; then rosrc+=("${rs%/}/${rest##*/}")
+          else
+            printf 'ERROR: %s, mounted read-only, cannot be entered by you, and the launch\n' "$(_term "$src")" >&2
+            printf '       cannot tell where it lies (it is a link, or its directory cannot be entered),\n' >&2
+            printf '       so it cannot tell whether a writable mount holds it; refusing the launch.\n' >&2
+            printf '       Make it listable for you (chmod u+rx), or leave it out.\n' >&2
+            exit 1
+          fi
+        fi
+      # Every one was there when run_container made its bind: one that is not
+      # now was changed meanwhile, and docker, which runs as root, would mount
+      # what this pass cannot see.
+      elif [[ "$src" == /* && ! -e "$src" ]]; then
+        printf 'ERROR: %s, mounted read-only, was there when the launch looked and cannot be\n' "$(_term "$src")" >&2
+        printf '       seen now: something is changing it; refusing the launch.\n' >&2
+        exit 1
+      fi
       continue
     fi
     if [[ "$src" != /* || ! -d "$src" ]]; then continue; fi
@@ -525,9 +550,18 @@ launcher_ro_overlay() {
   for rl in ${rosrc[@]+"${rosrc[@]}"}; do
     rin=""
     for i in ${bsrc[@]+"${!bsrc[@]}"}; do if [[ "$rl" == "${bsrc[i]}"/* ]]; then rin=1; fi; done
-    [[ -n "$rin" && -r "$rl" && -x "$rl" ]] || continue
+    [[ -n "$rin" ]] || continue
     found=(); unreadable=()
-    launcher_dirs_in found unreadable "$rl" "$uid" "$gid" "$you"
+    if [[ -r "$rl" && -x "$rl" ]]; then
+      launcher_dirs_in found unreadable "$rl" "$uid" "$gid" "$you"
+    # Its own root, which you cannot list, is what a scan would report inside
+    # it: an unlistable directory the agent could reach into, by
+    # launcher_dirs_in's rule (GIT-93; T78). What it holds, a git directory
+    # too, is then read-only whole in the writable mounts' views.
+    elif [[ -n "$(cd / && find "$rl" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0010 \) \
+         -o \( ! -group "$gid" -perm -0001 \) \) -print 2>/dev/null)" ]]; then
+      unreadable=("$rl")
+    fi
     cand=(${found[@]+"${found[@]}"} ${unreadable[@]+"${unreadable[@]}"})
     for k in ${cand[@]+"${!cand[@]}"}; do
       l="${cand[k]}"
@@ -6210,6 +6244,41 @@ _git_watch_add() {
 }
 trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
 
+# _pointer_missing <variable> <as set> <resolved>: a pointer (VAULT_PATH and the
+# rest) whose directory is not there is not mounted, with a WARNING. One you are
+# not permitted to reach is another matter: the agent owns the directories it
+# can write and can chmod one, and a pointer behind it then went unmounted and
+# what it holds unprotected, with a WARNING that it did not exist, while the
+# agent could restore the mode in that very session (bugs review GIT-93; T78).
+# So that refuses. Which of the two it is, the kernel says: `cd -P` there (a
+# plain cd works a `..` out on paper), its error read in the C locale. No path
+# is walked and no directory judged here: three forms that did were each got
+# round, through a link the last time (the reviews of the fix), and the kernel
+# follows whatever the way is made of. The cost, the user's choice: a stale
+# export into a directory you may not enter (another user's home) stops the
+# launch too, where it used to warn. No chmod is printed, since nothing here
+# knows which directory is in the way; nor the advice to unset the pointer,
+# which leaves what lies behind it unprotected where a writable mount holds it.
+# A cd that succeeds, after the test that sent the launch here failed, is a
+# directory something is changing meanwhile, and refuses as well.
+_pointer_missing() {
+  local why
+  why="$( ( LC_ALL=C; cd -P -- "$3" ) 2>&1 )" || true
+  if [[ -z "$why" ]]; then
+    printf 'ERROR: %s is set to %s, which was no directory when the launch\n' "$1" "$(_term "$2")" >&2
+    printf '       looked and is one now: something is changing it; refusing the launch.\n' >&2
+    exit 1
+  fi
+  if [[ "$why" == *': Permission denied' ]]; then
+    printf 'ERROR: %s is set to %s, which you are not permitted to reach:\n' "$1" "$(_term "$2")" >&2
+    printf '       a directory on the way there cannot be searched by you, so what lies behind it\n' >&2
+    printf '       can be neither mounted nor protected; refusing the launch. Find that directory\n' >&2
+    printf '       and make it searchable for you again.\n' >&2
+    exit 1
+  fi
+  printf 'WARNING: %s is set but directory does not exist: %s\n' "$1" "$2" >&2
+}
+
 # The agent's identity: numeric, within a 32-bit id, and never root — capsh
 # switching 0 to 0 clears no capabilities (bugs review ENV-4). Checked first in
 # run_container, before a group is made or a credential copied (review of
@@ -6608,7 +6677,7 @@ run_container() {
         qmd_corpora+=("VAULT_PATH")
       fi
     else
-      printf 'WARNING: VAULT_PATH is set but directory does not exist: %s\n' "$VAULT_PATH" >&2
+      _pointer_missing VAULT_PATH "$VAULT_PATH" "$vault_real"
     fi
   fi
 
@@ -6641,7 +6710,7 @@ run_container() {
           qmd_corpora+=("SPECS_PATH")
         fi
       else
-        printf 'WARNING: SPECS_PATH is set but directory does not exist: %s\n' "$specs_src" >&2
+        _pointer_missing SPECS_PATH "$specs_src" "$specs_real"
       fi
     fi
   fi
@@ -6682,7 +6751,7 @@ run_container() {
           qmd_corpora+=("DOCS_PATH")
         fi
       else
-        printf 'WARNING: DOCS_PATH is set but directory does not exist: %s\n' "$docs_src" >&2
+        _pointer_missing DOCS_PATH "$docs_src" "$docs_real"
       fi
     fi
   fi
@@ -6723,7 +6792,7 @@ run_container() {
           qmd_corpora+=("ARCHITECTURE_REPO_PATH")
         fi
       else
-        printf 'WARNING: ARCHITECTURE_REPO_PATH is set but directory does not exist: %s\n' "$arch_src" >&2
+        _pointer_missing ARCHITECTURE_REPO_PATH "$arch_src" "$arch_real"
       fi
     fi
   fi
