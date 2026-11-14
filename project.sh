@@ -214,7 +214,469 @@ prj_conf_add()     { _prj_edit "$prj_conf" add "$1"; }
 # prj_image_projects_drop <id>: the lines of image-projects.conf for that id.
 prj_image_projects_drop() { _prj_edit "$image_projects_file" drop-id "$1"; }
 
-cmd_rm() { printf 'ERROR: rm is not yet implemented.\n' >&2; exit 1; }
+# ── what a project is made of, read the way the launcher reads it ──
+
+# _prj_strip <path>: without trailing slashes ("/" stays "/").
+_prj_strip() {
+  local p="$1"
+  while [[ "$p" == */ && "$p" != / ]]; do p="${p%/}"; done
+  printf '%s' "$p"
+}
+
+# _prj_phys <path>: its physical spelling — pwd -P of it where it is a directory,
+# else of its nearest existing ancestor followed by the rest as given; the path
+# as given when no ancestor can be entered. Records name physical paths
+# (build.sh's image-projects.conf), and a launch directory or a project that is
+# gone still has a parent to resolve.
+_prj_phys() {
+  local p rest="" up phys
+  p="$(_prj_strip "$1")"
+  if [[ -d "$p" ]] && phys="$(cd "$p" 2>/dev/null && pwd -P)"; then printf '%s' "$phys"; return 0; fi
+  up="$p"
+  while [[ "$up" == /*/* ]]; do
+    rest="/${up##*/}$rest"; up="${up%/*}"
+    if [[ -d "$up" ]] && phys="$(cd "$up" 2>/dev/null && pwd -P)"; then
+      printf '%s%s' "${phys%/}" "$rest"; return 0
+    fi
+  done
+  printf '%s' "$p"
+}
+
+# _prj_within <path> <dir>: <path> is <dir> or lies below it. "/" and "" contain
+# nothing: a root of / would otherwise take every working copy there is.
+_prj_within() {
+  local p d
+  p="$(_prj_strip "$1")"; d="$(_prj_strip "$2")"
+  [[ -n "$d" && "$d" != / ]] || return 1
+  [[ "$p" == "$d" || "$p" == "$d/"* ]]
+}
+
+# _prj_has_env <dot>: the project has launcher settings to read. Without either
+# file nothing says which image or group it used (its .ai-containers was deleted
+# by hand, or never had them).
+_prj_has_env() { [[ -f "$1/sandbox.env" || -f "$1/sandbox.local.env" ]]; }
+
+# prj_env <dot> <KEY> [default]: the value sandbox.sh would use for <KEY> in that
+# project — sandbox.local.env over sandbox.env, as load_env_defaults() reads them,
+# whatever this shell has set — or <default>. Their warnings are sandbox.sh's to
+# print, not this listing's.
+prj_env() {
+  local dot="$1" key="$2" def="${3:-}"
+  ( unset "$key"
+    load_env_defaults "$dot/sandbox.local.env" local || true
+    load_env_defaults "$dot/sandbox.env" || true
+    printf '%s' "${!key:-$def}" ) 2>/dev/null || true
+}
+
+# prj_id <path>: the id build.sh gives the image it builds there
+# (ai_containers_project_id() of the physical directory); for a path that is
+# gone, of its physical spelling as far as it still exists (_prj_phys). rc 1,
+# and no key made, where there is no key yet: no image here carries an id then,
+# and asking must not write one.
+prj_id() {
+  [[ -e "$project_id_key_file" || -L "$project_id_key_file" ]] || return 1
+  ai_containers_project_id "$(_prj_phys "$1")"
+}
+
+# _prj_only_dot <root>: <root> holds nothing but .ai-containers, so it is left
+# empty once that goes.
+_prj_only_dot() (
+  shopt -s nullglob dotglob
+  ents=("$1"/*)
+  for e in ${ents[@]+"${ents[@]}"}; do
+    [[ "${e##*/}" == .ai-containers ]] || exit 1
+  done
+  exit 0
+)
+
+# prj_running <root>: the running containers of that project, one name per line:
+# those that bind-mount its .ai-containers or anything under it (a launch from
+# runme.sh mounts its output directories there, and its launcher read-only), in
+# either spelling of the path, and those whose image is its IMAGE_NAME. rc 0 when
+# it named any. With no settings to read, by mounts only: the default image name
+# is no evidence that a container is this project's.
+prj_running() {
+  local dot phys name src
+  local -A seen=()
+  dot="$(_prj_strip "$1")/.ai-containers"
+  phys="$(_prj_phys "$dot")"
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    while IFS= read -r src; do
+      if [[ -n "$src" ]] && { _prj_within "$src" "$dot" || _prj_within "$src" "$phys"; }; then
+        seen["$name"]=1; break
+      fi
+    done < <(docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$name" 2>/dev/null || true)
+  done < <(docker ps --format '{{.Names}}' 2>/dev/null || true)
+  if _prj_has_env "$dot"; then
+    while IFS= read -r name; do
+      if [[ -n "$name" ]]; then seen["$name"]=1; fi
+    done < <(docker ps --filter "ancestor=$(prj_env "$dot" IMAGE_NAME ai-sandbox)" --format '{{.Names}}' 2>/dev/null || true)
+  fi
+  (( ${#seen[@]} )) || return 1
+  printf '%s\n' "${!seen[@]}" | LC_ALL=C sort
+}
+
+# prj_workcopies <root>: the :rwcopy working copies launched from that project —
+# those whose ai-containers.launch-dir is its root or lies under it, either
+# spelling of either path, but not under a deeper registered project, whose
+# copies they are. One volume name per line.
+prj_workcopies() {
+  local root wc ldir r rp f g deeper
+  local -a forms=() deep=() lforms=()
+  root="$(_prj_strip "$1")"
+  forms=("$root" "$(_prj_phys "$root")")
+  # Registered projects inside this one. The same directory registered under
+  # another spelling is this one, not a deeper one.
+  while IFS= read -r r; do
+    r="$(_prj_strip "$r")"; rp="$(_prj_phys "$r")"
+    [[ "$rp" != "${forms[1]}" ]] || continue
+    for f in "$r" "$rp"; do
+      for g in "${forms[@]}"; do
+        if [[ "$f" != "$g" ]] && _prj_within "$f" "$g"; then deep+=("$r" "$rp"); break 2; fi
+      done
+    done
+  done < <(prj_roots)
+  [[ -n "$_vl_loaded" ]] || docker_volume_labels_load
+  while IFS= read -r wc; do
+    [[ -n "$wc" ]] || continue
+    ldir="$(docker_volume_label "$wc" 'ai-containers.launch-dir')"
+    [[ -n "$ldir" ]] || continue
+    # shellcheck disable=SC2034  # read through a nameref by _prj_within_any
+    lforms=("$ldir" "$(_prj_phys "$ldir")")
+    _prj_within_any lforms forms || continue
+    deeper=0
+    if (( ${#deep[@]} )) && _prj_within_any lforms deep; then deeper=1; fi
+    (( deeper )) || printf '%s\n' "$wc"
+  done < <(repo_workcopy_volumes)
+  return 0
+}
+
+# _prj_within_any <paths-array> <dirs-array>: one of the paths lies within one of
+# the dirs.
+_prj_within_any() {
+  local -n _pw_p="$1" _pw_d="$2"
+  local p d
+  for p in "${_pw_p[@]}"; do
+    for d in "${_pw_d[@]}"; do
+      if _prj_within "$p" "$d"; then return 0; fi
+    done
+  done
+  return 1
+}
+
+# prj_copy_risk <vol>: one line saying what removing that working copy would
+# lose; rc 1 when it may lose something or could not be checked, 0 when nothing
+# is at risk. Checked by repo-git-reset.sh's read-only inspect pass, as
+# `repo.sh reset` does, against the URL its base volume records — never by git on
+# the copy's own .git. Not being able to check is never read as safe.
+prj_copy_risk() {
+  local vol="$1" repo base type recs line kind rest br unpushed tname tkept ton
+  local ended="" stale="" worktree="" i out=""
+  local -a items=()
+  repo="$(docker_volume_label "$vol" 'ai-containers.repo')"
+  if [[ -z "$repo" ]]; then
+    printf 'NOT CHECKED: it carries no ai-containers.repo label\n'; return 1
+  fi
+  base="$(repo_volume_name "$repo")"
+  if ! docker_volume_present "$base"; then
+    printf 'NOT CHECKED: its base volume %s is gone, and with it the remote to compare with\n' "$base"; return 1
+  fi
+  if [[ "$(docker_volume_label "$base" 'ai-containers.repo')" != "$repo" ]]; then
+    printf 'NOT CHECKED: %s is not labelled as repo %s'"'"'s base volume\n' "$base" "$repo"; return 1
+  fi
+  type="$(docker_volume_label "$base" 'ai-containers.type')"
+  if [[ "$type" == path ]]; then
+    printf 'NOT CHECKED: a copy of a path repo, which has no remote to compare with\n'; return 1
+  fi
+  if [[ "$type" != git ]]; then
+    printf 'NOT CHECKED: its base volume records no repo type\n'; return 1
+  fi
+  # In a subshell: ensure_seed_image exits when the seed image cannot be had,
+  # which here means "not checked", not the end of the command.
+  recs="$(ensure_seed_image; inspect_git "$vol")" || true
+  while IFS= read -r line; do
+    kind="${line%%|*}"; rest="${line#*|}"
+    case "$kind" in
+      STALE) stale="$rest" ;;
+      BRANCH)
+        br="${rest%%|*}"; rest="${rest#*|}"; unpushed="${rest%%|*}"
+        if [[ ! "$unpushed" =~ ^[0-9]+$ ]]; then items+=("$br: unpushed count unknown")
+        elif (( 10#$unpushed > 0 )); then items+=("$br: $unpushed unpushed commit(s)"); fi ;;
+      STASH) items+=("a stash (${rest} entr(y/ies))") ;;
+      TAG)
+        # At risk as `repo.sh reset` counts it (collect_inspections()): unless the
+        # remote has the tag (yes) or another on its commit (same), or keeps the
+        # commit it marks.
+        tname="${rest%%|*}"; rest="${rest#*|}"; tkept="${rest%%|*}"; ton="${rest#*|}"
+        if [[ "$tkept" != yes && "$tkept" != same && "$ton" != yes ]]; then
+          items+=("tag $tname: its commit may be on no remote branch or tag")
+        fi ;;
+      NESTED) items+=("$rest: a git repository inside the checkout") ;;
+      NESTED-MORE) items+=("$rest more git repositories inside the checkout") ;;
+      WORKTREE) worktree="$rest" ;;
+      END) ended=1 ;;
+    esac
+  done <<< "$recs"
+  if [[ -n "$stale" ]]; then
+    printf 'NOT CHECKED: the remote could not be reached (%s)\n' "$(_ac_term "$stale")"; return 1
+  fi
+  if [[ -z "$ended" ]]; then
+    printf 'NOT CHECKED: the inspection was cut short or did not run\n'; return 1
+  fi
+  case "$worktree" in
+    clean) ;;
+    changed) items+=("uncommitted work in the checkout") ;;
+    *) items+=("uncommitted work unknown (the checkout could not be compared)") ;;
+  esac
+  if (( ${#items[@]} )); then
+    for i in "${items[@]}"; do out+="${out:+, }$i"; done
+    printf 'AT RISK: %s\n' "$(_ac_term "$out")"; return 1
+  fi
+  printf 'nothing at risk: every branch pushed, no stash, the checkout clean\n'
+  return 0
+}
+
+# _prj_image_why <image> <id>: why that image is not this project's to remove,
+# rc 1; nothing and rc 0 when its ai-containers.project label is <id>.
+_prj_image_why() {
+  local img="$1" id="$2" labels proj
+  if ! labels="$(docker image inspect --format '{{json .Config.Labels}}' "$img" 2>/dev/null)"; then
+    printf 'no image has that name'; return 1
+  fi
+  # Keys, not text: a key follows an unescaped { or , (ai_containers_retag_check()).
+  if [[ "$labels" != *'{"ai-containers.'* && "$labels" != *',"ai-containers.'* ]]; then
+    printf 'it carries no ai-containers labels, so this tool did not build it'; return 1
+  fi
+  proj="$(docker image inspect --format '{{index .Config.Labels "ai-containers.project"}}' "$img" 2>/dev/null)" || proj=""
+  if [[ -z "$proj" || "$proj" == "<no value>" ]]; then
+    printf 'it records no project (built before images did)'; return 1
+  fi
+  if [[ -z "$id" ]]; then
+    printf "this project's id cannot be computed"; return 1
+  fi
+  if [[ "$proj" != "$id" ]]; then
+    printf "it was built for another project"; return 1
+  fi
+  return 0
+}
+
+# prj_image_remove <image> <id>: remove the image the narrow way
+# remove_replaced_image() does — `docker rmi` without --force, so one a container
+# still references survives — and only when its ai-containers.project label is
+# <id>: IMAGE_NAME is portable, and may name a base image or another project's.
+# Says what it did or why not; never fails the caller.
+prj_image_remove() {
+  local img="$1" id="$2" why
+  if ! why="$(_prj_image_why "$img" "$id")"; then
+    printf 'Image %s not removed: %s.\n' "$(_ac_term "$img")" "$why"
+    return 0
+  fi
+  if docker rmi "$img" >/dev/null 2>&1; then
+    printf 'Removed the image %s.\n' "$(_ac_term "$img")"
+  else
+    printf 'NOTE: could not remove the image %s (a container still references it); ./project.sh gc removes it later.\n' "$(_ac_term "$img")" >&2
+  fi
+  return 0
+}
+
+# _prj_shared <dot>: the group and the repo volumes a project uses, as the
+# launcher resolves them: `group <g>`, then `repo <r>` for each REPOS entry and
+# each @name a pointer or the working dir names.
+_prj_shared() {
+  local dot="$1" e v
+  local -a list=()
+  printf 'group %s\n' "$(prj_env "$dot" AI_CONTAINER_GROUP default)"
+  read -r -d '' -a list < <(prj_env "$dot" REPOS) || true
+  for e in ${list[@]+"${list[@]}"}; do printf 'repo %s\n' "${e%%:*}"; done
+  # SPECS_PATH takes no :ro/:rw suffix (sandbox.sh: parse_pointer_spec()).
+  v="$(prj_env "$dot" SPECS_PATH)"; if [[ "$v" == @?* ]]; then printf 'repo %s\n' "${v#@}"; fi
+  for e in DOCS_PATH ARCHITECTURE_REPO_PATH; do
+    v="$(prj_env "$dot" "$e")"; v="${v%:ro}"; v="${v%:rw}"
+    if [[ "$v" == @?* ]]; then printf 'repo %s\n' "${v#@}"; fi
+  done
+  v="$(prj_env "$dot" SANDBOX_WORKDIR)"; if [[ "$v" == @?* ]]; then printf 'repo %s\n' "${v#@}"; fi
+  return 0
+}
+
+# prj_unused_shared <root>: for the group and each repo volume that project uses,
+# a NOTE when no other registered project uses it, naming the command that
+# removes it. Nothing is removed here: groups are group.sh's, repos repo.sh's.
+# A registered project whose .ai-containers is gone uses nothing; one whose
+# settings cannot be read at all is said to use nothing either way.
+prj_unused_shared() {
+  local root dot r what name
+  local -A used=()
+  root="$(_prj_strip "$1")"; dot="$root/.ai-containers"
+  _prj_has_env "$dot" || return 0
+  while IFS= read -r r; do
+    [[ "$r" != "$1" ]] || continue
+    [[ -d "$(_prj_strip "$r")/.ai-containers" ]] || continue
+    while IFS= read -r what; do used["$what"]=1; done < <(_prj_shared "$(_prj_strip "$r")/.ai-containers")
+  done < <(prj_roots)
+  while IFS= read -r what; do
+    [[ -z "${used["$what"]+x}" ]] || continue
+    name="${what#* }"
+    case "$what" in
+      group\ *) printf 'NOTE: group %s is used by no other registered project; remove it with ./group.sh rm %s\n' "$name" "$name" ;;
+      repo\ *)  printf 'NOTE: repo %s is used by no other registered project; remove it with ./repo.sh rm %s\n' "$name" "$name" ;;
+    esac
+    used["$what"]=1
+  done < <(_prj_shared "$dot")
+  return 0
+}
+
+# cmd_rm <project> [--yes]: remove a project's setup — its working copies, its
+# image, its .ai-containers, its records — after listing all of it and what each
+# working copy would lose. Ordered so that a failure part-way leaves the
+# projects.conf line (a re-run finds the project and finishes) until nothing
+# else is left to point at.
+cmd_rm() {
+  local arg="" assume_yes=0 a
+  for a in "$@"; do
+    case "$a" in
+      --yes|-y) assume_yes=1 ;;
+      -*) printf 'ERROR: unknown flag %s\n' "$a" >&2; exit 1 ;;
+      *) if [[ -n "$arg" ]]; then printf 'ERROR: unexpected argument %s\n' "$a" >&2; exit 1; fi; arg="$a" ;;
+    esac
+  done
+  [[ -n "$arg" ]] || { printf 'ERROR: usage: ./project.sh rm <project> [--yes]\n' >&2; exit 1; }
+  prj_resolve "$arg"
+
+  # projects.conf is edited by hand too: a line that is not an absolute path, or
+  # is the root directory, names nothing rm may take apart.
+  if [[ "$PRJ_ROOT" != /* || "$(_prj_strip "$PRJ_ROOT")" == / || "$(_prj_phys "$PRJ_ROOT")" == / ]]; then
+    printf 'ERROR: the registered root "%s" is not an absolute path to a project directory; refusing.\n' "$PRJ_ROOT" >&2
+    printf '       Fix or remove its line in %s.\n' "$prj_conf" >&2
+    exit 1
+  fi
+  # A link would send the removal into wherever it points, which the agent may
+  # have chosen (as sync-to-projects.sh refuses one).
+  if [[ -L "$PRJ_DOT" ]] || { [[ -e "$PRJ_DOT" ]] && [[ ! -d "$PRJ_DOT" ]]; }; then
+    printf 'ERROR: %s is a link or not a directory; refusing to remove anything through it.\n' "$PRJ_DOT" >&2
+    exit 1
+  fi
+  if ! docker volume ls --quiet >/dev/null 2>&1; then
+    printf 'ERROR: docker cannot be reached, so neither the project'"'"'s running containers nor its working\n' >&2
+    printf '       copies can be checked; refusing. Start docker and run this again.\n' >&2
+    exit 1
+  fi
+  local running
+  if running="$(prj_running "$PRJ_ROOT")"; then
+    printf 'ERROR: a container of this project is running: %s. Stop it first.\n' "$(printf '%s' "$running" | tr '\n' ' ' | sed 's/ $//')" >&2
+    exit 1
+  fi
+
+  # What is there, and what removing it would lose — gathered before anything goes.
+  # img stays empty when nothing says which image the project used.
+  local img="" id why="" img_ok=0 ip_path="" line
+  id="$(prj_id "$PRJ_DOT")" || id=""
+  if _prj_has_env "$PRJ_DOT"; then
+    img="$(prj_env "$PRJ_DOT" IMAGE_NAME ai-sandbox)"
+    if why="$(_prj_image_why "$img" "$id")"; then img_ok=1; fi
+  fi
+  if [[ -n "$id" && -f "$image_projects_file" && -r "$image_projects_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "${line%%|*}" == "$id" ]]; then ip_path="${line#*|}"; break; fi
+    done < "$image_projects_file"
+  fi
+  docker_volume_labels_load
+  local -a copies=() risks=()
+  local wc risk at_risk=0
+  while IFS= read -r wc; do
+    [[ -n "$wc" ]] || continue
+    if risk="$(prj_copy_risk "$wc")"; then :; else at_risk=$((at_risk + 1)); fi
+    copies+=("$wc"); risks+=("$risk")
+  done < <(prj_workcopies "$PRJ_ROOT")
+  local notes; notes="$(prj_unused_shared "$PRJ_ROOT")"
+  # The root goes only if .ai-containers is all it holds now (a setup kept in a
+  # directory of its own); a repository it was added to stays.
+  local root rm_root=0
+  root="$(_prj_strip "$PRJ_ROOT")"
+  if [[ -d "$root" && ! -L "$root" ]] && _prj_only_dot "$root"; then rm_root=1; fi
+
+  printf 'About to remove project %s:\n' "$PRJ_ROOT"
+  if [[ -d "$PRJ_DOT" ]]; then printf '  directory   %s\n' "$PRJ_DOT"
+  else printf '  directory   %s (already gone)\n' "$PRJ_DOT"; fi
+  if (( rm_root )); then printf '  directory   %s (it holds nothing else)\n' "$root"; fi
+  printf '  registry    %s (projects.conf)\n' "$PRJ_ROOT"
+  if [[ -n "$ip_path" ]]; then
+    printf '  registry    %s (image-projects.conf, once no image carries its id)\n' "$(_ac_term "$ip_path")"
+  fi
+  if [[ -z "$img" ]]; then
+    printf '  image       (unknown — no sandbox.env; ./project.sh gc removes it by its label)\n'
+  elif (( img_ok )); then
+    printf '  image       %s\n' "$(_ac_term "$img")"
+  else
+    printf '  image       %s — kept: %s\n' "$(_ac_term "$img")" "$why"
+  fi
+  local i
+  for i in "${!copies[@]}"; do
+    printf '  working copy %s (%s) — %s\n' "${copies[i]}" \
+      "$(_ac_term "$(docker_volume_label "${copies[i]}" 'ai-containers.repo')")" "${risks[i]}"
+  done
+  if (( at_risk )); then printf '%d working cop(y/ies) at risk or not checked.\n' "$at_risk"; fi
+
+  if ! confirm "Remove all of the above?"; then
+    printf 'Nothing was removed.\n' >&2
+    exit 1
+  fi
+
+  # 1. The working copies. A failure stops everything: the line stays, so a
+  #    re-run finds the project and the copies it has left.
+  for wc in ${copies[@]+"${copies[@]}"}; do
+    if ! docker volume rm "$wc" >/dev/null; then
+      printf 'ERROR: could not remove the working copy %s (in use?). Nothing else was removed;\n' "$wc" >&2
+      printf '       run ./project.sh rm %s again once it can be.\n' "$PRJ_ROOT" >&2
+      exit 1
+    fi
+    printf 'Removed the working copy %s.\n' "$wc"
+  done
+  # 2. The image, if it is this project's.
+  if [[ -n "$img" ]]; then prj_image_remove "$img" "$id"; fi
+  # 3. The directory. rm -rf removes a link it meets inside, never what it points
+  #    to; one that has replaced the directory itself since it was checked stops it.
+  if [[ -L "$PRJ_DOT" ]]; then
+    printf 'ERROR: %s has become a link since it was checked; it is left alone, and so are its\n' "$PRJ_DOT" >&2
+    printf '       registry lines.\n' >&2
+    exit 1
+  fi
+  if [[ -e "$PRJ_DOT" ]]; then
+    if ! rm -rf -- "$PRJ_DOT" || [[ -e "$PRJ_DOT" || -L "$PRJ_DOT" ]]; then
+      printf 'ERROR: could not remove %s (see above). Its registry lines are kept;\n' "$PRJ_DOT" >&2
+      printf '       fix what stopped it and run ./project.sh rm %s again.\n' "$PRJ_ROOT" >&2
+      exit 1
+    fi
+    printf 'Removed %s.\n' "$PRJ_DOT"
+  fi
+  # 4. Its image-projects.conf line, once no image carries the id: another
+  #    project's build, or gc, still needs the line to name an image that does.
+  if [[ -n "$id" && -n "$ip_path" ]]; then
+    local carriers
+    if ! carriers="$(docker images -q --filter "label=ai-containers.project=$id" 2>/dev/null)"; then
+      printf 'NOTE: docker could not list images, so its image-projects.conf line is kept; ./project.sh gc drops it later.\n' >&2
+    elif [[ -n "$carriers" ]]; then
+      printf 'NOTE: an image still carries this project'"'"'s id, so its image-projects.conf line is kept; ./project.sh gc drops it later.\n' >&2
+    else
+      prj_image_projects_drop "$id" || {
+        printf 'ERROR: could not drop its line from %s. The projects.conf line is kept;\n' "$image_projects_file" >&2
+        printf '       run ./project.sh rm %s again.\n' "$PRJ_ROOT" >&2
+        exit 1
+      }
+      printf 'Removed %s from image-projects.conf.\n' "$(_ac_term "$ip_path")"
+    fi
+  fi
+  # 5. Its projects.conf line.
+  prj_conf_remove "$PRJ_ROOT" || exit 1
+  printf 'Removed %s from projects.conf.\n' "$PRJ_ROOT"
+  # 6. The root, if it was listed: rmdir removes it only while it is empty.
+  if (( rm_root )) && [[ -d "$root" && ! -L "$root" ]] && rmdir -- "$root" 2>/dev/null; then
+    printf 'Removed the empty directory %s.\n' "$root"
+  fi
+  if [[ -n "$notes" ]]; then printf '%s\n' "$notes"; fi
+  printf 'OK: removed project %s.\n' "$PRJ_ROOT"
+}
+
 cmd_mv() { printf 'ERROR: mv is not yet implemented.\n' >&2; exit 1; }
 cmd_gc() { printf 'ERROR: gc is not yet implemented.\n' >&2; exit 1; }
 
