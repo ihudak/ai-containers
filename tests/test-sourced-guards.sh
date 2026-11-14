@@ -226,6 +226,34 @@ else
   fail "  … while an EXECUTED generate.sh still runs its main — no such file"
 fi
 
+# ── 3b. repo.sh, sourced by project.sh ───────────────────────────────────────
+# Its dispatch runs whatever `$1` names, and with none it prints usage. Sourced,
+# it must define its functions and return having run NO docker command: a fake
+# `docker` on PATH logs its argv, and the log must stay empty. (usage text alone
+# would also be the witness of a broken guard.)
+RS_BIN="$TMP/rs-bin"; RS_LOG="$TMP/rs-docker.log"
+mkdir -p "$RS_BIN"; : > "$RS_LOG"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$RS_LOG" > "$RS_BIN/docker"
+chmod +x "$RS_BIN/docker"
+RS_HOME="$TMP/rs-home"; mkdir -p "$RS_HOME"
+
+out="$(PATH="$RS_BIN:$PATH" HOME="$RS_HOME" run_sourced "$ENGINE/repo.sh")"; rc=$RC
+if [[ "$rc" -eq 0 && "$out" != *'Usage'* && "$out" != *'usage'* && ! -s "$RS_LOG" ]]; then
+  pass "sourcing repo.sh runs no docker command and returns 0"
+else
+  fail "sourcing repo.sh ran its dispatch (rc=$rc, docker log: $(tr '\n' ';' < "$RS_LOG"), output: ${out:0:80})"
+fi
+out="$(PATH="$RS_BIN:$PATH" HOME="$RS_HOME" p_timeout 30 bash -c 'source "$0" && declare -F ensure_seed_image git_helper_run inspect_git >/dev/null && echo DEFINED' "$ENGINE/repo.sh" 2>&1)"
+[[ "$out" == *DEFINED* ]] \
+  && pass "  … and has defined the functions project.sh reuses" \
+  || fail "  … and has defined the functions project.sh reuses — got: ${out:0:120}"
+out="$(PATH="$RS_BIN:$PATH" HOME="$RS_HOME" run_executed "$ENGINE/repo.sh" --help)"; rc=$RC
+if [[ "$out" == *Usage* || "$out" == *usage* ]]; then
+  pass "an EXECUTED repo.sh still dispatches"
+else
+  fail "an EXECUTED repo.sh still dispatches — printed no usage (rc=$rc): ${out:0:120}"
+fi
+
 # ── 4. the class ratchet ──────────────────────────────────────────────────────
 # The two assertions above pin the two files that have the idiom TODAY. This
 # scan is what stops a fourth file from acquiring it, and it is the only part of

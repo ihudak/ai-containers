@@ -1759,6 +1759,45 @@ else
   fail "  … and then seeded into the destination volume — got: $(runs | tr '\n' ';')"
 fi
 
+# ── a working copy has no source label of its own ────────────────────────────
+# Only base volumes carry ai-containers.source, so git_helper_run on a working
+# copy reads the URL from the base volume its ai-containers.repo label names.
+# `project.sh rm` inspects working copies, and without this it would refuse them.
+setup_world
+: > "$VOLS/ai-containers-repo-docs--wc-wcA"
+printf 'ai-containers.repo=docs\nai-containers.workcopy=1\nai-containers.launch-dir=/tmp/a\n' \
+  > "$VOLS/ai-containers-repo-docs--wc-wcA.labels"
+: > "$VOLS/ai-containers-repo-orph--wc-wcA"
+printf 'ai-containers.repo=orph\nai-containers.workcopy=1\n' > "$VOLS/ai-containers-repo-orph--wc-wcA.labels"
+: > "$VOLS/ai-containers-repo-plain"     # neither a source nor a working copy
+: > "$DOCKER_LOG"
+(
+  export PATH="$FAKE_BIN:$PATH"
+  # shellcheck disable=SC1090
+  source "$REPO_SH" </dev/null
+  set +e
+  inspect_git ai-containers-repo-docs--wc-wcA >"$TMP/wc.out" 2>"$TMP/wc.err"; echo "$?" > "$TMP/wc.rc"
+)
+check "git_helper_run on a working copy succeeds" "0" "$(cat "$TMP/wc.rc" 2>/dev/null)"
+if run_has "-e AI_REPO_URL=git@x:docs.git"; then
+  pass "git_helper_run on a working copy passes its base volume's recorded URL"
+else
+  fail "git_helper_run on a working copy passes its base volume's recorded URL — got: $(runs | tr '\n' ';')"
+fi
+
+: > "$DOCKER_LOG"
+(
+  export PATH="$FAKE_BIN:$PATH"
+  # shellcheck disable=SC1090
+  source "$REPO_SH" </dev/null
+  set +e
+  inspect_git ai-containers-repo-orph--wc-wcA >"$TMP/wc.out" 2>"$TMP/wc.err"; echo "$?" > "$TMP/wc.rc"
+  inspect_git ai-containers-repo-plain >>"$TMP/wc.out" 2>>"$TMP/wc.err"; echo "$?" >> "$TMP/wc.rc"
+)
+check "git_helper_run refuses a working copy whose base volume records no URL (rc 1) and a plain volume too" \
+  "1 1" "$(tr '\n' ' ' < "$TMP/wc.rc" | sed 's/ $//')"
+check "  … and runs no container" "" "$(runs)"
+
 # ── Hermeticity ───────────────────────────────────────────────────────────────
 export HOME="$REAL_HOME"
 if [[ -n "$REAL_REGISTRY_BEFORE" ]]; then

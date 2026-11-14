@@ -6458,7 +6458,7 @@ run_container() {
     fi
   fi
   if [[ ${#repos_list[@]} -gt 0 ]]; then
-    local ws_tag; ws_tag="$(sanitize_volume_token "$(basename "$launch_dir")")_$(printf '%s' "$launch_dir" | cksum | tr -cd '0-9' | cut -c1-8)"
+    local ws_tag; ws_tag="$(workcopy_tag "$launch_dir")"
     # Every entry's volumes are checked before ANY is seeded or mounted: a repo
     # volume is found by name, and under a nested REPO_VOLUME_PREFIX two repos'
     # names collide, a working copy's (`<base>--wc-<tag>`) as much as a base
