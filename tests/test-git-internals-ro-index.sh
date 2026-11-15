@@ -2488,5 +2488,87 @@ EXTRA_MOUNTS="$R253/w" launch "$TMP/app"
   || fail "G253 named without the .git file (rc=$LAUNCH_RC; $(grep -F 'cannot read the index' "$ERR" | head -1))"
 rm -rf "$R253"
 
+# ── G270 to G274, G278: GAP-2's whole-file run, batch 5 ──────────────────────
+# G270 (item 1): a checkout's .git directory you can search but not list, under
+# a pruned node_modules and reached through its worktree's gitdir, refuses the
+# launch, as one the scan finds does.
+if [[ "$(id -u)" != 0 ]]; then
+  mkdir -p "$PROJ/node_modules" && "${G[@]}" -C "$PROJ" worktree add -q "$PROJ/node_modules/co270" -b bco270 \
+    && rm "$PROJ/node_modules/co270/.git" && "${G[@]}" init -q "$PROJ/node_modules/co270" && chmod 300 "$PROJ/node_modules/co270/.git" \
+    || { printf 'SCAFFOLD-FAILED: G270\n'; exit 1; }
+  launch ..
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $PROJ/node_modules/co270/.git can be searched but not listed by you" "$ERR" \
+    && pass "G270 a checkout's .git directory you can search but not list, in this mount, refuses the launch" \
+    || fail "G270 unlistable .git in this mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  chmod 755 "$PROJ/node_modules/co270/.git"; rm -rf "$PROJ/node_modules/co270"; rmdir "$PROJ/node_modules" 2>/dev/null
+  "${G[@]}" -C "$PROJ" worktree prune; "${G[@]}" -C "$PROJ" branch -q -D bco270
+else skip_root G270; fi
+
+# G271 (item 2): the same in another writable mount.
+if [[ "$(id -u)" != 0 ]]; then
+  A271="$TMP/a271"; B271="$TMP/b271"; "${G[@]}" init -q "$A271/r" && "${G[@]}" -C "$A271/r" commit -q --allow-empty -m i \
+    && mkdir -p "$B271/node_modules" && "${G[@]}" -C "$A271/r" worktree add -q "$B271/node_modules/co" -b co271 \
+    && rm "$B271/node_modules/co/.git" && "${G[@]}" init -q "$B271/node_modules/co" && chmod 300 "$B271/node_modules/co/.git" \
+    || { printf 'SCAFFOLD-FAILED: G271\n'; exit 1; }
+  EXTRA_MOUNTS="$A271 $B271" launch "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $B271/node_modules/co/.git can be searched but not listed by you" "$ERR" \
+    && pass "G271 a checkout's .git directory you can search but not list, in another mount, refuses the launch" \
+    || fail "G271 unlistable .git in another mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  chmod 755 "$B271/node_modules/co/.git"; rm -rf "$A271" "$B271"
+else skip_root G271; fi
+
+# G272 (item 3): a rewritten gitdir that does not end in /.git is no checkout:
+# the worktree is said to have none, and no checkout is said to be gone.
+"${G[@]}" -C "$PROJ" worktree add -q "$TMP/o272/co" -b bco272 && "${G[@]}" init -q "$TMP/o272/co/vendor/lib" \
+  && "${G[@]}" -C "$TMP/o272/co/vendor/lib" commit -q --allow-empty -m l && "${G[@]}" -C "$TMP/o272/co" add vendor/lib 2>/dev/null \
+  && "${G[@]}" -C "$TMP/o272/co" commit -q -m s && printf '%s\n' "$PROJ/gone272/x" > "$PROJ/.git/worktrees/co/gitdir" \
+  || { printf 'SCAFFOLD-FAILED: G272\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: no worktree is known for $PROJ/.git/worktrees/co" "$ERR" && ! grep -qF "Its gitdir names" "$ERR" \
+  && pass "G272 a gitdir that does not end in /.git is not said to name a checkout that is gone" \
+  || fail "G272 (rc=$LAUNCH_RC; $(grep -F -A1 'worktrees/co' "$ERR" | head -3 | tr '\n' ' '))"
+rm -rf "$TMP/o272"; "${G[@]}" -C "$PROJ" worktree prune; "${G[@]}" -C "$PROJ" branch -q -D bco272
+
+# G273 (item 4): a checkout in this mount whose .git file does not point back is
+# followed once, not again as one in another mount.
+mkdir -p "$PROJ/node_modules" && "${G[@]}" -C "$PROJ" worktree add -q "$PROJ/node_modules/co273" -b bco273 \
+  && printf 'gitdir: ../missing273/.git\n' > "$PROJ/node_modules/co273/.git" || { printf 'SCAFFOLD-FAILED: G273\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 && "$(grep -cF "WARNING: $PROJ/node_modules/co273/.git names $PROJ/node_modules/missing273/.git, which does not exist" "$ERR")" == 1 ]] \
+  && pass "G273 a checkout in this mount is followed once" \
+  || fail "G273 followed twice (rc=$LAUNCH_RC; $(grep -cF 'missing273' "$ERR") lines)"
+rm -rf "$PROJ/node_modules/co273"; rmdir "$PROJ/node_modules" 2>/dev/null; "${G[@]}" -C "$PROJ" worktree prune; "${G[@]}" -C "$PROJ" branch -q -D bco273
+
+# G274 (item 5): a worktree whose checkout lies in another mount and points
+# back, its index recording a submodule there: the index is not read against a
+# checkout this mount does not hold, and that is said.
+A274="$TMP/a274"; B274="$TMP/b274"; "${G[@]}" init -q "$A274/r" && "${G[@]}" -C "$A274/r" commit -q --allow-empty -m i \
+  && mkdir -p "$B274/node_modules" && "${G[@]}" -C "$A274/r" worktree add -q "$B274/node_modules/co" -b co274 \
+  && "${G[@]}" init -q "$B274/node_modules/co/sub" && "${G[@]}" -C "$B274/node_modules/co/sub" commit -q --allow-empty -m s \
+  && "${G[@]}" -C "$B274/node_modules/co" add sub 2>/dev/null && "${G[@]}" -C "$B274/node_modules/co" commit -q -m m \
+  || { printf 'SCAFFOLD-FAILED: G274\n'; exit 1; }
+EXTRA_MOUNTS="$A274 $B274" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: no worktree is known for $A274/r/.git/worktrees/co, so the submodules its index records are not followed." "$ERR" \
+  && pass "G274 a worktree whose checkout only another mount holds is said to have none here" \
+  || fail "G274 (rc=$LAUNCH_RC; $(grep -F 'worktrees/co' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$A274" "$B274"
+
+# G278 (to decide): a worktree's gitdir naming, through a link and a .., a path
+# the kernel can enter, while read as written it names a directory of yours that
+# cannot be searched: nothing of that directory is bound or named. git does not
+# use it (GIT-96, the Linux agent's, is the converse).
+if [[ "$(id -u)" != 0 ]]; then
+  "${G[@]}" -C "$PROJ" worktree add -q "$TMP/o278/w" -b bw278 \
+    && mkdir -p "$TMP/deep278/x" "$TMP/deep278/proj/node_modules/blk" "$PROJ/node_modules/blk" && ln -s "$TMP/deep278/x" "$TMP/lk278" \
+    && printf '%s\n' "$TMP/lk278/../proj/node_modules/blk/.git" > "$PROJ/.git/worktrees/w/gitdir" && chmod 000 "$PROJ/node_modules/blk" \
+    || { printf 'SCAFFOLD-FAILED: G278\n'; exit 1; }
+  launch ..
+  [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$PROJ/node_modules/blk" < <(mounts) && ! grep -qF "$PROJ/node_modules/blk cannot be listed" "$ERR" \
+    && pass "G278 a directory a gitdir names only as written, through a link and a .., is not bound or named" \
+    || fail "G278 (rc=$LAUNCH_RC; $(grep -F 'node_modules/blk' "$ERR" | head -1); $(mounts | grep -F 'node_modules/blk' | tr '\n' ' '))"
+  chmod 755 "$PROJ/node_modules/blk"; rm -rf "$PROJ/node_modules" "$TMP/o278" "$TMP/deep278" "$TMP/lk278"
+  "${G[@]}" -C "$PROJ" worktree prune; "${G[@]}" -C "$PROJ" branch -q -D bw278
+else skip_root G278; fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

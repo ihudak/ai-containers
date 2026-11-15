@@ -1531,6 +1531,42 @@ o133="$(bash -c 'source "$1"; declare -A _gcm_seen=(); uid=4242 gid=4343
   || fail "G133 the agent's identity (got: $(tr '\n' ' ' <<< "$o133"))"
 rm -rf "$R133" "$fns133" "$TMP/d133"
 
+# ── G275 to G277: what _git_cant_make() says, driven directly ────────────────
+# With a stand-in for _agent_could_write that always succeeds. A name that is
+# there by the time it is called is left alone; the advice for a directory of
+# yours is the chmod; for one the sandbox identity owns, the sudo chmod; for
+# another, that the agent can write into it (GAP-2's whole-file run, batch 5,
+# items 6 to 8).
+fns275="$TMP/fns275.sh"
+for f275 in _term _q _git_cant_make; do
+  awk -v f="$f275() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+done > "$fns275"
+mkdir -p "$TMP/d275" && : > "$TMP/d275/there" || { printf 'SCAFFOLD-FAILED: G275\n'; exit 1; }
+run275() {  # <uid> <dir> <name> -> o275 (output and "rc=N")
+  o275="$(bash -c 'source "$1"; declare -A _gcm_seen=(); uid="$2" gid=4343
+    _agent_could_write() { return 0; }
+    ( _git_cant_make "$3" "$4" ); printf "rc=%s" "$?"' _ "$fns275" "$1" "$2" "$3" 2>&1)"
+}
+run275 4242 "$TMP/d275" there
+[[ "$o275" == "rc=0" ]] \
+  && pass "G275 a name that is there when _git_cant_make is asked is left alone" \
+  || fail "G275 a name that is there (got: $(tr '\n' ' ' <<<"$o275"))"
+run275 4242 "$TMP/d275" none275
+[[ "$o275" == *"Make it writable for you (chmod u+w $TMP/d275)"*"rc=1" ]] \
+  && pass "G276 for a git directory of yours the advice is the chmod" \
+  || fail "G276 advice for yours (got: $(tr '\n' ' ' <<<"$o275"))"
+if [[ "$(id -u)" != 0 ]]; then
+  run275 0 / none275
+  r277a="$o275"; run275 4242 / none275
+  [[ "$r277a" == *"It belongs to the sandbox identity (SANDBOX_UID=0): sudo chmod u+w /"* \
+     && "$o275" == *"The agent can write into it"* && "$o275" != *"belongs to the sandbox identity"* ]] \
+    && pass "G277 for one the sandbox identity owns the advice is the sudo chmod; for another's, that the agent can write it" \
+    || fail "G277 advice for not yours (uid 0: $(tr '\n' ' ' <<<"$r277a"); uid 4242: $(tr '\n' ' ' <<<"$o275"))"
+else
+  pass "G277 skipped: as root / is yours"
+fi
+rm -rf "$fns275" "$TMP/d275"
+
 # ── G135: a config entry is split in time linear in its key ────────────────
 # git prints a key of any length (an includeIf condition, an alias name), and
 # splitting `<key>\n<value>` by pattern was quadratic in it: three planted keys
