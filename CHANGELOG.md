@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`project.sh` removes, moves and tidies a project's container setup.** A
+  project's setup is its `.ai-containers/`, its `projects.conf` line, its
+  `image-projects.conf` line, its image and its `:rwcopy` working copies, and
+  nothing removed or moved them together. `./project.sh rm <project>` lists and
+  removes all of it, naming what each working copy would lose; `mv <project>
+  <new-dir>` moves the setup with its working copies and records and mounts the
+  old directory through `EXTRA_MOUNTS`; `gc` collects what projects deleted by
+  hand left behind. `init`, `report` and `sync` reach `project-init.sh`,
+  `ai-containers-report.sh` and `sync-to-projects.sh` from the same place, and
+  the old names still work. Groups and repo volumes are only named, never
+  removed. See `docs/multiple-projects.md`.
+
+- **`repo-git-reset.sh inspect` reports `WORKTREE|clean|changed|?`**, so a caller
+  can tell whether a volume's checkout has uncommitted changes. `repo.sh` can
+  now be sourced, and a working copy's git helper borrows its base volume's URL
+  only when that volume is its repo's.
+
 - **On Colima, launcher mounts are now verified against a concurrent-container
   swap.** Colima's file sharing does not keep device:inode across a bind, so the
   entrypoint skipped the check on every launch with a `NOTE:`. Colima's VM

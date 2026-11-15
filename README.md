@@ -24,7 +24,8 @@ You do not run this repository directly. You point it at a project once, and fro
 
 ```bash
 # 1. once per project, from here — it prompts for the project path
-./project-init.sh
+#    (project.sh also has rm, mv and gc, for removing or moving a project's setup)
+./project.sh init
 
 # 2. configure it, in the project
 cd /path/to/myproject/.ai-containers

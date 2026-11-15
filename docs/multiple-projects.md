@@ -89,6 +89,36 @@ After pulling changes to this repo, run this to push the updated shared files to
 
 **sandbox.conf reconcile:** Instead of a bare drift warning, `sync-to-projects.sh` now reconciles each project's `sandbox.conf` against this repo's on every sync — pending `migrations/` hooks run, any new upstream keys are appended under a dated banner, and the `# schema-version:` marker is ensured. A key the project already set is never touched, so per-project tool selections are preserved. See [sandbox.conf schema versioning](components/README.md#schema-versioning).
 
+## project.sh — moving and removing a project
+
+`./project.sh` is the front door: `init`, `report` and `sync` run `project-init.sh`, `ai-containers-report.sh` and `sync-to-projects.sh` unchanged (the old names still work), and `rm`, `mv` and `gc` keep a project's pieces in step: its `.ai-containers/`, its `projects.conf` line, its line in `~/.ai-containers/image-projects.conf`, its image and its `:rwcopy` working-copy volumes. `<project>` is a registered path, a path to it, or the basename of exactly one registered project. Groups and repo volumes are shared and are never removed: the commands name one no other registered project uses, with the `./group.sh rm` or `./repo.sh rm` command to run.
+
+### Moving a project
+
+The common case: a multi-repo container whose setup lives in one of its repositories, say `~/dev/workspace/app/.ai-containers`, and you want it in `~/dev/workspace/containers` instead.
+
+```bash
+./project.sh mv ~/dev/workspace/app ~/dev/workspace/containers
+```
+
+It moves `.ai-containers` to `<new-dir>/.ai-containers` (creating `<new-dir>`), rewrites the `projects.conf` line in place, copies each working copy to the name and launch-dir label the next launch from the new place uses (an rsync, then a checksum dry run that must come back empty, and only then is the old volume removed), removes the old image and its `image-projects.conf` line (the next `./runme.sh` rebuilds from cache), and adds the old directory to `EXTRA_MOUNTS` in `sandbox.local.env`, one entry per line, so the repository stays mounted. If the old directory held nothing but `.ai-containers`, it is removed instead; if an existing entry already covers it, nothing is added. If you already moved the directory by hand, `mv` does everything but the file move, even after `gc` dropped the old line.
+
+It refuses, before anything changes, when a container of the project runs; when both places have a `.ai-containers`; on a basename clash (the new directory's basename equal to the old root's, an `EXTRA_MOUNTS` entry's or a `REPOS` name, since all land at `/workspace/<basename>`); when the old root has whitespace it would have to mount; when `sandbox.local.env` holds relative `EXTRA_MOUNTS` or pointer paths, or a `SANDBOX_WORKDIR` other than `..`; and when `<new-dir>` is a link or inside `~/.ai-containers` or the old `.ai-containers`. Across filesystems it copies to a temporary name, compares file lists and checksums, renames, then removes the old. After the move it checks where the setup landed. If the old repository's index tracks `.ai-containers/` files, `mv` says so: they now show as deleted there. `--yes` skips only the question.
+
+### Removing a project
+
+```bash
+./project.sh rm ~/dev/workspace/app
+```
+
+It lists everything first, each working copy with what it would lose (unpushed branches, a stash, uncommitted changes; a copy it cannot check is "not checked" and counted at risk), then removes `.ai-containers`, the `projects.conf` line, the `image-projects.conf` line (once no image carries its id), the image (only when its `ai-containers.project` label is this project's id; a tag naming a base or another project's image is kept and named) and the working copies made for launches inside the project. The project's root directory is removed only if it is then empty. `--yes` skips only the question.
+
+It refuses while a container of the project runs (checked again after the question), when docker cannot be reached, for a `.ai-containers` that is a link, and for a project registered at `$HOME` or whose `.ai-containers` is, holds or lies in `~/.ai-containers`, or holds the engine. It can be re-run after a partial failure, and works when you already deleted `.ai-containers` by hand (the image is then left to `gc`).
+
+If you deleted projects by hand, `./project.sh gc` collects what they left: `projects.conf` lines whose project has no `.ai-containers`, `image-projects.conf` lines whose path is gone, their images, and working copies whose launch directory is gone, each with its risk. It keeps and names anything whose path may be on an unmounted drive (an empty nearest directory, a removable-media root, a link that leads nowhere, an unsearchable directory), a copy a container (running or stopped) uses, and a `.ai-containers` that is a link. For each vanished project it says what to do if it was moved rather than deleted: answer no and run `./project.sh mv <root> <new-dir>`, which works after `gc` too. With nothing stale it prints "Nothing to collect.".
+
+**Limitation:** a working copy's launch-dir label does not record which machine or `HOME` made it. On a Docker daemon shared by several WSL distros or users, `gc` lists another `HOME`'s copies as gone. Read the listing before answering yes.
+
 ## Which sources produced an image?
 
 Syncing and rebuilding are two steps, and getting only the second one done is

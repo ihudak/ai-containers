@@ -1,6 +1,6 @@
 # project.sh — removing, moving and tidying a project's container setup
 
-**Status:** approved 2026-11-14; amended while planning (the image after `mv`,
+**Status:** IMPLEMENTED 2026-11-15 on branch feat/project-tool; approved 2026-11-14; amended while planning (the image after `mv`,
 the `WORKTREE` record), see the plan
 `docs/superpowers/plans/2026-11-14-project-tool.md`.
 
