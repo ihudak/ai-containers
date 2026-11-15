@@ -45,8 +45,9 @@ export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LOG"
 # SELinux option is chosen. A volume's files are its `data` directory: a `run`
 # whose script is an rsync copies /src's to /dst's, and one with --dry-run prints
 # a change line when they differ; FAKE_COPY_BAD makes the copy add a file the
-# source does not have. `volume create` makes a volume with its --label values,
-# and leaves one that exists as it is, as docker does.
+# source does not have, and FAKE_RUN_TERM=<n> makes the n-th copy, once made,
+# send TERM to the shell that ran docker. `volume create` makes a volume with
+# its --label values, and leaves one that exists as it is, as docker does.
 export VOLS="$TMP/vols" IMGS="$TMP/imgs" FAKE_RUNNING="$TMP/running" FAKE_STOPPED="$TMP/stopped"
 mkdir -p "$VOLS" "$IMGS"; : > "$FAKE_RUNNING"
 cat > "$TMP/bin/docker" <<'FAKE'
@@ -109,7 +110,7 @@ case "$cmd${sub:+ $sub}" in
         echo "Error response from daemon: remove $v: volume is in use" >&2; exit 1
       fi
       [[ -d "$VOLS/$v" ]] || { echo "Error: no such volume: $v" >&2; exit 1; }
-      if cat "$FAKE_RUNNING" "$FAKE_STOPPED" 2>/dev/null | grep -qF -- "|/var/lib/docker/volumes/$v/_data"; then
+      if grep -qF -- "|/var/lib/docker/volumes/$v/_data" < <(cat "$FAKE_RUNNING" "$FAKE_STOPPED" 2>/dev/null); then
         echo "Error response from daemon: remove $v: volume is in use" >&2; exit 1
       fi
       rm -rf "$VOLS/$v"
@@ -131,6 +132,11 @@ case "$cmd${sub:+ $sub}" in
       else
         if [[ -d "$s" ]]; then mkdir -p "$d"; cp -R "$s/." "$d/"; fi
         if [[ -n "${FAKE_COPY_BAD:-}" ]]; then mkdir -p "$d"; printf 'x\n' > "$d/extra"; fi
+        if [[ -n "${FAKE_RUN_TERM:-}" ]]; then
+          n=0; [[ -f "$VOLS.rcount" ]] && n="$(cat "$VOLS.rcount")"
+          n=$((n + 1)); printf '%s\n' "$n" > "$VOLS.rcount"
+          if (( n == FAKE_RUN_TERM )); then kill -TERM "$PPID"; fi
+        fi
       fi
       exit 0
     fi
@@ -350,6 +356,51 @@ mkdir -p "$TMP/rw"; printf 'x\n' > "$TMP/rw/target"
 ok "a failed rewrite is rc 1, leaves no temp file, and the target is unchanged" \
   bash -c '[ "$1" = 1 ] && [ "$(ls -A "$2")" = target ] && [ "$(cat "$2/target")" = x ]' _ "$rc" "$TMP/rw"
 
+# ── a registry edit whose new content cannot be written changes nothing ──
+# mktemp, which FAKE_MKTEMP_BAD=<glob> makes hand out, for a name that matches,
+# a file no write reaches: with FAKE_MKTEMP_HOW=full a link to /dev/full (every
+# write fails, as on a full disk), with =dir a directory (it cannot be opened).
+REAL_MKTEMP="$(command -v mktemp)"; export REAL_MKTEMP
+cat > "$TMP/bin/mktemp" <<'FAKEMKTEMP'
+#!/usr/bin/env bash
+out="$("$REAL_MKTEMP" "$@")" || exit
+# shellcheck disable=SC2053  # a glob on purpose
+if [[ -n "${FAKE_MKTEMP_BAD:-}" && "${out##*/}" == $FAKE_MKTEMP_BAD ]]; then
+  rm -f "$out"
+  if [[ "${FAKE_MKTEMP_HOW:-}" == full ]]; then ln -s /dev/full "$out"; else mkdir "$out"; fi
+fi
+printf '%s\n' "$out"
+FAKEMKTEMP
+chmod +x "$TMP/bin/mktemp"
+edit_fails() {  # <how> <assertion>: each edit, its new content unwritable, is rc 1 with ERROR: and changes nothing
+  local how="$1" bad="" op rc
+  printf '# c\n/a/one\r\n/b/two\n/c/three' > "$ENG/projects.conf"; cp "$ENG/projects.conf" "$TMP/conf.orig"
+  printf 'sha256:aaa|/p/one\nsha256:bbb|/p/two\n' > "$IP"; cp "$IP" "$TMP/ip.orig"
+  for op in "prj_conf_remove /b/two" "prj_conf_replace /a/one /z/new" "prj_conf_add /d/four" "prj_image_projects_drop sha256:aaa"; do
+    # ulimit: /dev/full reads as endless zeros, and an edit that took it for its
+    # new content would copy them until the disk filled.
+    # shellcheck disable=SC2086  # the op's words, on purpose
+    ( ulimit -f 2048; export FAKE_MKTEMP_BAD='.*.new.*' FAKE_MKTEMP_HOW="$how"; source "$P" && $op ) > "$TMP/err" 2>&1; rc=$?
+    [[ "$rc" == 1 ]] && grep -q '^ERROR: cannot read .*, or write its new content beside it' "$TMP/err" || bad+=" [$op: rc=$rc $(tr '\n' ' ' < "$TMP/err")]"
+    rm -rf "$ENG"/.projects.conf.new.* "$HOME/.ai-containers"/.image-projects.conf.new.*
+  done
+  cmp -s "$ENG/projects.conf" "$TMP/conf.orig" || bad+=" [projects.conf changed: $(cat "$ENG/projects.conf")]"
+  cmp -s "$IP" "$TMP/ip.orig" || bad+=" [image-projects.conf changed: $(cat "$IP")]"
+  ok "$2" bash -c '[ -z "$1" ] || { printf "%s\n" "$1"; false; }' _ "$bad"
+}
+if [[ -e /dev/full ]]; then
+  edit_fails full "a registry edit whose every write fails (a full disk) is rc 1 with ERROR:, both registries byte-identical"
+else
+  printf 'SKIP: a registry edit on a full disk (no /dev/full here)\n'
+fi
+edit_fails dir "a registry edit whose new content cannot be opened is rc 1 with ERROR:, both registries byte-identical"
+rm -f "$TMP/bin/mktemp"
+printf '/a/one\n/b/two\n' > "$ENG/projects.conf"
+( export TMPDIR="$TMP/no-such-tmpdir"; source "$P" && prj_conf_remove /a/one ) > "$TMP/err" 2>&1; rc=$?
+ok "a registry edit writes its new content beside the file, so an unusable TMPDIR does not stop it" \
+  bash -c '[ "$1" = 0 ] && [ "$(cat "$2")" = /b/two ] && [ -z "$(ls -A "$3" | grep "^\.projects")" ]' _ "$rc" "$ENG/projects.conf" "$ENG"
+rm -f "$IP"
+
 # ── M5: a read-only registry is rewritten and stays read-only ──
 source "$REPO_DIR/tests/portability.sh"
 printf '/a/one\n/b/two\n' > "$ENG/projects.conf"; chmod 444 "$ENG/projects.conf"
@@ -378,15 +429,18 @@ rm -f "$HOME/.ai-containers/project-id.key"
 ( umask 077; printf '%s\n' "$KEY" > "$HOME/.ai-containers/project-id.key" )
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1; }
 tid() { printf 'sha256:%s' "$(printf '%s\n%s' "$KEY" "$(cd "$1" && pwd -P)" | sha256)"; }   # <existing dir>
+# This HOME's ai-containers.owner, which a launch from here labels its working
+# copies with: the same keyed hash, over a fixed string.
+OWN="sha256:$(printf '%s\n%s' "$KEY" 'ai-containers owner' | sha256)"
 
 W="$TMP/rmw"
 world() {   # nothing registered, built, recorded, running or logged
   [[ -d "$W" ]] && chmod -R u+rwx "$W" 2>/dev/null
   rm -rf "$VOLS" "$IMGS" "$W"; mkdir -p "$VOLS" "$IMGS" "$W"
   : > "$FAKE_RUNNING"; : > "$DOCKER_LOG"
-  rm -f "$ENG/projects.conf" "$IP" "$FAKE_RUNNING.count" "$FAKE_RUNNING.vcount" "$FAKE_RUNNING.later" "$FAKE_STOPPED"
+  rm -f "$ENG/projects.conf" "$IP" "$FAKE_RUNNING.count" "$FAKE_RUNNING.vcount" "$FAKE_RUNNING.later" "$FAKE_STOPPED" "$VOLS.rcount"
   unset FAKE_FAIL_VOLUME_RM FAKE_FAIL_RMI FAKE_DOCKER_DOWN FAKE_PS_FAIL FAKE_RUNNING_AFTER FAKE_VOLPS_AFTER FAKE_NO_SEED
-  unset FAKE_COPY_BAD FAKE_CP_CORRUPT AI_CONTAINERS_MV_COPY FAKE_MV_PLANT FAKE_MV_PLANT_TO FAKE_CP_TERM
+  unset FAKE_COPY_BAD FAKE_CP_CORRUPT AI_CONTAINERS_MV_COPY FAKE_MV_PLANT FAKE_MV_PLANT_TO FAKE_CP_TERM FAKE_RUN_TERM
 }
 # mkproj <root> [<sandbox.env text>] [<sandbox.local.env text>]: a registered project
 mkproj() {
@@ -404,10 +458,12 @@ built() {
 }
 mkvol()  { mkdir -p "$VOLS/$1"; printf '%s\n' "${@:2}" > "$VOLS/$1/labels"; }
 mkbase() { mkvol "ai-containers-repo-$1" "ai-containers.repo=$1" "ai-containers.type=${2:-git}" "ai-containers.source=https://example.invalid/$1.git"; }
-# mkwc <repo> <tag> <launch dir> [<inspect records>]: a working copy of <repo>
+# mkwc <repo> <tag> <launch dir> [<inspect records>]: a working copy of <repo>,
+# made by this HOME (ai-containers.owner=$OWN) unless WC_OWNER says otherwise:
+# another's id, or empty for none (a copy made before there was the label)
 mkwc() {
-  local v="ai-containers-repo-$1--wc-$2"
-  mkvol "$v" "ai-containers.workcopy=1" "ai-containers.repo=$1" "ai-containers.launch-dir=$3"
+  local v="ai-containers-repo-$1--wc-$2" o="${WC_OWNER-$OWN}"
+  mkvol "$v" "ai-containers.workcopy=1" "ai-containers.repo=$1" "ai-containers.launch-dir=$3" ${o:+"ai-containers.owner=$o"}
   if [[ -n "${4-}" ]]; then printf '%s' "$4" > "$VOLS/$v/inspect"; fi
 }
 CLEAN=$'PRIMARY|main\nBRANCH|main|0|current\nWORKTREE|clean\nEND|inspect\n'
@@ -430,11 +486,11 @@ ok "rm removes .ai-containers, its projects.conf line and its image-projects.con
            && ! grep -qF "$5" "$6" && grep -qxF "sha256:keep-me|/elsewhere" "$6"' \
   _ "$rc" "$A" "$ENG/projects.conf" "$W/beta" "$ida" "$IP"
 ok "rm removes the image whose label is this project's id, without --force" \
-  bash -c '[ ! -e "$1" ] && grep -qxF "docker rmi img-alpha" "$2" && ! grep "^docker rmi" "$2" | grep -q -- "-f"' \
+  bash -c '[ ! -e "$1" ] && grep -qxF "docker rmi img-alpha" "$2" && ! grep -q -- "-f" < <(grep "^docker rmi" "$2")' \
   _ "$IMGS/img-alpha" "$DOCKER_LOG"
 listing() {
   hasx "  directory   $A/.ai-containers" && hasx "  registry    $A (projects.conf)" && hasx "  image       img-alpha" \
-    && hasx "  working copy ai-containers-repo-app--wc-1 (app) — nothing at risk: every branch pushed, no stash, the checkout clean"
+    && hasx "  working copy ai-containers-repo-app--wc-1 (app, launched from $A/.ai-containers) — nothing at risk: every branch pushed, no stash, the checkout clean"
 }
 ok "rm --yes still prints the listing" listing
 
@@ -484,7 +540,7 @@ risk() {  # <base type> <records>: one copy of app, listed; the answer is no
   mkwc app 1 "$A/.ai-containers" "$2"
   rmrun "$A"
 }
-copy_line() { grep -F "  working copy ai-containers-repo-app--wc-$1 (app) — " "$TMP/out"; }
+copy_line() { grep -F "  working copy ai-containers-repo-app--wc-$1 (app, launched from $A/.ai-containers) — " "$TMP/out"; }
 world; A="$W/alpha"; mkproj "$A"; mkbase app
 mkwc app 1 "$A/.ai-containers" $'PRIMARY|main\nBRANCH|main|0|current\nBRANCH|feature|2|\nWORKTREE|clean\nEND|inspect\n'
 mkwc app 2 "$A/.ai-containers" "$CLEAN"
@@ -537,8 +593,8 @@ export FAKE_NO_SEED=1
 rmrun "$A" --yes; rc=$?
 unset FAKE_NO_SEED
 ok "rm lists copies as not checked when the seed image cannot be had, and finishes" \
-  bash -c '[ "$1" = 0 ] && grep -qF "(app) — NOT CHECKED: the seed helper image" "$2" && [ ! -d "$3/ai-containers-repo-app--wc-1" ]' \
-  _ "$rc" "$TMP/out" "$VOLS"
+  bash -c '[ "$1" = 0 ] && grep -qF "(app, launched from $4/.ai-containers) — NOT CHECKED: the seed helper image" "$2" && [ ! -d "$3/ai-containers-repo-app--wc-1" ]' \
+  _ "$rc" "$TMP/out" "$VOLS" "$A"
 ok "  … resolving the seed image once, not per copy" \
   bash -c '[ "$(grep -c "^docker image inspect ai-containers-seed" "$1")" = 1 ]' _ "$DOCKER_LOG"
 
@@ -613,19 +669,21 @@ mkproj "$W/a3" ''
 mkproj "$W/b" $'AI_CONTAINER_GROUP=team\n' $'REPOS=shared:rwcopy\nDOCS_PATH=@specshared:ro\n'
 mkdir -p "$W/gone"; printf '%s\n' "$W/gone" >> "$ENG/projects.conf"   # its .ai-containers deleted by hand
 rmrun "$W/a1" --yes; cp "$TMP/out" "$TMP/out1"
-ok "rm names an unused group with ./group.sh rm" \
-  hasx "NOTE: group lonely is used by no other registered project; remove it with ./group.sh rm lonely"
+ok "rm names an unused group with ./group.sh rm, as unused by this checkout's projects.conf" \
+  hasx "NOTE: group lonely is used by no other project in this checkout's projects.conf; remove it with ./group.sh rm lonely"
 ok "rm names an unused REPOS repo with ./repo.sh rm" \
-  hasx "NOTE: repo solo is used by no other registered project; remove it with ./repo.sh rm solo"
+  hasx "NOTE: repo solo is used by no other project in this checkout's projects.conf; remove it with ./repo.sh rm solo"
 ok "rm does not name a REPOS repo another project uses" lacks "NOTE: repo shared "
 ok "rm names an unused SPECS_PATH=@name repo with ./repo.sh rm" \
-  hasx "NOTE: repo specsolo is used by no other registered project; remove it with ./repo.sh rm specsolo"
+  hasx "NOTE: repo specsolo is used by no other project in this checkout's projects.conf; remove it with ./repo.sh rm specsolo"
 rmrun "$W/a2" --yes
 ok "rm does not name a group another project uses" lacks "NOTE: group team "
 ok "rm does not name a SPECS_PATH=@name repo another project uses" lacks "NOTE: repo specshared "
 rmrun "$W/a3" --yes
 ok "rm does not count a registered project whose .ai-containers is gone as using a group" \
-  hasx "NOTE: group default is used by no other registered project; remove it with ./group.sh rm default"
+  hasx "NOTE: group default is used by no other project in this checkout's projects.conf; it is the"
+ok "  … and never suggests removing the default group, which every launch naming none uses" \
+  bash -c 'grep -qxF "      group of every launch that names none, so keep it." "$1" && ! grep -qF "group.sh rm default" "$1"' _ "$TMP/out"
 ok "rm names nothing shared for a project that set nothing but the group" \
   bash -c '[ "$(grep -c "^NOTE: " "$1")" = 1 ]' _ "$TMP/out"
 
@@ -669,7 +727,7 @@ rmrun "$A" --yes; rc=$?
 ok "rm takes the same directory registered under another spelling as this project, not a nested one" \
   bash -c '[ "$1" = 0 ] && [ "$(sed -n "s/^docker volume rm //p" "$2")" = ai-containers-repo-app--wc-1 ]' _ "$rc" "$DOCKER_LOG"
 ok "  … and does not count that spelling as another project using its group" \
-  hasx "NOTE: group default is used by no other registered project; remove it with ./group.sh rm default"
+  hasx "NOTE: group default is used by no other project in this checkout's projects.conf; it is the"
 
 # an image that cannot be removed keeps the record that names it
 world
@@ -759,7 +817,7 @@ rm -f "$IMGS/img-alpha"; rm -rf "$A/.ai-containers"; printf 'hi\n' > "$A/README"
 rmrun "$A" --yes; rc=$?
 ok "rm finishes a project whose .ai-containers is already gone" \
   bash -c '[ "$1" = 0 ] && ! grep -qxF "$2" "$3" && ! grep -qF "$4" "$5" && [ ! -d "$6/ai-containers-repo-app--wc-1" ] \
-           && grep -qxF "  image       (unknown — no sandbox.env; ./project.sh gc removes it by its label)" "$7"' \
+           && grep -qxF "  image       (unknown — no sandbox.env; ./project.sh gc removes the image image-projects.conf" "$7"' \
   _ "$rc" "$A" "$ENG/projects.conf" "$ida" "$IP" "$VOLS" "$TMP/out"
 
 # what the agent can write reaches the terminal without its escapes
@@ -814,6 +872,63 @@ ok "rm removes a project under ~/.ai-containers-old, which only starts like ~/.a
   bash -c '[ "$1" = 0 ] && [ ! -e "$2/.ai-containers" ] && [ -f "$3/project-id.key" ]' _ "$rc" "$O" "$HOME/.ai-containers"
 rm -rf "$HOME/.ai-containers-old" "$HOME/.ai-containers/default"
 
+# a copy another home made on a shared daemon — the same user name in another
+# WSL distro gives the same paths — is not this project's to remove
+world; A="$W/alpha"; mkproj "$A"; mkbase app
+mkwc app 1 "$A/.ai-containers" "$CLEAN"
+WC_OWNER="sha256:$(printf '%064d' 9)" mkwc app 2 "$A/.ai-containers" "$CLEAN"
+WC_OWNER='' mkwc app 3 "$A/.ai-containers" "$CLEAN"
+rmrun "$A" --yes; rc=$?
+ok "rm keeps a working copy another home made, launched from the same path, and removes this home's and an unlabelled one" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-2" ] && [ ! -d "$2/ai-containers-repo-app--wc-1" ] && [ ! -d "$2/ai-containers-repo-app--wc-3" ] \
+           && ! grep -qxF "docker volume rm ai-containers-repo-app--wc-2" "$3"' _ "$rc" "$VOLS" "$DOCKER_LOG"
+ok "  … naming it as kept" \
+  hasx "  working copy ai-containers-repo-app--wc-2 (app, launched from $A/.ai-containers) — kept: made by another home or user on this docker"
+
+# a copy launched from a directory in the project that holds a launcher of its
+# own is that (unregistered) project's
+world; A="$W/alpha"; mkproj "$A"; mkbase app
+mkdir -p "$A/sub/.ai-containers"; : > "$A/sub/.ai-containers/sandbox.sh"; : > "$A/sub/.ai-containers/sandbox-common.sh"
+mkwc app 1 "$A/.ai-containers" "$CLEAN"; mkwc app 2 "$A/sub/.ai-containers" "$CLEAN"; mkwc app 3 "$A/sub" "$CLEAN"
+rmrun "$A" --yes; rc=$?
+ok "rm keeps a working copy launched from a directory in the project that holds a launcher of its own" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-2" ] && [ ! -d "$2/ai-containers-repo-app--wc-1" ] && [ ! -d "$2/ai-containers-repo-app--wc-3" ]' \
+  _ "$rc" "$VOLS"
+ok "  … naming it as kept, with where it was launched from" \
+  hasx "  working copy ai-containers-repo-app--wc-2 (app, launched from $A/sub/.ai-containers) — kept: launched from $A/sub/.ai-containers, which holds a launcher of its own"
+
+# a project whose own sandbox.local.env names its repo volumes under another
+# REPO_VOLUME_PREFIX: rm would see other copies than its launcher makes
+world; A="$W/alpha"; mkproj "$A" '' $'REPO_VOLUME_PREFIX=other\n'
+mkvol other-repo-app "ai-containers.repo=app" "ai-containers.type=git" "ai-containers.source=https://example.invalid/app.git"
+mkvol other-repo-app--wc-1 "ai-containers.workcopy=1" "ai-containers.repo=app" "ai-containers.launch-dir=$A/.ai-containers" "ai-containers.owner=$OWN"
+printf '%s' "$CLEAN" > "$VOLS/other-repo-app--wc-1/inspect"
+rmrun "$A" --yes; rc=$?
+ok "rm refuses a project whose sandbox.local.env sets another REPO_VOLUME_PREFIX, saying how to run it" \
+  bash -c '[ "$1" = 1 ] && grep -qF "names its repo volumes under REPO_VOLUME_PREFIX=other (from its sandbox.local.env)" "$2" \
+           && grep -qxF "         REPO_VOLUME_PREFIX=other ./project.sh rm $3" "$2" \
+           && [ -d "$3/.ai-containers" ] && grep -qxF "$3" "$4" && ! grep -q "^docker volume rm" "$5"' \
+  _ "$rc" "$TMP/out" "$A" "$ENG/projects.conf" "$DOCKER_LOG"
+( export REPO_VOLUME_PREFIX=other; rmrun "$A" --yes ); rc=$?
+ok "  … and run so, removes the copies under that prefix" \
+  bash -c '[ "$1" = 0 ] && [ ! -d "$2/other-repo-app--wc-1" ] && [ ! -e "$3/.ai-containers" ]' _ "$rc" "$VOLS" "$A"
+
+# a project whose root may be on a drive that is not mounted: rm names why, and
+# what to do if it was moved, and goes on when told to
+world; mkdir -p "$W/other" "$W/drive"; D="$W/drive/proj"; printf '%s\n' "$D" > "$ENG/projects.conf"
+rmrun "$D" --yes; rc=$?
+ok "rm lists a project whose root may be on an unmounted drive with why, and the mv way out, then removes its line" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "  directory   $2/.ai-containers (not there: it may be on a drive that is not mounted: $3 is empty)" "$4" \
+           && grep -qxF "              If $2 was moved rather than deleted, answer no and run ./project.sh mv $2 <new-dir>:" "$4" \
+           && grep -qxF "              rm would remove its working copies, which mv carries to the new place." "$4" && ! grep -qxF "$2" "$5"' \
+  _ "$rc" "$D" "$W/drive" "$TMP/out" "$ENG/projects.conf"
+# with no settings and no image-projects.conf line, the image is found by its id only
+world; A="$W/alpha"; mkdir -p "$A/.ai-containers"; printf '%s\n' "$A" > "$ENG/projects.conf"; ida="$(tid "$A/.ai-containers")"
+rmrun "$A" --yes; rc=$?
+ok "rm says how to find the image of a project with no settings that no image-projects.conf line names" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "              is listed by docker images --filter label=ai-containers.project=$2)" "$3" \
+           && ! grep -qF "./project.sh gc removes the image" "$3"' _ "$rc" "$ida" "$TMP/out"
+
 # ── mv ──
 # mv takes emit_env_list from project-init.sh, which the dispatch tests replaced
 # with a stub: the real one again.
@@ -861,7 +976,7 @@ wcwork() { cat "$VOLS/$1/data/work" 2>/dev/null; }
 # copy run (a read-only check may be), no image removed, the registry as it was
 moved_nothing() {
   [[ -d "$1/.ai-containers" ]] && cmp -s "$ENG/projects.conf" "$2" && ! logged '^docker (volume (rm|create)|rmi)' \
-    && ! grep '^docker run' "$DOCKER_LOG" | grep -qv -- '--dry-run'
+    && [[ -z "$(grep '^docker run' "$DOCKER_LOG" | grep -v -- '--dry-run')" ]]
 }
 # mvproj <root> [<sandbox.env text>] [<sandbox.local.env text>]: a registered
 # project in a directory that holds more than its setup, with one working copy of
@@ -931,13 +1046,13 @@ ok "mv replaces an EXTRA_MOUNTS written over several lines whole, its export kep
   bash -c '[ "$1" = 0 ] && cmp -s "$2" "$3"' _ "$rc" "$N/.ai-containers/sandbox.local.env" "$TMP/expect"
 
 world
-A="$W/alpha"; mvproj "$A" '' "EXTRA_MOUNTS=\"/x/one $W:ro\""$'\n'
+A="$W/alpha"; mvproj "$A" '' "EXTRA_MOUNTS=\"/x/one $W:z\""$'\n'
 cp "$A/.ai-containers/sandbox.local.env" "$TMP/expect"
 N="$W/new/beta"
 mvrun "$A" "$N" --yes; rc=$?
 ok "mv adds nothing when an entry already covers the old root" \
   bash -c '[ "$1" = 0 ] && cmp -s "$2" "$3"' _ "$rc" "$N/.ai-containers/sandbox.local.env" "$TMP/expect"
-ok "  … and says which" hasx "  EXTRA_MOUNTS $A is already covered by $W:ro"
+ok "  … and says which" hasx "  EXTRA_MOUNTS $A is already covered by $W:z"
 
 world
 A="$W/setup/alpha"; mkproj "$A"; N="$W/dev/alpha"
@@ -1048,8 +1163,9 @@ world
 A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
 printf 'ctr-one|other-image|/somewhere|%s/.ai-containers/.agent-blocked\n' "$A" > "$FAKE_RUNNING"
 mvrun "$A" "$W/beta" --yes; rc=$?
-ok "mv refuses while a container of the project runs" \
-  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*ctr-one" "$2" && [ ! -e "$3" ]' _ "$rc" "$TMP/out" "$W/beta"
+ok "mv refuses while a container of the project runs, saying nothing was changed" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*ctr-one.*nothing was changed\.$" "$2" && ! grep -q "nothing was removed" "$2" && [ ! -e "$3" ]' \
+  _ "$rc" "$TMP/out" "$W/beta"
 ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
 world
 A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
@@ -1320,6 +1436,125 @@ ok "mv notes that the old repository tracks .ai-containers when its .git is a fi
   bash -c '[ "$1" = 0 ] && [ -f "$2/.git" ] && grep -qxF "NOTE: $2'"'"'s repository tracks .ai-containers/; those files now show as deleted there." "$3"' \
   _ "$rc" "$A" "$TMP/out"
 
+# whose copies: this home's are carried and labelled this home's; another
+# home's, launched from the same path on a shared daemon, stay
+OTHER="sha256:$(printf '%064d' 9)"
+world; A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+mkbase lib; WC_OWNER="$OTHER" mkwc lib 1 "$A/.ai-containers"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv labels the copy it makes with this home's owner id, and leaves another home's copy of the same launch dir" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "ai-containers.owner=$4" "$2/$3/labels" && [ -d "$2/ai-containers-repo-lib--wc-1" ] \
+           && grep -qxF "ai-containers.launch-dir=$5/.ai-containers" "$2/ai-containers-repo-lib--wc-1/labels" \
+           && ! grep -q "^docker volume create .*ai-containers.repo=lib" "$6"' _ "$rc" "$VOLS" "$nv" "$OWN" "$A" "$DOCKER_LOG"
+ok "  … listing it as staying, and why" \
+  hasx "  working copy ai-containers-repo-lib--wc-1 (lib) — stays: made by another home or user on this docker"
+world; A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+mkvol "$nv" "ai-containers.workcopy=1" "ai-containers.repo=app" "ai-containers.launch-dir=$N/.ai-containers" "ai-containers.owner=$OTHER"
+wcdata "$nv" unpushed
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv does not take another home's copy at the new name for one a run cut short made, though it is exact" \
+  bash -c '[ "$1" = 1 ] && grep -qF "ERROR: the working copy $3 would be copied to $4, which exists and is not an exact copy" "$2" \
+           && [ -d "$5/$3" ] && [ -d "$5/$4" ]' _ "$rc" "$TMP/out" "$OLDWC" "$nv" "$VOLS"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+# a copy launched from a directory in the project that holds a launcher of its own
+world; A="$W/alpha"; mvproj "$A"; mkdir -p "$A/.ai-containers/base"
+: > "$A/.ai-containers/base/sandbox.sh"; : > "$A/.ai-containers/base/sandbox-common.sh"
+mkwc app 2 "$A/.ai-containers/base"; N="$W/beta"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv leaves a working copy launched from a directory in the setup that holds a launcher of its own" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-2" ] && grep -qxF "ai-containers.launch-dir=$3/.ai-containers/base" "$2/ai-containers-repo-app--wc-2/labels"' \
+  _ "$rc" "$VOLS" "$A"
+ok "  … listing it as staying, and why" \
+  hasx "  working copy ai-containers-repo-app--wc-2 (app) — stays: launched from $A/.ai-containers/base, which holds a launcher of its own"
+
+# the pointers the launcher mounts beside the working directory
+clash $'VAULT_PATH=/x/notes\n' "$W/new/vault" "and VAULT_PATH (set in $W/alpha/.ai-containers/sandbox.local.env) would both be mounted at /workspace/vault" \
+  "mv refuses a <new-dir> named vault where VAULT_PATH is set"
+clash $'SPECS_PATH=/x/plans\n' "$W/new/specs" "and SPECS_PATH (set in $W/alpha/.ai-containers/sandbox.local.env) would both be mounted at /workspace/specs" \
+  "mv refuses a <new-dir> named specs where SPECS_PATH is a host path"
+clash $'DOCS_PATH=/x/manual:ro\n' "$W/new/docs" "and DOCS_PATH (set in $W/alpha/.ai-containers/sandbox.local.env) would both be mounted at /workspace/docs" \
+  "mv refuses a <new-dir> named docs where DOCS_PATH is a host path, its :ro aside"
+clash $'ARCHITECTURE_REPO_PATH=~/adr:rw\n' "$W/new/architecture" "and ARCHITECTURE_REPO_PATH (set in $W/alpha/.ai-containers/sandbox.local.env) would both be mounted at /workspace/architecture" \
+  "mv refuses a <new-dir> named architecture where ARCHITECTURE_REPO_PATH is set"
+clash $'DOCS_PATH=@manual:ro\n' "$W/new/manual" "and DOCS_PATH (set in $W/alpha/.ai-containers/sandbox.local.env) would both be mounted at /workspace/manual" \
+  "mv refuses a <new-dir> with the name of the repo an @name pointer attaches"
+clash $'SPECS_PATH=@plans\n' "$W/new/plans" "and SPECS_PATH (set in $W/alpha/.ai-containers/sandbox.local.env) would both be mounted at /workspace/plans" \
+  "mv refuses a <new-dir> with the name of SPECS_PATH's @name"
+clash "VAULT_PATH=$W/new/vault"$'\n' "$W/new/vault" "/workspace/vault" \
+  "mv refuses a <new-dir> named vault that VAULT_PATH itself names: the launcher mounts it twice"
+export DOCS_PATH=/x/manual
+clash '' "$W/new/docs" "and DOCS_PATH (set in your shell) would both be mounted at /workspace/docs" \
+  "mv refuses a <new-dir> named docs where the shell sets DOCS_PATH"
+export DOCS_PATH=''
+world; A="$W/alpha"; mvproj "$A" '' $'DOCS_PATH=/x/manual\n'
+mvrun "$A" "$W/new/docs" --yes; rc=$?
+unset DOCS_PATH
+ok "mv takes the shell's empty DOCS_PATH over the project's, as the launcher does" bash -c '[ "$1" = 0 ]' _ "$rc"
+world; A="$W/alpha"; N="$W/new/docs"; mvproj "$A" '' "DOCS_PATH=$N:ro"$'\n'
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv takes a <new-dir> named docs that DOCS_PATH itself names: the launcher mounts the working directory once" \
+  bash -c '[ "$1" = 0 ] && [ -f "$2/.ai-containers/sandbox.env" ]' _ "$rc" "$N"
+world; A="$W/docs"; mvproj "$A" '' $'DOCS_PATH=/x/manual\n'
+mvrun "$A" "$W/new/beta" --yes; rc=$?
+ok "mv refuses an old root named docs it would add to EXTRA_MOUNTS where DOCS_PATH is set" \
+  bash -c '[ "$1" = 1 ] && grep -qF "ERROR: $2, which mv would add to EXTRA_MOUNTS, and DOCS_PATH (set in $2/.ai-containers/sandbox.local.env) would both be mounted at" "$3" \
+           && [ ! -e "$4" ]' _ "$rc" "$A" "$TMP/out" "$W/new/beta"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+
+# a read-only entry that covers the old root: it was the read-write working
+# directory, and the container must not see it read-only after the move
+world; A="$W/alpha"; mvproj "$A" '' "EXTRA_MOUNTS=\"/x/one $W:ro\""$'\n'; N="$W/new/beta"
+mvrun "$A" "$N" --yes; rc=$?
+printf 'EXTRA_MOUNTS="\n  /x/one\n  %s:ro\n  %s\n"\n' "$W" "$A" > "$TMP/expect"
+ok "mv adds the old root itself where only a read-only entry covers it" \
+  bash -c '[ "$1" = 0 ] && cmp -s "$2" "$3"' _ "$rc" "$N/.ai-containers/sandbox.local.env" "$TMP/expect"
+ok "  … saying why" hasx "              $W:ro covers it read-only, and it was the read-write working directory"
+
+# interrupted while it copies the working copies: what it made goes again
+world; A="$W/alpha"; mvproj "$A"; mkbase lib; mkwc lib 1 "$A/.ai-containers"; wcdata ai-containers-repo-lib--wc-1 libwork
+N="$W/new/beta"; nva="$(wcname app "$N/.ai-containers")"; nvl="$(wcname lib "$N/.ai-containers")"
+export FAKE_RUN_TERM=2
+mvrun "$A" "$N" --yes; rc=$?
+unset FAKE_RUN_TERM
+ok "mv interrupted while it copies the working copies removes those it made, the one it was making too" \
+  bash -c '[ "$1" = 143 ] && [ ! -e "$2/$3" ] && [ ! -e "$2/$4" ] && [ "$(cat "$2/$5/data/work")" = unpushed ] \
+           && [ "$(cat "$2/ai-containers-repo-lib--wc-1/data/work")" = libwork ] && [ -f "$6/.ai-containers/sandbox.env" ] \
+           && [ ! -e "$7" ] && cmp -s "$8" "$9"' _ "$rc" "$VOLS" "$nva" "$nvl" "$OLDWC" "$A" "$N" "$ENG/projects.conf" "$TMP/conf.before"
+ok "  … naming the real <new-dir>, and the command that finishes" \
+  bash -c 'grep -qxF "ERROR: interrupted; what was done is listed above, and no temporary copy is left in $2." "$1" \
+           && grep -qF "run ./project.sh mv $3 $2 again" "$1"' _ "$TMP/out" "$N" "$A"
+
+# another REPO_VOLUME_PREFIX in the project's sandbox.local.env
+world; A="$W/alpha"; mvproj "$A" '' $'REPO_VOLUME_PREFIX=other\n'
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv refuses a project whose sandbox.local.env sets another REPO_VOLUME_PREFIX, saying how to run it" \
+  bash -c '[ "$1" = 1 ] && grep -qxF "         REPO_VOLUME_PREFIX=other ./project.sh mv $2 $3" "$4" && [ ! -e "$3" ]' _ "$rc" "$A" "$W/beta" "$TMP/out"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+
+# a stopped container that uses an old copy: docker would refuse to remove it
+# once the setup had moved
+world; A="$W/alpha"; mvproj "$A"
+printf 'ctr-old|some-image|/var/lib/docker/volumes/%s/_data\n' "$OLDWC" > "$FAKE_STOPPED"
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv refuses up front when a stopped container uses an old working copy, naming it and docker rm" \
+  bash -c '[ "$1" = 1 ] && grep -qF "ERROR: the working copy $2 is used by the container(s) ctr-old" "$3" && grep -qF "(docker rm ctr-old;" "$3" \
+           && [ ! -e "$4" ]' _ "$rc" "$OLDWC" "$TMP/out" "$W/beta"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+
+# a <new-dir> registered already
+world; A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'
+N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"; printf '%s/\n' "$N" >> "$ENG/projects.conf"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv into a <new-dir> registered already warns first, naming its IMAGE_NAME" \
+  bash -c '[ "$1" = 0 ] && [ "$(sed -n 2p "$2")" = "WARNING: $3/ is a registered project already, IMAGE_NAME img-alpha: mv takes its .ai-containers" ]' \
+  _ "$rc" "$TMP/out" "$N"
+ok "  … and leaves one projects.conf line for it, as it was spelled" bash -c '[ "$(cat "$1")" = "$2/" ]' _ "$ENG/projects.conf" "$N"
+world; A="$W/alpha"; mvproj "$A"; N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"
+printf '/x/other\n%s/\n' "$N" > "$ENG/projects.conf"
+mvrun "$A" "$N" --yes; rc=$?
+ok "mv of a project gc dropped, into a <new-dir> registered under another spelling, adds no second line" \
+  bash -c '[ "$1" = 0 ] && [ "$(cat "$2")" = "$(printf "/x/other\n%s/" "$3")" ]' _ "$rc" "$ENG/projects.conf" "$N"
+
 # ── gc ──
 gcrun() { ( cd "$TMP" && bash "$P" gc "$@" ) > "$TMP/out" 2>&1 < /dev/null; }
 # gcworld: world, with $W holding something: a path whose nearest existing
@@ -1368,7 +1603,7 @@ pa="$(cd "$A/.ai-containers" && pwd -P)"; rm -rf "$A"
 gcrun --yes; rc=$?
 ok "gc lists an image whose project is gone, removes it on --yes, then drops its line" \
   bash -c '[ "$1" = 0 ] && grep -qxF "  image       img-alpha:latest (built for $2, which is gone)" "$3" && [ ! -e "$4" ] \
-           && ! grep "^docker rmi" "$5" | grep -q -- " -f" && ! grep -qF "$6" "$7" \
+           && ! grep -q -- " -f" < <(grep "^docker rmi" "$5") && ! grep -qF "$6" "$7" \
            && r="$(grep -n "^docker rmi img-alpha" "$5" | cut -d: -f1)" && c="$(grep -n "^docker images -q" "$5" | tail -1 | cut -d: -f1)" \
            && [ -n "$r" ] && [ -n "$c" ] && [ "$r" -lt "$c" ]' \
   _ "$rc" "$pa" "$TMP/out" "$IMGS/img-alpha" "$DOCKER_LOG" "$ida" "$IP"
@@ -1430,8 +1665,10 @@ ok "gc keeps a working copy when docker cannot tell whether a container uses it"
 
 gcworld; A="$W/alpha"; mkproj "$A"; rm -rf "$A"
 gcrun; rc=$?
-ok "gc points a vanished project at project.sh mv" \
-  has_line "If $A was moved rather than deleted, answer no and run ./project.sh mv $A <new-dir> (it also works after gc)."
+ok "gc points a vanished project at project.sh mv, saying what gc would cost it" \
+  bash -c 'grep -qxF "              If $1 was moved rather than deleted, answer no and run ./project.sh mv $1 <new-dir>:" "$2" \
+           && grep -qxF "              gc would remove the working copies launched from it, which mv carries to the new" "$2" \
+           && grep -qxF "              place; after gc, mv only registers the new place." "$2" && ! grep -qF "also works after gc" "$2"' _ "$A" "$TMP/out"
 
 gcworld
 mkproj "$W/live" $'IMAGE_NAME=img-live\n'; built "$W/live" img-live; mkbase app; mkwc app 1 "$W/live/.ai-containers" "$CLEAN"
@@ -1561,6 +1798,60 @@ ok "gc does not read a linked image-projects.conf, and removes no image through 
   bash -c '[ "$1" = 0 ] && [ -L "$2" ] && [ -e "$3" ] && ! grep -q "^docker rmi" "$4" && grep -qF "  registry    $2 — not read: it is a link" "$5"' \
   _ "$rc" "$IP" "$IMGS/img-alpha" "$DOCKER_LOG" "$TMP/out"
 rm -f "$IP"
+
+# a project moved by hand, its line stale: gc says on its copy's line that mv
+# carries that copy; after gc, mv has nothing left to carry, and says so
+gcworld; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; mkbase app
+mkwc app 1 "$A/.ai-containers" $'PRIMARY|main\nBRANCH|main|3|current\nWORKTREE|clean\nEND|inspect\n'; wcdata ai-containers-repo-app--wc-1 unpushed
+N="$W/moved"; mv "$A" "$N"
+gcrun; rc=$?
+ok "gc says on the copy line of a project whose line it drops that mv would carry the copy" \
+  bash -c '[ "$1" = 1 ] && awk -v c="  working copy ai-containers-repo-app--wc-1 (app, launched from $2/.ai-containers) — AT RISK: main: 3 unpushed commit(s)" \
+             -v h="              From $2, listed above: if it was moved, answer no and run ./project.sh mv, which" \
+             '"'"'p { ok = ($0 == h); p = 0 } $0 == c { p = 1 } END { exit !ok }'"'"' "$3"' _ "$rc" "$A" "$TMP/out"
+gcrun --yes; rc1=$?
+mvrun "$A" "$N" --yes; rc2=$?
+ok "  … and once gc removed it, mv only registers the new place, saying no copy is left to carry" \
+  bash -c '[ "$1" = 0 ] && [ "$2" = 0 ] && [ ! -e "$3/ai-containers-repo-app--wc-1" ] && [ "$(cat "$4")" = "$5" ] \
+           && grep -qxF "  working copy none launched from $6 is left to carry (./project.sh gc, run since the" "$7" \
+           && ! grep -qF "Copied the working copy" "$7"' _ "$rc1" "$rc2" "$VOLS" "$ENG/projects.conf" "$N" "$A" "$TMP/out"
+
+# whose copies gc offers: this home's; another home's, on a daemon several share,
+# only with --all
+gcworld; mkbase app; WC_OWNER="$OTHER" mkwc app 1 "$W/gone/.ai-containers" "$CLEAN"
+gcrun --yes; rc=$?
+ok "gc keeps a working copy another home made" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] && grep -qxF "Nothing to collect." "$3" \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/gone/.ai-containers) — kept: made by another home or user on this docker (./project.sh gc --all offers it)" "$3"' \
+  _ "$rc" "$VOLS" "$TMP/out" "$W"
+gcrun --all --yes; rc=$?
+ok "  … and gc --all offers it, saying whose it is, and removes it" \
+  bash -c '[ "$1" = 0 ] && [ ! -e "$2/ai-containers-repo-app--wc-1" ] \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/gone/.ai-containers; made by another home or user on this docker) — nothing at risk: every branch pushed, no stash, the checkout clean" "$3"' \
+  _ "$rc" "$VOLS" "$TMP/out" "$W"
+# one with no owner label (made before there was one): offered under a path this
+# home's registries know, kept elsewhere
+gcworld; mkbase app; mkproj "$W/live"; printf '%s\n' "$W/stale" >> "$ENG/projects.conf"
+printf 'sha256:%064d|%s\n' 4 "$W/built/.ai-containers" > "$IP"
+WC_OWNER='' mkwc app 1 "$W/nowhere/.ai-containers" "$CLEAN"
+WC_OWNER='' mkwc app 2 "$W/stale/.ai-containers" "$CLEAN"
+WC_OWNER='' mkwc app 3 "$W/built/.ai-containers" "$CLEAN"
+WC_OWNER='' mkwc app 4 "$W/live/gone-sub" "$CLEAN"
+gcrun --yes; rc=$?
+ok "gc keeps an unlabelled working copy under no path this home's registries know" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/nowhere/.ai-containers) — kept: unlabelled, under no path this home knows (./project.sh gc --all offers it)" "$3"' \
+  _ "$rc" "$VOLS" "$TMP/out" "$W"
+ok "  … and removes one under a stale or live projects.conf root, or a project image-projects.conf maps" \
+  bash -c '[ ! -e "$1/ai-containers-repo-app--wc-2" ] && [ ! -e "$1/ai-containers-repo-app--wc-3" ] && [ ! -e "$1/ai-containers-repo-app--wc-4" ]' _ "$VOLS"
+gcrun --all --yes; rc=$?
+ok "  … which gc --all offers, saying it is unlabelled" \
+  bash -c '[ "$1" = 0 ] && [ ! -e "$2/ai-containers-repo-app--wc-1" ] \
+           && grep -qF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/nowhere/.ai-containers; unlabelled, under no path this home knows) — " "$3"' \
+  _ "$rc" "$VOLS" "$TMP/out" "$W"
+out="$(bash "$P" --help 2>&1)"
+ok "the usage says what gc --all is for" \
+  bash -c '[[ "$1" == *"./project.sh gc  [--all] [--yes]"* && "$1" == *"gc --all offers those too: copies made before owner labels,"* ]]' _ "$out"
 
 # what a label or a registry line holds reaches the terminal without its escapes
 gcworld; E="$W/esc${ESC}[2Jgone"; printf '%s\n' "$E" > "$ENG/projects.conf"; mkbase app; mkwc app 1 "$E/.ai-containers" "$CLEAN"

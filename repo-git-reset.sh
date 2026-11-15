@@ -342,7 +342,14 @@ remote_primary() {
 # against the volume's files, as cmd_pull() does, never by git on the volume's
 # own .git. changed: a tracked file differs, or an untracked file the
 # checkout's own ignore rules do not cover exists. ?: not cloned, a detached
-# HEAD, an unreadable tip, or any git step failing.
+# HEAD, an unreadable tip, or any git step failing. Conservative: the ignore
+# rules are the checkout's .gitignore files only — not the volume's own
+# .git/info/exclude, nor a group's global excludes, which would mean reading
+# the volume's .git — and the clone's git has no LFS filter and no sparse
+# checkout, so an LFS file checked out in full and a file a sparse checkout
+# left out read as changed too. "changed" may say more than there is; what it
+# does not see is a change only staged and then undone in the file (the
+# volume's index is not read).
 worktree_state() {
   local dir="$1" b="$2" cloned="$3" name oid tip="" rc
   [[ -n "$cloned" && -n "$b" ]] || { printf '?'; return 0; }
