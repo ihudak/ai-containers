@@ -1628,12 +1628,21 @@ _prj_rmdirs() {
 # directory that cannot be searched only looks absent. Emptiness by a glob,
 # which follows a link as the path does and has no failure to mistake for
 # "empty". A path that is not absolute cannot be judged at all, and a walk up it
-# would never end.
+# would never end. Unlike the retag check's, these paths are logical (a
+# projects.conf root, a launch directory is $PWD after runme.sh's cd), so the
+# walk can meet a link: one that leads nowhere (~/work -> /media/<user>/Drive/work,
+# the drive not mounted) keeps the path, named, where walking past it to a
+# directory that holds something read it as gone. Its target is not followed.
 _prj_maybe_unmounted() {
   local up t
   if [[ "$1" != /* ]]; then printf 'it is not an absolute path, so where it is cannot be told'; return 0; fi
   up="$(_prj_strip "$1")"; up="${up%/*}"
-  while [[ -n "$up" && ! -e "$up" ]]; do up="${up%/*}"; done
+  while [[ -n "$up" && ! -e "$up" ]]; do
+    if [[ -L "$up" ]]; then
+      printf 'it may only look gone: %s is a link to something that is not there' "$(_ac_term "$up")"; return 0
+    fi
+    up="${up%/*}"
+  done
   [[ -n "$up" && -d "$up" ]] || return 1
   t="$(_ac_term "$up")"
   if [[ ! -x "$up" ]]; then printf 'it may only look gone: %s cannot be searched' "$t"; return 0; fi
@@ -1659,12 +1668,13 @@ _prj_reg_bad() {
   return 1
 }
 
-# _prj_vol_users <volume>: the running containers that mount it, one name per
-# line; rc 0 when any does, 1 when none, 2 when docker could not list them —
-# never read as none, which is what docker_volume_in_use() makes of a failure.
+# _prj_vol_users <volume> [-a]: the running containers that mount it — with -a,
+# every container that does, stopped ones too — one name per line; rc 0 when any
+# does, 1 when none, 2 when docker could not list them — never read as none,
+# which is what docker_volume_in_use() makes of a failure.
 _prj_vol_users() {
   local out
-  out="$(docker ps --filter "volume=$1" --format '{{.Names}}' 2>/dev/null)" || return 2
+  out="$(docker ps ${2:+"$2"} --filter "volume=$1" --format '{{.Names}}' 2>/dev/null)" || return 2
   [[ -n "$out" ]] || return 1
   printf '%s\n' "$out"
 }
@@ -1803,10 +1813,20 @@ cmd_gc() {
     repo="$(docker_volume_label "$v" 'ai-containers.repo')"
     desc="$(_ac_term "$v") ($(_ac_term "${repo:-?}"), launched from $(_ac_term "$ldir"))"
     if why="$(_prj_maybe_unmounted "$ldir")"; then kept+=("  working copy $desc — kept: $why"); continue; fi
+    # A stopped container that references it makes docker volume rm fail, which
+    # would stop gc before every image and registry line, on every run: kept,
+    # named (3). The re-check after the question asks about running ones only: a
+    # stopped one that appears meanwhile fails the volume rm, which stops gc
+    # before the images and registry lines, as a re-run needs.
     urc=0; users="$(_prj_vol_users "$v")" || urc=$?
+    if (( urc == 1 )); then
+      urc=0; users="$(_prj_vol_users "$v" -a)" || urc=$?
+      if (( urc == 0 )); then urc=3; fi
+    fi
     case "$urc" in
       1) copies+=("$v"); copy_desc+=("$desc") ;;
       0) kept+=("  working copy $desc — kept: a running container uses it ($(_ac_term "$(printf '%s' "$users" | tr '\n' ' ' | sed 's/ $//')"))") ;;
+      3) kept+=("  working copy $desc — kept: a stopped container uses it ($(_ac_term "$(printf '%s' "$users" | tr '\n' ' ' | sed 's/ $//')")); docker rm it first") ;;
       *) kept+=("  working copy $desc — kept: docker could not list the running containers, so whether one uses it cannot be told") ;;
     esac
   done < <(repo_workcopy_volumes)

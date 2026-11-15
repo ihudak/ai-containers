@@ -30,7 +30,10 @@ export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LOG"
 # those of $FAKE_RUNNING.later. A `ps --filter volume=<v>` names the lines with
 # a mount source /var/lib/docker/volumes/<v>/_data (where docker keeps a named
 # volume), and is counted apart: once more than $FAKE_VOLPS_AFTER of them have
-# been made, from $FAKE_RUNNING.later. An image is named by its file: `x` is
+# been made, from $FAKE_RUNNING.later. With -a it also names the stopped
+# containers, the lines of $FAKE_STOPPED (same form); `volume rm` of a volume
+# a line of $FAKE_RUNNING or $FAKE_STOPPED mounts fails, as docker's does. An
+# image is named by its file: `x` is
 # also `x:latest`, and `images --format` gives it repository `x`, tag `latest`
 # and id `x`, or repository and tag `<none>` for a file named `dangling-…` (an
 # image with no tag, removed by its id). An image file with a `.next` beside it is
@@ -44,7 +47,7 @@ export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LOG"
 # a change line when they differ; FAKE_COPY_BAD makes the copy add a file the
 # source does not have. `volume create` makes a volume with its --label values,
 # and leaves one that exists as it is, as docker does.
-export VOLS="$TMP/vols" IMGS="$TMP/imgs" FAKE_RUNNING="$TMP/running"
+export VOLS="$TMP/vols" IMGS="$TMP/imgs" FAKE_RUNNING="$TMP/running" FAKE_STOPPED="$TMP/stopped"
 mkdir -p "$VOLS" "$IMGS"; : > "$FAKE_RUNNING"
 cat > "$TMP/bin/docker" <<'FAKE'
 #!/usr/bin/env bash
@@ -60,7 +63,7 @@ lbl() {  # <labels file> <key> → its value; rc 1 when it has none
 }
 cmd="$1"; shift; sub=""
 case "$cmd" in volume|image) sub="$1"; shift ;; esac
-fmt=""; filt=(); vs=(); pos=(); labs=()
+fmt=""; filt=(); vs=(); pos=(); labs=(); all=0
 while (( $# )); do
   case "$1" in
     --format) fmt="$2"; shift 2 ;;
@@ -68,6 +71,7 @@ while (( $# )); do
     -v) vs+=("$2"); shift 2 ;;
     --label) labs+=("$2"); shift 2 ;;
     -e|--memory|--memory-swap|--pids-limit|--entrypoint|--mount) shift 2 ;;
+    -a|--all) all=1; shift ;;
     -*) shift ;;
     *) pos+=("$1"); shift ;;
   esac
@@ -105,6 +109,9 @@ case "$cmd${sub:+ $sub}" in
         echo "Error response from daemon: remove $v: volume is in use" >&2; exit 1
       fi
       [[ -d "$VOLS/$v" ]] || { echo "Error: no such volume: $v" >&2; exit 1; }
+      if cat "$FAKE_RUNNING" "$FAKE_STOPPED" 2>/dev/null | grep -qF -- "|/var/lib/docker/volumes/$v/_data"; then
+        echo "Error response from daemon: remove $v: volume is in use" >&2; exit 1
+      fi
       rm -rf "$VOLS/$v"
     done ;;
   "volume create")
@@ -146,10 +153,10 @@ case "$cmd${sub:+ $sub}" in
       n=$((n + 1)); printf '%s\n' "$n" > "$FAKE_RUNNING.vcount"
       src="$FAKE_RUNNING"
       if [[ -n "${FAKE_VOLPS_AFTER:-}" ]] && (( n > FAKE_VOLPS_AFTER )); then src="$FAKE_RUNNING.later"; fi
-      [[ -f "$src" ]] || exit 0
-      while IFS= read -r l; do
+      srcs=("$src"); if (( all )); then srcs+=("$FAKE_STOPPED"); fi
+      cat "${srcs[@]}" 2>/dev/null | while IFS= read -r l; do
         if [[ "|$l|" == *"|/var/lib/docker/volumes/$vol/_data|"* ]]; then printf '%s\n' "${l%%|*}"; fi
-      done < "$src"
+      done
       exit 0
     fi
     n=0; [[ -f "$FAKE_RUNNING.count" ]] && n="$(cat "$FAKE_RUNNING.count")"
@@ -377,7 +384,7 @@ world() {   # nothing registered, built, recorded, running or logged
   [[ -d "$W" ]] && chmod -R u+rwx "$W" 2>/dev/null
   rm -rf "$VOLS" "$IMGS" "$W"; mkdir -p "$VOLS" "$IMGS" "$W"
   : > "$FAKE_RUNNING"; : > "$DOCKER_LOG"
-  rm -f "$ENG/projects.conf" "$IP" "$FAKE_RUNNING.count" "$FAKE_RUNNING.vcount" "$FAKE_RUNNING.later"
+  rm -f "$ENG/projects.conf" "$IP" "$FAKE_RUNNING.count" "$FAKE_RUNNING.vcount" "$FAKE_RUNNING.later" "$FAKE_STOPPED"
   unset FAKE_FAIL_VOLUME_RM FAKE_FAIL_RMI FAKE_DOCKER_DOWN FAKE_PS_FAIL FAKE_RUNNING_AFTER FAKE_VOLPS_AFTER FAKE_NO_SEED
   unset FAKE_COPY_BAD FAKE_CP_CORRUPT AI_CONTAINERS_MV_COPY FAKE_MV_PLANT FAKE_MV_PLANT_TO FAKE_CP_TERM
 }
@@ -1403,6 +1410,15 @@ ok "gc keeps a working copy a running container uses" \
   bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] && ! grep -q "^docker volume rm" "$3" \
            && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/gone/.ai-containers) — kept: a running container uses it (ctr-wc)" "$5" \
            && grep -qxF "Nothing to collect." "$5"' _ "$rc" "$VOLS" "$DOCKER_LOG" "$W" "$TMP/out"
+gcworld; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; ida="$(tid "$A/.ai-containers")"
+mkbase app; mkwc app 1 "$W/gone/.ai-containers" "$CLEAN"; rm -rf "$A"
+printf 'ctr-old|some-image|/var/lib/docker/volumes/ai-containers-repo-app--wc-1/_data\n' > "$FAKE_STOPPED"
+gcrun --yes; rc=$?
+ok "gc keeps a working copy a stopped container uses, and collects the rest" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] && ! grep -q "^docker volume rm" "$9" \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $3/gone/.ai-containers) — kept: a stopped container uses it (ctr-old); docker rm it first" "$4" \
+           && [ ! -e "$5" ] && ! grep -qF "$6" "$7" && ! grep -qxF "$3/alpha" "$8"' \
+  _ "$rc" "$VOLS" "$W" "$TMP/out" "$IMGS/img-alpha" "$ida" "$IP" "$ENG/projects.conf" "$DOCKER_LOG"
 gcworld; mkbase app; mkwc app 1 "$W/gone/.ai-containers" "$CLEAN"
 export FAKE_PS_FAIL=1
 gcrun --yes; rc=$?
@@ -1458,6 +1474,27 @@ ok "gc keeps a working copy whose launch dir may be on an unmounted drive" \
   bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] && ! grep -q "^docker volume rm" "$3" \
            && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/drive/proj/.ai-containers) — kept: it may be on a drive that is not mounted: $4/drive is empty" "$5"' \
   _ "$rc" "$VOLS" "$DOCKER_LOG" "$W" "$TMP/out"
+# a logical path (a projects.conf root, a launch dir) can cross a link whose
+# target is on a drive that is not mounted: the link is there and leads nowhere
+gcworld; ln -s "$W/nowhere/work" "$W/work"; mkbase app; mkwc app 1 "$W/work/proj/.ai-containers" "$CLEAN"
+gcrun --yes; rc=$?
+ok "gc keeps a working copy whose launch dir is reached through a link that leads nowhere" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] && ! grep -q "^docker volume rm" "$3" \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/work/proj/.ai-containers) — kept: it may only look gone: $4/work is a link to something that is not there" "$5"' \
+  _ "$rc" "$VOLS" "$DOCKER_LOG" "$W" "$TMP/out"
+gcworld; ln -s "$W/nowhere/work" "$W/work"; printf '%s\n' "$W/work/proj" > "$ENG/projects.conf"
+gcrun --yes; rc=$?
+ok "gc keeps a projects.conf line whose root is reached through a link that leads nowhere" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" \
+           && grep -qF "  registry    $2 (projects.conf) — kept: it may only look gone: $4/work is a link to something that is not there" "$5"' \
+  _ "$rc" "$W/work/proj" "$ENG/projects.conf" "$W" "$TMP/out"
+# a removable-media root (/media/<user>, /Volumes) cannot be made here: the
+# helper's own test of one, with _ac_removable_root taking $W/media for one
+gcworld; mkdir -p "$W/media/other"
+r="$( cd "$TMP" && source "$P" && _ac_removable_root() { [[ "${1%/}" == "$W/media" ]]; } \
+      && _prj_maybe_unmounted "$W/media/drive/proj/.ai-containers" )"; rc=$?
+ok "gc keeps a path whose nearest existing directory is where removable drives are mounted" \
+  bash -c '[ "$1" = 0 ] && [ "$2" = "it may be on a drive that is not mounted: $3/media is where removable drives are mounted" ]' _ "$rc" "$r" "$W"
 if [[ "$(id -u)" == 0 ]]; then
   printf 'SKIP: a project under a directory that cannot be searched (running as root)\n'
 else
@@ -1479,12 +1516,13 @@ ok "gc refuses when docker cannot be reached" \
   bash -c '[ "$1" = 1 ] && grep -q "^ERROR: docker cannot be reached" "$2" && [ -e "$3" ] && [ -d "$4/ai-containers-repo-app--wc-1" ]' \
   _ "$rc" "$TMP/out" "$IMGS/img-alpha" "$VOLS"
 ok "  … changing nothing" gc_nothing
-# the listing makes two volume= ps calls for the copy (whether one uses it, and
-# the git helper's read-write check); the one after the question sees it in use
+# the listing makes three volume= ps calls for the copy (whether a running or a
+# stopped container uses it, and the git helper's read-write check); the one
+# after the question sees it in use
 gcworld; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; mkbase app; mkwc app 1 "$A/.ai-containers" "$CLEAN"
 rm -rf "$A"; gc_save
 printf 'ctr-late|some-image|/var/lib/docker/volumes/ai-containers-repo-app--wc-1/_data\n' > "$FAKE_RUNNING.later"
-export FAKE_VOLPS_AFTER=2
+export FAKE_VOLPS_AFTER=3
 gcrun --yes; rc=$?
 unset FAKE_VOLPS_AFTER
 ok "gc checks again after the question, and refuses a copy a container started using meanwhile" \
