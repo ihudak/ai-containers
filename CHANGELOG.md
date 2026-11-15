@@ -181,6 +181,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`verify-on-host.sh` runs the bash-floor suite from a git worktree.** The
+  floor container mounts the checkout alone, and a linked worktree's `.git`
+  names its git directory under the main checkout's `.git`, outside that mount,
+  so git in the container found no repository and the floor suite died at its
+  first git call (exit 128). Phase 5 now gives the container that git
+  directory too, read-only like the checkout, at the path the `.git` names, and
+  so for a submodule checkout's `.git` and a `.git` link. A pointer it cannot
+  place there (relative, or with `.` or `..` in it, or outside the git
+  directory git uses) fails the phase before docker, naming why.
+
 - **A dangling `.git` link no longer hides the bare repository a mount lies
   in.** git cannot follow such a link, takes it for no `.git`, and uses the
   directory itself where that is a bare repository; a git before 2.54 does the
