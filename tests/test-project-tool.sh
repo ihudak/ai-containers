@@ -13,12 +13,18 @@ ok()   { if "${@:2}"; then pass "$1"; else fail "$1"; fi; }
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR
-unset SANDBOX_UID SANDBOX_GID XDG_CONFIG_HOME
-export HOME="$TMP/home"; mkdir -p "$HOME"
 ENG="$TMP/engine"; mkdir -p "$ENG" "$TMP/bin"
+# The engine is listed by git BEFORE HOME moves: a checkout owned by another
+# user (the floor container runs as root against the host user's mount) is
+# trusted only by safe.directory in the real HOME's global config, and with
+# HOME in $TMP git refused it and the copy came out empty.
 ( cd "$REPO_DIR" && git ls-files -z '*.sh' Dockerfile.seed projects.conf.example | grep -zv '^tests/' \
     | xargs -0 -I{} sh -c 'mkdir -p "$1/$(dirname "{}")" && cp -p "{}" "$1/{}"' _ "$ENG" )
 cp -p "$REPO_DIR/project.sh" "$ENG/project.sh"   # tracked once committed; copied by name so a fresh one is seen
+[[ -f "$ENG/sandbox-common.sh" && -f "$ENG/repo.sh" ]] \
+  || { printf 'SCAFFOLD-FAILED: the engine copy is incomplete (git ls-files in %s)\n' "$REPO_DIR"; exit 1; }
+unset SANDBOX_UID SANDBOX_GID XDG_CONFIG_HOME
+export HOME="$TMP/home"; mkdir -p "$HOME"
 export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LOG"
 # The fake docker logs every call ("docker <args>") and keeps a small world:
 # volumes are directories under $VOLS, each with a `labels` file (key=value

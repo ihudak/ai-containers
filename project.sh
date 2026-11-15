@@ -184,8 +184,11 @@ _prj_rewrite() {
     chmod 644 "$tmp" || { rm -f "$tmp"; return 1; }
   fi
   # cp -p made the temp as read-only as the original: it must be writable to be
-  # written, and read-only again before it replaces a file that was.
-  local ro=0; [[ -f "$file" && ! -w "$file" ]] && ro=1
+  # written, and read-only again before it replaces a file that was. Read-only
+  # by its owner-write bit, from the mode string every ls prints first, not by
+  # `-w`: root may write any file, so `-w` lost a 0444 file's mode as root.
+  local ro=0 lsl=""
+  [[ -f "$file" ]] && lsl="$(ls -ld -- "$file" 2>/dev/null)" && [[ "${lsl:2:1}" == - ]] && ro=1
   chmod u+w "$tmp" 2>/dev/null || true
   if ! cat "$new" > "$tmp" || { (( ro )) && ! chmod u-w "$tmp"; } || ! mv -f "$tmp" "$file"; then
     rm -f "$tmp"
