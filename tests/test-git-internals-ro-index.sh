@@ -2563,7 +2563,8 @@ if [[ "$(id -u)" != 0 ]]; then
     && printf '%s\n' "$TMP/lk278/../proj/node_modules/blk/.git" > "$PROJ/.git/worktrees/w/gitdir" && chmod 000 "$PROJ/node_modules/blk" \
     || { printf 'SCAFFOLD-FAILED: G278\n'; exit 1; }
   launch ..
-  [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$PROJ/node_modules/blk" < <(mounts) && ! grep -qF "$PROJ/node_modules/blk cannot be listed" "$ERR" \
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/.git/worktrees/w/gitdir:/workspace/proj/.git/worktrees/w/gitdir:ro" \
+    && ! grep -qF "$PROJ/node_modules/blk" < <(mounts) && ! grep -qF "$PROJ/node_modules/blk cannot be listed" "$ERR" \
     && pass "G278 a directory a gitdir names only as written, through a link and a .., is not bound or named" \
     || fail "G278 (rc=$LAUNCH_RC; $(grep -F 'node_modules/blk' "$ERR" | head -1); $(mounts | grep -F 'node_modules/blk' | tr '\n' ' '))"
   chmod 755 "$PROJ/node_modules/blk"; rm -rf "$PROJ/node_modules" "$TMP/o278" "$TMP/deep278" "$TMP/lk278"
