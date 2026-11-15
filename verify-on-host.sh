@@ -148,19 +148,29 @@ REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 # with the reason in FLOOR_GIT_WHY when it cannot be given one.
 #
 # The container mounts the checkout alone, at /w. A linked worktree's .git is a
-# FILE naming its git directory under the main checkout's .git, a submodule
-# checkout's names one under the superproject's, and a .git may be a link: each
-# points out of /w, so git in the container found no repository and the floor
-# suite died at its first git call (exit 128). The git directory holding the one
-# named — the common one, which for a worktree holds the worktree's own — is
-# bound read-only, as /w is, at the path the pointer names, so it resolves in the
-# container as it does here: as WRITTEN, which the container takes literally,
-# and the physical directory git finds from it is the bind's source. A pointer
-# that is relative (git 2.48's worktree.useRelativePaths) would resolve against
-# /w, and one outside the git directory git finds, or spelled with . or ..
-# components, cannot be placed; each is refused with the reason, before docker.
+# FILE naming its git directory under the main checkout's .git, and a .git may
+# be a link: either can point out of /w, and then git in the container found no
+# repository and the floor suite died at its first git call (exit 128). The git
+# directory holding the one named — the common one, which for a worktree holds
+# the worktree's own — is bound read-only, as /w is, at the path the pointer
+# names, so it resolves in the container as it does here: as WRITTEN, which the
+# container takes literally, and the physical directory git finds from it is the
+# bind's source. A relative pointer is taken from the checkout, as git and the
+# kernel take it, and one that stays inside it needs no bind. Refused, with the
+# reason, before docker: a submodule checkout (its git directory's core.worktree
+# leads from where that directory lies back to the checkout, which the container
+# has at /w instead), a relative pointer out of the checkout (it would resolve
+# against /w; git 2.48's worktree.useRelativePaths writes those, and the floor's
+# git 2.34 refuses that extension anyway), and one outside the git directory git
+# finds, under /w, or spelled with . or .. components or a doubled /.
+# vh_term <text>: <text> as sandbox-common.sh's _ac_term() prints it, control
+# characters and bidi overrides replaced: what floor_git_dir() reports comes from
+# a .git an agent may have written. From a subshell, as the library's other uses
+# here: sourcing it loads sandbox.env into the shell and exports it.
+vh_term() { ( source "$REPO/sandbox-common.sh" >/dev/null 2>&1 && _ac_term "$1" ) || printf '%s' "${1//[[:cntrl:]]/?}"; }
+
 floor_git_dir() {
-  local dot="$REPO_ROOT/.git" ptr="" pphys cphys suffix dst
+  local dot="$REPO_ROOT/.git" ptr="" gd pphys cphys rphys suffix dst
   FLOOR_GIT_SRC="" FLOOR_GIT_DST="" FLOOR_GIT_WHY=""
   if [[ -L "$dot" ]]; then
     ptr="$(readlink "$dot")" || ptr=""
@@ -176,8 +186,27 @@ floor_git_dir() {
     return 0
   fi
   ptr="${ptr%/}"
+  gd="$ptr"; [[ "$gd" == /* ]] || gd="$REPO_ROOT/$gd"
+  if ! pphys="$(cd "$gd" 2>/dev/null && pwd -P)"; then
+    FLOOR_GIT_WHY="$dot points at $ptr, which is not a directory"
+    return 1
+  fi
+  if [[ -f "$pphys/config" ]] && git config --file "$pphys/config" --get core.worktree >/dev/null 2>&1; then
+    FLOOR_GIT_WHY="this is a submodule checkout: its git directory $pphys sets core.worktree, a way back to the checkout the container cannot follow; run Phase 5 from the superproject"
+    return 1
+  fi
+  if ! cphys="$(cd "$REPO_ROOT" && c="$(git rev-parse --git-common-dir 2>/dev/null)" && cd "$c" && pwd -P)"; then
+    FLOOR_GIT_WHY="git finds no repository through $dot"
+    return 1
+  fi
   if [[ "$ptr" != /* ]]; then
-    FLOOR_GIT_WHY="$dot points at $ptr, a relative path, which the container would resolve against /w"
+    rphys="$(cd "$REPO_ROOT" && pwd -P)"
+    if [[ "$pphys" == "$rphys"/* ]]; then
+      if [[ "$cphys" == "$rphys"/* ]]; then return 0; fi
+      FLOOR_GIT_WHY="$dot points at $ptr, inside the checkout, but the git directory git uses for it, $cphys, lies outside"
+      return 1
+    fi
+    FLOOR_GIT_WHY="$dot points at $ptr, a relative path out of the checkout, which the container would resolve against /w"
     return 1
   fi
   case "$ptr/" in
@@ -185,14 +214,6 @@ floor_git_dir() {
       FLOOR_GIT_WHY="$dot points at $ptr, whose . or .. components or doubled / the container cannot be given"
       return 1 ;;
   esac
-  if ! pphys="$(cd "$ptr" 2>/dev/null && pwd -P)"; then
-    FLOOR_GIT_WHY="$dot points at $ptr, which is not a directory"
-    return 1
-  fi
-  if ! cphys="$(cd "$REPO_ROOT" && c="$(git rev-parse --git-common-dir 2>/dev/null)" && cd "$c" && pwd -P)"; then
-    FLOOR_GIT_WHY="git finds no repository through $dot"
-    return 1
-  fi
   if [[ "$pphys" != "$cphys" && "$pphys" != "$cphys"/* ]]; then
     FLOOR_GIT_WHY="$dot points at $ptr, outside the git directory git uses for it ($cphys)"
     return 1
@@ -382,12 +403,12 @@ else
   # A worktree's, submodule checkout's or linked .git names a git directory
   # outside /w, which the container is given too, read-only (floor_git_dir()).
   elif floor_gbind=() && ! floor_git_dir; then
-    phase_fail 5 "the floor container cannot be given this checkout's git directory: $FLOOR_GIT_WHY — the floor suite did not run; run it from the main checkout or a clone"
+    phase_fail 5 "the floor container cannot be given this checkout's git directory: $(vh_term "$FLOOR_GIT_WHY") — the floor suite did not run; run it from the main checkout or a clone"
   elif [[ -n "$FLOOR_GIT_SRC" ]] && { ! mapfile -d '' -t floor_gbind < <(source "$REPO/sandbox-common.sh" && b=() \
          && docker_bind b "$FLOOR_GIT_SRC" "$FLOOR_GIT_DST" ro "The git directory" && printf '%s\0' "${b[@]}") || (( ${#floor_gbind[@]} != 2 )); }; then
-    phase_fail 5 "the git directory $FLOOR_GIT_SRC cannot be bound into the floor container (see the ERROR above) — the floor suite did not run"
+    phase_fail 5 "the git directory $(vh_term "$FLOOR_GIT_SRC") cannot be bound into the floor container (see the ERROR above) — the floor suite did not run"
   else
-    [[ -z "$FLOOR_GIT_SRC" ]] || sub "giving the floor container $FLOOR_GIT_SRC at $FLOOR_GIT_DST (read-only): the checkout's .git names it"
+    [[ -z "$FLOOR_GIT_SRC" ]] || sub "giving the floor container $(vh_term "$FLOOR_GIT_SRC") at $(vh_term "$FLOOR_GIT_DST") (read-only): the checkout's .git names it"
     sub "running the suite at the declared floor ($floor_img, bash 5.1)"
     # This container runs as root (the image's default user) against a repo
     # bind-mount owned by the HOST user, so git >= 2.35.2's ownership check

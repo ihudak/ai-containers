@@ -185,10 +185,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `:rwcopy` working copy by default, and on a docker daemon several homes
   share (Docker Desktop's, by every WSL distro, or several users') that took
   another home's, unpushed work and all. It now reads each copy's
-  `ai-containers.owner` label: another home's copy is listed and kept unless
-  `gc --all` is given; this home's, and an unlabelled one (made before the
-  label, nothing says whose), are removed as before. `repo.sh list --copies`
-  shows each copy's owner. Asking makes no `project-id.key`.
+  `ai-containers.owner` label and removes only this home's by default.
+  Another home's copy, and an unlabelled one (made before the label, so
+  possibly another's), are listed and kept unless `gc --all` is given; every
+  copy made before this release is unlabelled, so the first clean-up takes
+  `--all`. `repo.sh list --copies` shows each copy's owner. Asking makes no
+  `project-id.key`.
 
 - **`project.sh mv` reads `EXTRA_MOUNTS` and `REPOS` from your shell too.**
   The launcher reads an exported `EXTRA_MOUNTS` or `REPOS` over the project's
@@ -206,9 +208,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so git in the container found no repository and the floor suite died at its
   first git call (exit 128). Phase 5 now gives the container that git
   directory too, read-only like the checkout, at the path the `.git` names, and
-  so for a submodule checkout's `.git` and a `.git` link. A pointer it cannot
-  place there (relative, or with `.` or `..` in it, or outside the git
-  directory git uses) fails the phase before docker, naming why.
+  so for a `.git` link; a relative one that stays inside the checkout needs
+  nothing more. What it cannot give fails the phase before docker, naming why:
+  a submodule checkout (its git directory's `core.worktree` leads back to a
+  checkout the container has at `/w` instead; run it from the superproject),
+  a relative pointer out of the checkout, one with `.` or `..` in it, and one
+  outside the git directory git uses. What a `.git` holds is printed with its
+  control bytes replaced.
 
 - **A dangling `.git` link no longer hides the bare repository a mount lies
   in.** git cannot follow such a link, takes it for no `.git`, and uses the

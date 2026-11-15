@@ -37,9 +37,10 @@ Notes:
     'list'/'gc' read them directly. The registry (repos.conf) is a cache: it is
     authoritative only for Linux bind-backend repos (no volume) and the mutable
     last-synced time, and is rebuildable from labels with 'reindex'.
-  - A working copy is labelled with the home that made it. 'gc' keeps another
-    home's (another WSL distro or user sharing this docker daemon) unless given
-    --all; 'list --copies' shows whose each one is.
+  - A working copy is labelled with the home that made it. 'gc' removes only
+    this home's unless given --all: another home's (another WSL distro or user
+    sharing this docker daemon), and an unlabelled one (made before the label),
+    are kept. 'list --copies' shows whose each one is.
   - Authentication for git-url sources uses your HOST ~/.ssh (mounted read-only).
   - Volume contents are chowned to SANDBOX_UID/SANDBOX_GID (default id -u/id -g),
     the SAME identity sandbox.sh runs the container as. If you override these, set
@@ -409,7 +410,7 @@ cmd_add() {
     local owner; owner="$(foreign_base_owner "$name" "$vol")"
     if [[ -n "$owner" ]]; then
       # Not stray: another repo's, under a prefix whose names collide (REPO-11).
-      printf "       It is labelled for repo '%s' — not yours to remove. Choose another name.\n" "$owner" >&2
+      printf "       It is labelled for repo '%s' — not yours to remove. Choose another name.\n" "$(_ac_term "$owner")" >&2
     else
       printf "       Remove the stray volume first: docker volume rm %s\n" "$vol" >&2
     fi
@@ -452,7 +453,7 @@ sync_one() {
   # (REPO-11). A missing volume names no owner, so it is still re-seeded.
   local owner; owner="$(foreign_base_owner "$name" "$vol")"
   if [[ -n "$owner" ]]; then
-    printf '  SKIP %s: volume %s is labelled for repo "%s"; left untouched.\n' "$name" "$vol" "$owner" >&2
+    printf '  SKIP %s: volume %s is labelled for repo "%s"; left untouched.\n' "$name" "$vol" "$(_ac_term "$owner")" >&2
     return 0
   fi
 
@@ -536,7 +537,7 @@ list_copies() {
     printf 'No :rwcopy working copies exist.\n'
     return 0
   fi
-  local wc repo ldir inuse size owner own others=0
+  local wc repo ldir inuse size owner own others=0 unlabelled=0
   own="$(ai_containers_owner_known)" || own=""
   printf '%-4s %-44s %-14s %-7s %-10s %s\n' "USE" "WORKING COPY VOLUME" "REPO" "SIZE" "OWNER" "LAUNCH DIR"
   while IFS= read -r wc; do
@@ -544,14 +545,19 @@ list_copies() {
     if docker_volume_in_use "$wc"; then inuse="yes"; else inuse="no"; fi
     repo="$(docker_volume_label "$wc" 'ai-containers.repo')"; [[ -z "$repo" ]] && repo="?"
     ldir="$(docker_volume_label "$wc" 'ai-containers.launch-dir')"; [[ -z "$ldir" ]] && ldir="(unlabeled)"
-    owner="$(wc_owner "$wc" "$own")"; [[ "$owner" != another ]] || others=$((others + 1))
+    owner="$(wc_owner "$wc" "$own")"
+    case "$owner" in another) others=$((others + 1)) ;; unlabelled) unlabelled=$((unlabelled + 1)) ;; esac
     size="-"
     (( show_sizes )) && size="$(docker run --rm --entrypoint sh -v "$wc":/v "$seed_image" -c 'du -sh /v 2>/dev/null | cut -f1' 2>/dev/null || echo '?')"
-    printf '%-4s %-44s %-14s %-7s %-10s %s\n' "$inuse" "$wc" "$repo" "$size" "$owner" "$ldir"
+    printf '%-4s %-44s %-14s %-7s %-10s %s\n' "$inuse" "$wc" "$(_ac_term "$repo")" "$size" "$owner" "$(_ac_term "$ldir")"
   done <<< "$copies"
   if (( others )); then
     printf '\n"another": made by another home that shares this docker daemon (another WSL distro or user);\n'
     printf 'its launch directory is a path there, not here. ./repo.sh gc keeps it unless given --all.\n'
+  fi
+  if (( unlabelled )); then
+    printf '\n"unlabelled": made before working copies were labelled with their home, so it may be\n'
+    printf 'another home'"'"'s. ./repo.sh gc keeps it unless given --all.\n'
   fi
 }
 
@@ -630,7 +636,7 @@ cmd_list() {
         state="MISSING"
       fi
     fi
-    printf '%-16s %-5s %-8s %-19s %-3s %s%s\n' "$name" "${type:-?}" "$state" "$synced_h" "$wc_count" "$source" "$size_str"
+    printf '%-16s %-5s %-8s %-19s %-3s %s%s\n' "$name" "$(_ac_term "${type:-?}")" "$state" "$synced_h" "$wc_count" "$(_ac_term "$source")" "$size_str"
   done <<< "$names"
 }
 
@@ -665,9 +671,9 @@ cmd_rm() {
   if (( has_base )); then
     owner="$(foreign_base_owner "$name" "$vol")"
     if [[ -n "$owner" ]]; then
-      printf 'ERROR: volume %s is labelled for repo "%s", not "%s"; refusing to remove it.\n' "$vol" "$owner" "$name" >&2
+      printf 'ERROR: volume %s is labelled for repo "%s", not "%s"; refusing to remove it.\n' "$vol" "$(_ac_term "$owner")" "$name" >&2
       if [[ "$vol" == *"-repo-$owner" ]]; then
-        printf '       It is repo "%s" of REPO_VOLUME_PREFIX=%s, whose name collides with this one;\n' "$owner" "${vol%-repo-"$owner"}" >&2
+        printf '       It is repo "%s" of REPO_VOLUME_PREFIX=%s, whose name collides with this one;\n' "$(_ac_term "$owner")" "$(_ac_term "${vol%-repo-"$owner"}")" >&2
         printf '       "%s" has no base volume of its own under this prefix.\n' "$name" >&2
       fi
       if repo_is_registered "$name"; then
@@ -732,7 +738,7 @@ reset_one() {
   # this one's to reset (REPO-11).
   local owner; owner="$(foreign_base_owner "$name" "$vol")"
   if [[ -n "$owner" ]]; then
-    printf '  SKIP %s: volume %s is labelled for repo "%s"; left untouched.\n' "$name" "$vol" "$owner" >&2
+    printf '  SKIP %s: volume %s is labelled for repo "%s"; left untouched.\n' "$name" "$vol" "$(_ac_term "$owner")" >&2
     return 0
   fi
 
@@ -1015,11 +1021,12 @@ cmd_reset() {
 }
 
 # Prune :rwcopy working-copy volumes. By default removes ALL of this home's
-# working copies (of all repos), and the unlabelled ones, which nothing says are
-# another's; another home's (wc_owner) are kept unless --all. Narrow with --repo
-# <name>, and/or restrict to copies not currently mounted by a running container
-# with --unused. Working copies may hold UNCOMMITTED work, so it confirms unless
-# --yes.
+# working copies (of all repos): those whose ai-containers.owner label is this
+# HOME's id (wc_owner). Another home's, and an unlabelled one (made before the
+# label, or by a launch that could not compute it), which may be another's, are
+# kept unless --all. Narrow with --repo <name>, and/or restrict to copies not
+# currently mounted by a running container with --unused. Working copies may hold
+# UNCOMMITTED work, so it confirms unless --yes.
 cmd_gc() {
   local target_repo="" only_unused=0 assume_yes=0 all_homes=0
   while (( $# )); do
@@ -1042,7 +1049,7 @@ cmd_gc() {
     return 0
   fi
 
-  local victims=() wc repo ldir inuse owner own
+  local victims=() wc repo ldir inuse owner own why
   own="$(ai_containers_owner_known)" || own=""
   printf 'Working copies%s:\n' "${target_repo:+ for \"$target_repo\"}"
   printf '  %-4s %-44s %-14s %-10s %s\n' "USE" "VOLUME" "REPO" "OWNER" "LAUNCH DIR"
@@ -1053,14 +1060,15 @@ cmd_gc() {
     ldir="$(docker_volume_label "$wc" 'ai-containers.launch-dir')"; [[ -z "$ldir" ]] && ldir="(unlabeled)"
     owner="$(wc_owner "$wc" "$own")"
     if (( only_unused )) && [[ "$inuse" == "yes" ]]; then
-      printf '  %-4s %-44s %-14s %-10s %s  [in use — kept]\n' "$inuse" "$wc" "$repo" "$owner" "$ldir"
+      printf '  %-4s %-44s %-14s %-10s %s  [in use — kept]\n' "$inuse" "$wc" "$(_ac_term "$repo")" "$owner" "$(_ac_term "$ldir")"
       continue
     fi
-    if (( ! all_homes )) && [[ "$owner" == another ]]; then
-      printf '  %-4s %-44s %-14s %-10s %s  [another home'"'"'s — kept; --all removes it]\n' "$inuse" "$wc" "$repo" "$owner" "$ldir"
+    if (( ! all_homes )) && [[ "$owner" != "this home" ]]; then
+      if [[ "$owner" == another ]]; then why="another home's"; else why="no owner label"; fi
+      printf '  %-4s %-44s %-14s %-10s %s  [%s — kept; --all removes it]\n' "$inuse" "$wc" "$(_ac_term "$repo")" "$owner" "$(_ac_term "$ldir")" "$why"
       continue
     fi
-    printf '  %-4s %-44s %-14s %-10s %s\n' "$inuse" "$wc" "$repo" "$owner" "$ldir"
+    printf '  %-4s %-44s %-14s %-10s %s\n' "$inuse" "$wc" "$(_ac_term "$repo")" "$owner" "$(_ac_term "$ldir")"
     victims+=("$wc")
   done <<< "$all"
 
@@ -1118,7 +1126,7 @@ cmd_reindex() {
       synced="$(repo_record_field "$record" 5)"
     fi
     repo_registry_upsert "$name" "$type" "$source" "$added" "$synced" "volume"
-    printf 'indexed %s (%s) -> %s\n' "$name" "$type" "$source"
+    printf 'indexed %s (%s) -> %s\n' "$name" "$(_ac_term "$type")" "$(_ac_term "$source")"
     count=$((count + 1))
   done < <(repo_base_volumes)
   printf 'OK: reindex complete (%d volume-backed repo(s)). Bind-backend entries left as-is.\n' "$count"

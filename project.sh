@@ -98,14 +98,19 @@ _prj_key() {
 # runs, and are printed as they are.
 _prj_q() { _ac_term "$(printf '%q' "$1")"; }
 
-# prj_roots: each registered root, one per line; blank and # lines skipped.
+# prj_roots: each registered root, one per line; blank and # lines skipped. It
+# stops, quietly, once its reader has: _prj_registered() and the like return at
+# the first match. Where SIGPIPE is ignored, as on GitHub's hosted runners and
+# in whatever such a process starts, the write fails with EPIPE instead of
+# ending the subshell, and bash printed "printf: write error: Broken pipe" into
+# the command's own output.
 prj_roots() {
   [[ -f "$prj_conf" ]] || return 0
   local line k
   while IFS= read -r line || [[ -n "$line" ]]; do
     k="$(_prj_key "$line")"
     [[ -n "$k" && "$k" != "#"* ]] || continue
-    printf '%s\n' "$k"
+    printf '%s\n' "$k" 2>/dev/null || return 0
   done < "$prj_conf"
 }
 
@@ -1645,11 +1650,15 @@ cmd_mv() {
     read -r -d '' -a rp_sh <<<"${_prj_shell[REPOS]}" || true
     for e in ${rp_sh[@]+"${rp_sh[@]}"}; do rp+=("$e"); rp_from+=(" (set in your shell)"); done
   fi
+  # sh_em: the name is an entry of the shell's EXTRA_MOUNTS, which the launcher
+  # never mounts together with sandbox.local.env's, where mv adds the old root.
+  local -a sh_em=()
   for i in "${!em[@]}"; do
     tag=""; if [[ "${em_from[i]}" == "your shell" ]]; then tag=" (set in your shell)"; fi
     names+=("$(_prj_base "$(_prj_mount_dir "${em[i]}")")"); whats+=("the EXTRA_MOUNTS entry ${em[i]}$tag"); nb_ok+=("")
+    sh_em+=("${tag:+1}")
   done
-  for i in "${!rp[@]}"; do names+=("${rp[i]%%:*}"); whats+=("the REPOS repo ${rp[i]%%:*}${rp_from[i]}"); nb_ok+=(""); done
+  for i in "${!rp[@]}"; do names+=("${rp[i]%%:*}"); whats+=("the REPOS repo ${rp[i]%%:*}${rp_from[i]}"); nb_ok+=(""); sh_em+=(""); done
   # The pointers, as the launch reads them — the shell's value over the project's
   # sandbox.local.env (prj_launch_env), a :ro or :rw taken off DOCS_PATH's and
   # ARCHITECTURE_REPO_PATH's (sandbox.sh: `parse_pointer_spec()`) — mount at
@@ -1672,7 +1681,7 @@ cmd_mv() {
           if [[ "$(_prj_phys "${v/#\~/$HOME}")" == "$(_prj_phys "$new_root")" ]]; then self=1; fi
         fi ;;
     esac
-    names+=("$pn"); whats+=("$k (set in $from)"); nb_ok+=("$self")
+    names+=("$pn"); whats+=("$k (set in $from)"); nb_ok+=("$self"); sh_em+=("")
   done
   n_set=${#names[@]}
   if (( add_mount )); then names+=("$ob"); whats+=("$old_root, which mv adds to EXTRA_MOUNTS"); nb_ok+=(""); fi
@@ -1686,7 +1695,7 @@ cmd_mv() {
     fi
   done
   for (( i = 0; add_mount && i < n_set; i++ )); do
-    if [[ "${names[i]}" == "$ob" ]]; then
+    if [[ "${names[i]}" == "$ob" && -z "${sh_em[i]}" ]]; then
       printf 'ERROR: %s, which mv would add to EXTRA_MOUNTS, and %s would both be mounted at\n' "$t_old" "$(_ac_term "${whats[i]}")" >&2
       printf '       /workspace/%s, which the launcher refuses; refusing. Nothing was changed.\n' "$(_ac_term "$ob")" >&2
       exit 1
@@ -1754,6 +1763,13 @@ cmd_mv() {
       printf '         and it does not mount %s: add it there, or the container will not see that\n' "$t_old"
       printf '         directory. mv cannot change your shell.\n'
     fi
+    for e in ${em_sh[@]+"${em_sh[@]}"}; do
+      if [[ "$(_prj_base "$(_prj_mount_dir "$e")")" == "$ob" ]]; then
+        printf '         Its entry %s has the same basename, /workspace/%s: the launcher would refuse\n' "$(_ac_term "$e")" "$(_ac_term "$ob")"
+        printf '         both, so that one has to go or be renamed first.\n'
+        break
+      fi
+    done
   fi
 
   if ! confirm "Move all of the above?"; then
@@ -1835,6 +1851,11 @@ cmd_mv() {
       printf 'Added %s to EXTRA_MOUNTS in %s/sandbox.local.env.\n' "$t_old" "$t_ndot"
     fi
   fi
+  # Said again here, not at the end, which a later failure would skip.
+  if (( sh_miss )); then
+    printf 'WARNING: add %s to the EXTRA_MOUNTS your shell exports: the launcher reads that one, not\n' "$t_old" >&2
+    printf '         %s/sandbox.local.env.\n' "$t_ndot" >&2
+  fi
   # 5. The registry.
   if (( reg && ! new_reg )); then
     prj_conf_replace "$PRJ_ROOT" "$new_root" || exit 1
@@ -1897,10 +1918,6 @@ cmd_mv() {
   fi
   if (( fail || leftover )); then exit 1; fi
   eval "${old_int:-trap - INT}"; eval "${old_term:-trap - TERM}"
-  if (( sh_miss )); then
-    printf 'WARNING: add %s to the EXTRA_MOUNTS your shell exports: the launcher reads that one, not\n' "$t_old" >&2
-    printf '         %s/sandbox.local.env.\n' "$t_ndot" >&2
-  fi
   printf 'OK: moved project %s to %s.\n' "$t_old" "$t_new"
 }
 

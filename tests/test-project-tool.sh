@@ -13,6 +13,12 @@ ok()   { if "${@:2}"; then pass "$1"; else fail "$1"; fi; }
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR
+# SIGPIPE ignored, as GitHub's hosted runners start every step, and as it stays
+# in what they start: a loop that stops reading a pipe early then makes its
+# writer fail with EPIPE rather than end quietly, and bash prints "write error:
+# Broken pipe" into project.sh's output. Elsewhere SIGPIPE is at its default and
+# the same code was silent, so only CI's suite jobs failed (project.sh: `prj_roots()`).
+trap '' PIPE
 ENG="$TMP/engine"; mkdir -p "$ENG" "$TMP/bin"
 # The engine is listed by git BEFORE HOME moves: a checkout owned by another
 # user (the floor container runs as root against the host user's mount) is
@@ -1550,6 +1556,29 @@ mvrun "$A" "$N" --yes; rc=$?
 unset EXTRA_MOUNTS
 ok "mv where the shell's EXTRA_MOUNTS mounts the old root only read-only says so, naming the entry" \
   bash -c '[ "$1" = 0 ] && grep -qxF "         and mounts $2 only read-only ($3:ro): add $2 to it, or the container" "$4"' _ "$rc" "$A" "$W" "$TMP/out"
+# The launcher mounts the shell's EXTRA_MOUNTS or sandbox.local.env's, never
+# both: the old root mv adds to the file cannot clash with a shell entry, and
+# listing the old root there, as the warning says to, must not stop mv.
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS="$A"
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where the shell's EXTRA_MOUNTS lists the old root itself moves, warning of nothing" \
+  bash -c '[ "$1" = 0 ] && ! grep -q "your shell" "$2" && grep -qxF "EXTRA_MOUNTS=\"$3\"" "$4/.ai-containers/sandbox.local.env"' _ "$rc" "$TMP/out" "$A" "$N"
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS=/mnt/other/alpha
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where a shell entry has the old root's basename moves, and says that adding it there would clash" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "         Its entry /mnt/other/alpha has the same basename, /workspace/alpha: the launcher would refuse" "$2"' _ "$rc" "$TMP/out"
+# The closing warning is not lost when a later step fails.
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS=/x/one FAKE_FAIL_VOLUME_RM='*--wc-1'
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS FAKE_FAIL_VOLUME_RM
+ok "mv that fails to remove an old working copy still says to add the old root to the shell's EXTRA_MOUNTS" \
+  bash -c '[ "$1" = 1 ] && grep -qxF "WARNING: add $2 to the EXTRA_MOUNTS your shell exports: the launcher reads that one, not" "$3"' _ "$rc" "$A" "$TMP/out"
+
 world; A="$W/outer/alpha"; mvproj "$A"; N="$W/outer"
 export EXTRA_MOUNTS=/x/one
 mvrun "$A" "$N" --yes; rc=$?
