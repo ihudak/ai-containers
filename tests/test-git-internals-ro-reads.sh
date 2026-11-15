@@ -715,18 +715,27 @@ rm -rf "$TMP/o116"
 # ── G118: what GIT-38's fix costs and keeps on a case-sensitive filesystem ──
 # No process per path: a case-sensitive filesystem needs no getcwd, and one per
 # walk step let an agent's tree stretch a launch tenfold (review of the GIT-38
-# fix). A pwd on PATH that logs each run is the witness.
+# fix). A pwd on PATH that logs each run is the witness. The verify manifest
+# asks pwd once for each directory that holds an entry (LNCH-27), whatever is
+# walked, so the witness is that a link and an include whose ways take steps
+# add no run to a launch without them.
 mkdir -p "$TMP/pwd118" "$PROJ/w118" && printf '#!/bin/sh\nprintf x >> %q\nexec %q "$@"\n' "$TMP/pwd118.calls" "$(type -P pwd)" > "$TMP/pwd118/pwd" \
-  && chmod +x "$TMP/pwd118/pwd" && ln -s ../w118/../w118/../README "$PROJ/.git/hooks/pre-push" \
-  && "${G[@]}" -C "$PROJ" config include.path ../w118/../w118/inc.cfg || { printf 'SCAFFOLD-FAILED: G118 pwd\n'; exit 1; }
+  && chmod +x "$TMP/pwd118/pwd" || { printf 'SCAFFOLD-FAILED: G118 pwd\n'; exit 1; }
 # Only where TMPDIR is case-sensitive: macOS's is not (third review).
 if mkdir "$TMP/Probe118" && [[ -d "$TMP/PROBE118" ]]; then
   printf 'NOTE: TMPDIR ignores case here; G118'\''s pwd count does not apply\n'
+  ln -s ../w118/../w118/../README "$PROJ/.git/hooks/pre-push" \
+    && "${G[@]}" -C "$PROJ" config include.path ../w118/../w118/inc.cfg || { printf 'SCAFFOLD-FAILED: G118 pwd\n'; exit 1; }
 else
   PATH="$TMP/pwd118:$PATH" launch ..
-  [[ "$LAUNCH_RC" == 0 && ! -s "$TMP/pwd118.calls" ]] \
-    && pass "G118 a launch on a case-sensitive filesystem runs no pwd process" \
-    || fail "G118 pwd ran $(wc -c < "$TMP/pwd118.calls" 2>/dev/null || echo 0) times (rc=$LAUNCH_RC)"
+  base118="$LAUNCH_RC $(wc -c < "$TMP/pwd118.calls" 2>/dev/null || echo 0)"; rm -f "$TMP/pwd118.calls"
+  ln -s ../w118/../w118/../README "$PROJ/.git/hooks/pre-push" \
+    && "${G[@]}" -C "$PROJ" config include.path ../w118/../w118/inc.cfg || { printf 'SCAFFOLD-FAILED: G118 pwd\n'; exit 1; }
+  PATH="$TMP/pwd118:$PATH" launch ..
+  got118="$LAUNCH_RC $(wc -c < "$TMP/pwd118.calls" 2>/dev/null || echo 0)"
+  [[ "$base118" == 0\ * && "$got118" == "$base118" ]] \
+    && pass "G118 on a case-sensitive filesystem the ways walked run no pwd process (${got118#* } runs, the manifest's, with them and without)" \
+    || fail "G118 pwd runs with the links (rc and runs: $got118) differ from a launch without them ($base118)"
 fi
 rmdir "$TMP/Probe118" 2>/dev/null
 "${G[@]}" -C "$PROJ" config --unset include.path; rm -rf "$TMP/pwd118" "$TMP/pwd118.calls" "$PROJ/w118" "$PROJ/.git/hooks/pre-push"

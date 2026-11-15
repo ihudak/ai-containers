@@ -369,6 +369,8 @@ launcher_ro_overlay() {
   local reached="$3" self src rest dst opts l at pin path part r skip i k depth max=0 d p pp kind ok mf mv
   local _br_src _br_dst _br_opts
   local x f e q w c inner how fin
+  local -a hsrc=() hdst=()
+  local -A hvdone=()
   local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a _xm_t=() _xm_by=() _xm_j=() _xm_k=() ro_srcs=() _gdi_nowt=() rosrc=()
@@ -423,6 +425,9 @@ launcher_ro_overlay() {
     if [[ ( "$1" != -v && "$1" != --mount ) || $# -lt 2 ]]; then shift; continue; fi
     _bind_read "$1" "$2"; shift 2
     src="$_br_src"; dst="$_br_dst"; opts="$_br_opts"
+    # Every host bind, as run_container made it, read-only ones too: the mounted
+    # host paths among them join the verify manifest (LNCH-27).
+    if [[ "$src" == /* ]]; then hsrc+=("$src"); hdst+=("$dst"); fi
     if [[ ",$opts," == *,ro,* ]]; then
       # Kept to be scanned where it lies inside a writable mount (GIT-56).
       if [[ "$src" == /* && -d "$src" ]]; then
@@ -512,6 +517,18 @@ launcher_ro_overlay() {
     fi
     if [[ -d "${_host_ways[i+3]}" ]] && ! [[ -n "$fin" && "$fin" -ef "${_host_ways[i+3]}" ]]; then
       _host_way_refuse "${_host_ways[i]}" "${_host_ways[i+1]}" changed "" ""
+    fi
+    # Each bind of what this way was resolved to joins the verify manifest, by
+    # where the way ends: docker resolves the source again, and a concurrent
+    # container can swap it for a link in between (LNCH-27; T90). Marked, so that
+    # Colima's flow, which takes its ids in the VM, stays as it was.
+    if [[ -n "$fin" && -d "${_host_ways[i+3]}" ]]; then
+      _spell_rec fin
+      for k in ${hsrc[@]+"${!hsrc[@]}"}; do
+        e="$fin|${hdst[k]}"
+        [[ "${hsrc[k]}" == "${_host_ways[i+3]}" && -z "${hvdone[$e]:-}" ]] || continue
+        hvdone[$e]=1; _vrfy+=("$fin" "${hdst[k]}"); _host_verified[$e]=1
+      done
     fi
   done
 
@@ -6206,6 +6223,8 @@ _gir_tmp="" _gir_tmp_warned=""
 # set, that made absolute, and what the launch resolved it to (_host_way_add;
 # judged by launcher_ro_overlay, LNCH-26).
 _host_ways=()
+# The verify manifest's entries that are mounted host paths, "<source>|<destination>" (LNCH-27).
+declare -A _host_verified=()
 _git_ok=""                  # whether git runs here, asked once (_git_usable)
 declare -A _gir_cache=()   # git directory → its read index, once per launch
 _fs_deadline=""             # the FIFO search's deadline, once per launch (_ro_fifo_search)
@@ -7192,6 +7211,7 @@ run_container() {
   # could be swapped for one before docker resolves them, by a concurrent
   # container of the same project; the entrypoint refuses a swap as for any
   # overlay (review of the batch 10 branch, reproduced; T61).
+  local _vod0=${#launcher_verify[@]}
   for _od in ${output_dirs[@]+"${output_dirs[@]}"}; do launcher_verify+=("$launch_dir/$_od" "/workspace/$_od"); done
   if (( ${#launcher_verify[@]} )); then
     # Under the physical ~/.ai-containers, as the group's mounts are
@@ -7231,8 +7251,68 @@ run_container() {
       local _vm_on=0 _vpaths=("$_vdir")
       for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do _vpaths+=("${launcher_verify[_i]}"); done
       if _vm_dev_ino_load _vm_di "${_vpaths[@]}" && [[ -n "${_vm_di[$_vdir]:-}" ]]; then _vm_on=1; fi
+      # Each entry's device:inode is taken from the directory that holds it, while
+      # that directory is held, and its true path must be the one judged: read by
+      # path, an entry whose parent a concurrent container had just swapped for a
+      # link gave the id of whatever the link led to, docker followed the same
+      # link, and the entrypoint's comparison passed, a repository's .git from
+      # elsewhere mounted writable among them (LNCH-27; T90). The parent, not the
+      # entry: a read-only mount you cannot enter is one (GIT-93). One subshell
+      # for each parent; the external pwd, which asks the kernel where the held
+      # directory is, where bash would print how it got there. On a Linux host
+      # only: on a Mac the entrypoint skips the check, or Colima's VM gives the
+      # ids, where a hold on the host proves nothing.
+      local -A _vpar=() _vhid=()
+      local -a _vhl=()
+      local _vhold=0 _vp _vk _vn _vgot _vj _ldp
+      if (( ! _vm_on )) && [[ "$OSTYPE" == linux* ]]; then
+        if [[ -z "${_cd_phys_pwd:-}" ]]; then
+          _cd_phys_pwd="$(type -P pwd 2>/dev/null)" || _cd_phys_pwd=""
+          [[ "$_cd_phys_pwd" == /* ]] || _cd_phys_pwd=-
+        fi
+        if [[ "$_cd_phys_pwd" == - ]]; then
+          printf 'NOTE: no pwd program on PATH: the verify manifest is read by path, which a concurrent container swapping a directory for a link at that moment can get past.\n' >&2
+        else
+          _vhold=1
+          # The output directories by the physical launch directory, as every
+          # other entry is spelled: a launch through a link keeps the link in $PWD.
+          _cd_phys _ldp "$launch_dir" || _ldp="$launch_dir"
+          for (( _i = _vod0; _i < ${#launcher_verify[@]}; _i += 2 )); do
+            launcher_verify[_i]="$_ldp/${launcher_verify[_i]#"$launch_dir"/}"
+          done
+          for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do
+            _vp="${launcher_verify[_i]%/*}"; _vpar[${_vp:-/}]+="$_i "
+          done
+          for _vp in "${!_vpar[@]}"; do
+            _vgot=""; _vhl=()
+            { IFS= read -r -d '' _vgot || _vgot=""; mapfile -t _vhl; } < <(
+              cd -P -- "$_vp" 2>/dev/null || exit 0
+              "$_cd_phys_pwd" -P 2>/dev/null || exit 0
+              printf '\0'
+              for _vk in ${_vpar[$_vp]}; do
+                _vn="${launcher_verify[_vk]##*/}"
+                # A link, or anything but a directory or a regular file (a FIFO or
+                # a device swapped in), is no entry: asked here, beside the stat,
+                # as the file binds were checked beside theirs.
+                if [[ -L "./$_vn" ]]; then printf 'L\n'
+                elif [[ ! -d "./${_vn:-.}" && ! -f "./$_vn" ]]; then printf 'X\n'
+                else _launcher_dev_ino "./${_vn:-.}" || printf 'X\n'; fi
+              done)
+            # Byte for byte against the parent as it was judged, which every
+            # entry's maker spelled as on disk already (GIT-38). Not respelled
+            # here: a respelling enters the directory again, by path, and a link
+            # swapped in at that moment would spell itself right (final review).
+            [[ "$_vgot" == "$_vp"$'\n' ]] || continue
+            _vj=0
+            for _vk in ${_vpar[$_vp]}; do _vhid[$_vk]="${_vhl[_vj]:-}"; _vj=$(( _vj + 1 )); done
+          done
+        fi
+      fi
       for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do
         _vsrc="${launcher_verify[_i]}"; _vdst="${launcher_verify[_i+1]}"
+        # A mounted host path is not recorded on Colima, whose flow stays as it was.
+        _vk="$_vsrc|$_vdst"
+        if (( _vm_on )) && [[ -n "${_host_verified[$_vk]:-}" ]]; then continue; fi
         # Checked again where the inode is recorded: a concurrent container could
         # swap a protected config for a FIFO after the overlay pass, and the
         # entrypoint only compares inodes with these (review of 455fa85).
@@ -7242,6 +7322,14 @@ run_container() {
         fi
         if (( _vm_on )); then
           if [[ -n "${_vm_di[$_vsrc]:-}" ]]; then read -r _vdev _vino <<<"${_vm_di[$_vsrc]}"; else _vdev=0; _vino=0; fi
+        elif (( _vhold )); then
+          if [[ ! "${_vhid[$_i]:-}" =~ ^[0-9]+\ [0-9]+$ ]]; then
+            printf 'ERROR: %s is no longer what was checked; refusing the launch.\n' "$(_term "$_vsrc")" >&2
+            printf '       A container already running on an overlapping tree may be changing it.\n' >&2
+            printf '       Stop other containers on this workspace and relaunch.\n' >&2
+            exit 1
+          fi
+          read -r _vdev _vino <<<"${_vhid[$_i]}"
         elif read -r _vdev _vino < <(_launcher_dev_ino "$_vsrc"); then :; else _vdev=0; _vino=0; fi
         printf '%s\0%s\0%s\0' "$_vdev" "$_vino" "$_vdst" >> "$_vdir/manifest"
       done
