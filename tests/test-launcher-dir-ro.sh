@@ -1222,6 +1222,12 @@ TMPDIR="$TMP/no-such-tmp51" EXTRA_MOUNTS="$TMP/g51" launch "$LAUNCHER" "$TMP/app
 [[ "$(grep -cF "cannot make a temporary directory in $TMP/no-such-tmp51 (TMPDIR)" "$ERR")" == 1 ]] \
   && pass "T51 the index read names the TMPDIR it could not use, once" \
   || fail "T51 the index read's TMPDIR warning (count: $(grep -cF 'cannot make a temporary directory' "$ERR"))"
+# …and each index it could not read is named as unread, its submodules not
+# followed: the read fails, it does not pass for an empty index (GAP-2's
+# whole-file run, batch 2, item 2).
+grep -qF "cannot read the index of $TMP/g51/r51a/.git;" "$ERR" && grep -qF "cannot read the index of $TMP/g51/r51b/.git;" "$ERR" \
+  && pass "T79 with no temporary directory, each index is named as not read" \
+  || fail "T79 an index read with no temporary directory passed for read ($(grep -F 'cannot read the index' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$TMP/g51"
 
 # ── T52: %q prints a bidi override raw, so every scanned name goes through _q ─

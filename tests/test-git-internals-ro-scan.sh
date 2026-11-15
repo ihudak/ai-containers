@@ -1928,6 +1928,21 @@ EXTRA_MOUNTS="$D194/g.git" launch "$TMP/app"
   || fail "G194 a repository under refs/ (rc=$LAUNCH_RC; $(mounts | grep -F inner.git | tr '\n' ' '))"
 chmod -R u+rwx "$D193" "$D194" 2>/dev/null; rm -rf "$D193" "$D194"
 
+# ── G216: a commondir that holds ./ only before a NUL is no placeholder ───────
+# A directory with no HEAD is taken for a git directory only where its
+# commondir holds the ./ a launch writes (G193). One holding ./, a newline, a
+# NUL and a newline is not that: to git it names a directory called by a
+# newline (GIT-30). So it is a plain directory, left alone (GAP-2's whole-file
+# run, batch 2, item 3).
+D216="$TMP/d216"; mkdir -p "$D216/n" && printf './\n\0\n' > "$D216/n/commondir" || { printf 'SCAFFOLD-FAILED: G216\n'; exit 1; }
+EXTRA_MOUNTS="$D216" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$D216" < <(grep -E 'ERROR|WARNING' "$ERR") \
+  && [[ "$(find "$D216/n" -mindepth 1 | wc -l | tr -d ' ')" == 1 ]] \
+  && ! grep -qF "$D216/n" < <(mounts) \
+  && pass "G216 a commondir that holds ./ only before a NUL is no placeholder: nothing is made, bound or refused" \
+  || fail "G216 ./ before a NUL (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -1); $(ls -A "$D216/n" | tr '\n' ' '))"
+rm -rf "$D216"
+
 # ── G195: a repository protected with no placeholder is found again ───────────
 # One whose config sets core.worktree gets no ./ (GIT-73), and the ./ was what
 # found a protected git directory again once a session had moved its HEAD
