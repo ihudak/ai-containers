@@ -329,7 +329,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - **Status: DONE for the WSL native agent** (2026-11-14: items 1 to 5); the Mac's `printf %q` command and the Linux agent's write-up of the ten further equivalents stay open. Was: **OPEN** (handed over 2026-11-14 by the Linux agent, as batch 1 was). Base: `origin/main` at `1915a91`, which has batch 1 and GIT-93's fix.
 - **What this is:** the next survivors of the measurement batch 1 describes, read when it stood at 1,395 of 3,312 mutants (1,321 killed, 55 survived, 19 unproven). Every line quoted below reads the same at `14f42bd`, where the run measures, and at `1915a91`.
 - **Rules:** those of batch 1, with these numbers.
-  - **New checks** from **G215** in the `tests/test-git-internals-ro-*.sh` files and **T79** to **T84**, then from T86, in `tests/test-launcher-dir-ro.sh`. G209 to G214, T78 and T85 (LNCH-26's fix) are taken.
+  - **New checks** from **G215** in the `tests/test-git-internals-ro-*.sh` files and **T79** to **T84**, then T86 to T89, then from T91, in `tests/test-launcher-dir-ro.sh`. G209 to G214, T78, T85 (LNCH-26's fix) and T90 (LNCH-27's) are taken.
   - **A product bug** found on the way is **GIT-95** or later, or **LNCH-28** or later (LNCH-25 to LNCH-27 are filed).
   - **The two places** batch 1 had to leave alone are free again: GIT-93's fix is on `main`.
   - Demonstrate, do not score. No entries in `tests/falsify/survivors.txt`. Results in this section, one line per item.
