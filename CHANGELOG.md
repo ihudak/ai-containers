@@ -150,6 +150,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A concurrent container can no longer swap a mounted directory under a
+  launch.** Docker resolves each bind's source again, seconds after the
+  launcher checked it. A second container running at that moment with the
+  tree writable could move a mounted directory aside and put a link in its
+  place, and docker followed the link. Every host path a launch mounts (the
+  working directory, `EXTRA_MOUNTS` entries, a repo's bind source,
+  `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH`, `ARCHITECTURE_REPO_PATH`) is now in
+  the list the container's entrypoint checks against what docker really
+  mounted, and a mismatch refuses the start. On a Linux host every entry of
+  that list, the read-only overlays and pins included, is now recorded from
+  its parent directory while that directory is held, so a swap made at the
+  very moment of recording is refused too. Not covered: Colima, whose flow is
+  unchanged, and macOS with Docker Desktop, where that check was already
+  skipped. A mounted path on a filesystem that renumbers inodes (sshfs, some
+  CIFS mounts) may now be refused on occasion. Because a mounted host path is
+  now checked, an open-mode launch that mounts any host path (a working
+  directory, an `EXTRA_MOUNTS` entry, a pointer) gets the verify mount too, so
+  Docker Desktop prints its one-line `NOTE:` about device and inode there as
+  it does in the other modes (bugs review LNCH-27).
+
 - **A mounted host path reached through a link the agent can repoint refuses
   the launch.** `VAULT_PATH`, `SPECS_PATH`, `DOCS_PATH`,
   `ARCHITECTURE_REPO_PATH`, an `EXTRA_MOUNTS` entry, the working directory and

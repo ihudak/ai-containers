@@ -935,18 +935,21 @@ done
 [[ "${vline%%:*}" != /workspace/* ]] && pass "T41 the verify source is never under /workspace" || fail "T41 verify source is under /workspace: $vline"
 
 # ── T42: nothing to guard → no verify mount and no anchor at all. An open-mode
-# launch has no output directories, and here no writable mount holds a
-# launcher. (A restricted launch always guards its .agent-blocked: T61.)
-: > "$CAPTURE"; ( cd "$LAUNCHER" && bash ./sandbox.sh open "$TMP/app" ) >/dev/null 2>"$ERR" </dev/null
+# launch has no output directories, and here it mounts no host path of yours:
+# no working directory, so nothing that a launcher or a swap could reach. (A
+# restricted launch always guards its .agent-blocked: T61. A mounted host path
+# is guarded too: LNCH-27, T90.)
+: > "$CAPTURE"; ( cd "$LAUNCHER" && bash ./sandbox.sh open ) >/dev/null 2>"$ERR" </dev/null
 [[ -z "$(mounts | grep ':/run/ai-launcher:ro$' || true)" ]] \
   && [[ -z "$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | grep '^AI_LAUNCHER_ANCHOR=' || true)" ]] \
   && pass "T42 a launch with nothing to guard adds no verify mount or anchor" \
   || fail "T42 spurious verify machinery (mounts: $(mounts | grep -F /run/ai-launcher | tr '\n' ' '))"
-# …and a restricted one guards only its output directory.
+# …and a restricted one guards only its output directory and its working directory.
 launch "$LAUNCHER" "$TMP/app"
-[[ "$(tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null | grep -c '^/workspace/')" == 1 ]] \
+[[ "$(tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null | grep -c '^/workspace/')" == 2 ]] \
   && grep -qxF /workspace/.agent-blocked <<<"$(tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null)" \
-  && pass "T42 a restricted launch with no launcher mounts guards only its .agent-blocked" \
+  && grep -qxF /workspace/app <<<"$(tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null)" \
+  && pass "T42 a restricted launch with no launcher mounts guards only its .agent-blocked and its working directory" \
   || fail "T42 restricted manifest ($(tr '\0' '\n' < "$CAPTURE.manifest" 2>/dev/null | grep '^/workspace/' | tr '\n' ' '))"
 
 # ── T43: the host launcher must not use GNU-only `stat -c` (macOS has only BSD
@@ -2245,6 +2248,129 @@ for r85 in ../../d85rel ./../../d85rel; do
     || fail "T85 relative pointer $r85 ($(said85))"
 done
 rm -rf "$W85" "$O85" "$TMP/v85" "$TMP/d85rel"
+
+# ── T90: every mounted host path is verified, each recorded through its held parent (LNCH-27) ─
+# docker resolves a bind's source again, seconds after the launch judged the way
+# to it. A concurrent container that has the tree writable can move the
+# directory aside and put a link in its place in between, and docker follows the
+# link. So every host path a launch mounts joins the verify manifest, which the
+# entrypoint compares with what docker really mounted. And every entry's
+# device:inode is taken from the directory that holds it while that directory is
+# held, its true path the one judged: read by path, a parent swapped a moment
+# earlier gave the id of whatever the link led to, and the comparison passed.
+W90="$TMP/w90"; O90="$TMP/other90"
+# man90 <dst>: what the manifest records for that destination, one line per entry.
+man90() {
+  local -a m; local i
+  mapfile -d '' -t m < "$CAPTURE.manifest" 2>/dev/null || m=()
+  for (( i = 0; i + 2 < ${#m[@]}; i += 3 )); do [[ "${m[i+2]}" == "$1" ]] && printf '%s %s\n' "${m[i]}" "${m[i+1]}"; done
+  return 0
+}
+mkdir -p "$W90/specs" "$W90/a/specs" "$TMP/ro90" "$TMP/v90" "$TMP/d90" "$TMP/a90" "$TMP/rb90" "$O90/dir" "$O90/a/specs" \
+  && mk_launcher "$W90/p" && mk_launcher "$O90/p" || { printf 'SCAFFOLD-FAILED: T90\n'; exit 1; }
+mkdir -p "$HOME/.ai-containers"; cp -p "$HOME/.ai-containers/repos.conf" "$TMP/repos90.bak" 2>/dev/null
+printf 'r90|path|%s|2026-11-14|2026-11-14|bind\n' "$TMP/rb90" >> "$HOME/.ai-containers/repos.conf"
+rm -f "$CAPTURE.manifest"
+REPOS="r90:rw" EXTRA_MOUNTS="$W90 $TMP/ro90:ro" VAULT_PATH="$TMP/v90" SPECS_PATH="$W90/specs" DOCS_PATH="$TMP/d90" \
+  ARCHITECTURE_REPO_PATH="$TMP/a90" launch "$LAUNCHER" "$TMP/app"
+if [[ -f "$TMP/repos90.bak" ]]; then mv "$TMP/repos90.bak" "$HOME/.ai-containers/repos.conf"; else rm -f "$HOME/.ai-containers/repos.conf"; fi
+bad90=""
+while IFS='|' read -r s90 d90; do
+  [[ "$(man90 "$d90")" == "$(p_dev_ino "$s90")" ]] || bad90+=" $d90=[$(man90 "$d90" | tr '\n' ';')]"
+done <<LIST90
+$TMP/app|/workspace/app
+$W90|/workspace/w90
+$TMP/ro90|/workspace/ro90
+$TMP/v90|/workspace/vault
+$W90/specs|/workspace/specs
+$TMP/d90|/workspace/docs
+$TMP/a90|/workspace/architecture
+$TMP/rb90|/workspace/r90
+LIST90
+[[ "$LAUNCH_RC" == 0 && -z "$bad90" ]] \
+  && pass "T90 every mounted host path is in the verify manifest, once, with its directory's device:inode" \
+  || fail "T90 mounted host paths in the manifest (rc=$LAUNCH_RC; wrong or missing:$bad90)"
+# Swapped where the ids are recorded. Recording begins with asking whether
+# docker is Colima's (G170's hook): a `colima` on PATH, and a `docker context
+# inspect` that makes the swap and names no Colima socket.
+mkdir -p "$TMP/hook90"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/hook90/colima"
+cat > "$TMP/hook90/docker" <<HOOK90
+#!/usr/bin/env bash
+if [[ "\$1 \$2" == "context inspect" ]]; then
+  mv "\$SWAP90" "\$SWAP90.aside" && if [[ "\$SWAP90_TO" == fifo ]]; then mkfifo "\$SWAP90"; else ln -s "\$SWAP90_TO" "\$SWAP90"; fi
+  exit 0
+fi
+exec "$TMP/bin/docker" "\$@"
+HOOK90
+chmod +x "$TMP/hook90/colima" "$TMP/hook90/docker"
+swap90() {  # $1 = what is moved aside, $2 = where the link put in its place leads, or `fifo` for a FIFO there; the rest is the launch's environment
+  local from="$1" to="$2"; shift 2
+  : > "$CAPTURE"
+  ( cd "$LAUNCHER" && env "$@" DOCKER_HOST="" SWAP90="$from" SWAP90_TO="$to" PATH="$TMP/hook90:$PATH" \
+      bash ./sandbox.sh restricted "$TMP/app" ) >/dev/null 2>"$ERR" </dev/null
+  LAUNCH_RC=$?
+  swapped90=no; [[ -L "$from" || -p "$from" ]] && swapped90=yes
+  rm -f "$from"; [[ ! -e "$from.aside" ]] || mv "$from.aside" "$from"
+}
+said90() { printf 'rc=%s; swapped: %s; docker run reached: %s; %s' "$LAUNCH_RC" "$swapped90" "$([[ -s "$CAPTURE" ]] && echo yes || echo no)" "$(grep -F ERROR "$ERR" | head -1)"; }
+# Only where the entries are read through their held parents, a Linux host: on a
+# Mac they are read by path, as before, and Colima's VM gives the ids (PLAT-11).
+if [[ "$OSTYPE" != linux* ]]; then
+  printf 'NOTE: T90 the swaps where the ids are recorded are refused on a Linux host only; not run here\n'
+else
+# The mounted directory itself, a link in its place.
+swap90 "$W90/specs" "$O90/dir" EXTRA_MOUNTS="$W90" SPECS_PATH="$W90/specs"
+[[ "$swapped90" == yes && "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$W90/specs is no longer what was checked" \
+  && pass "T90 a mounted directory swapped for a link where its id is recorded refuses the launch" \
+  || fail "T90 the mounted directory swapped ($(said90))"
+# Its parent, a link to a tree that holds the same name: read by path, the id
+# recorded was that tree's, and the launch went on.
+swap90 "$W90/a" "$O90/a" EXTRA_MOUNTS="$W90" SPECS_PATH="$W90/a/specs"
+[[ "$swapped90" == yes && "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$W90/a/specs is no longer what was checked" \
+  && pass "T90 a mounted directory whose parent was swapped for a link refuses the launch" \
+  || fail "T90 the parent swapped ($(said90))"
+# A FIFO in its place: no link, and no directory to mount either.
+swap90 "$W90/specs" fifo EXTRA_MOUNTS="$W90" SPECS_PATH="$W90/specs"
+[[ "$swapped90" == yes && "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$W90/specs is no longer what was checked" \
+  && pass "T90 a mounted directory swapped for a FIFO where its id is recorded refuses the launch" \
+  || fail "T90 the mounted directory swapped for a FIFO ($(said90))"
+# An entry the launch recorded before, a launcher's read-only overlay, the same
+# way. One swap of its parent was caught later, by the entrypoint, the parent
+# being a pin recorded as the link it then was; a second swap back between the
+# two entries was not. Held, either is refused here, at the first entry that is
+# not what it was: the pin of the directory swapped.
+swap90 "$W90/p" "$O90/p" EXTRA_MOUNTS="$W90"
+[[ "$swapped90" == yes && "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$W90/p is no longer what was checked" \
+  && pass "T90 an overlay whose parent was swapped for a link refuses the launch" \
+  || fail "T90 an overlay's parent swapped ($(said90))"
+fi
+# Nothing swapped: the same hook, a launch as any other. A pointer that is the
+# working directory adds no second entry for it.
+swap90 "$O90/nothing" "$O90/dir" EXTRA_MOUNTS="$W90" SPECS_PATH="$W90/a/specs" DOCS_PATH="$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] && [[ "$(man90 /workspace/specs)" == "$(p_dev_ino "$W90/a/specs")" ]] \
+  && [[ "$(man90 /workspace/app)" == "$(p_dev_ino "$TMP/app")" ]] \
+  && pass "T90 with nothing swapped the launch goes on, the ids recorded as read by path, each destination once" \
+  || fail "T90 nothing swapped ($(said90); specs: $(man90 /workspace/specs | tr '\n' ';') app: $(man90 /workspace/app | tr '\n' ';'))"
+# On Colima the ids come from its VM, by path, where a hold on the host proves
+# nothing: its flow is as it was, and the mounted host paths are not recorded
+# there (one outside the VM's shares would read 0:0 and refuse a launch that
+# mounted an empty directory before). PLAT-11 changes this knowingly.
+mkdir -p "$TMP/hook90c"
+cat > "$TMP/hook90c/colima" <<COLIMA90
+#!/usr/bin/env bash
+while IFS= read -r -d '' p; do printf '77:%s:%s\0' "\$(printf '%s' "\$p" | cksum | cut -d' ' -f1)" "\$p"; done
+COLIMA90
+chmod +x "$TMP/hook90c/colima"
+rm -f "$CAPTURE.manifest"
+PATH="$TMP/hook90c:$PATH" FAKE_DOCKER_ENDPOINT="unix://$HOME/.colima/default/docker.sock" EXTRA_MOUNTS="$W90" SPECS_PATH="$W90/specs" \
+  launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && [[ "$(man90 /workspace/.agent-blocked)" == 77\ * ]] \
+  && [[ -z "$(man90 /workspace/app)$(man90 /workspace/w90)$(man90 /workspace/specs)" ]] \
+  && [[ "$(man90 /workspace/w90/p/.ai-containers)" == 77\ * ]] \
+  && pass "T90 on Colima the mounted host paths are not recorded, and the other entries hold the VM's ids as before" \
+  || fail "T90 Colima's flow (rc=$LAUNCH_RC; blocked: $(man90 /workspace/.agent-blocked | tr '\n' ';') app: $(man90 /workspace/app | tr '\n' ';') overlay: $(man90 /workspace/w90/p/.ai-containers | tr '\n' ';'))"
+rm -rf "$W90" "$O90" "$TMP/ro90" "$TMP/v90" "$TMP/d90" "$TMP/a90" "$TMP/rb90" "$TMP/hook90" "$TMP/hook90c"
 
 # ── T76: this launcher itself, where a mount's scan cannot reach it ──────────
 # The scan finds a launcher to six levels and not under a pruned name; this
