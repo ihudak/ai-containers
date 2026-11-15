@@ -1616,7 +1616,276 @@ _prj_rmdirs() {
   return 0
 }
 
-cmd_gc() { printf 'ERROR: gc is not yet implemented.\n' >&2; exit 1; }
+# ── gc: what points at projects that are gone ──
+
+# _prj_maybe_unmounted <path>: why <path>, which is not there, may only look
+# gone — the reason printed, rc 0 — or rc 1 when it is gone. The judgement
+# ai_containers_retag_check() makes before it replaces an image built for a path
+# that is not there (ENV-9), walked the same way: from the nearest directory
+# above <path> that does exist, a drive that is not mounted looks like that
+# directory EMPTY (its mount point stays) or a removable-media root
+# (_ac_removable_root: the mount point went with the drive); and a path under a
+# directory that cannot be searched only looks absent. Emptiness by a glob,
+# which follows a link as the path does and has no failure to mistake for
+# "empty". A path that is not absolute cannot be judged at all, and a walk up it
+# would never end.
+_prj_maybe_unmounted() {
+  local up t
+  if [[ "$1" != /* ]]; then printf 'it is not an absolute path, so where it is cannot be told'; return 0; fi
+  up="$(_prj_strip "$1")"; up="${up%/*}"
+  while [[ -n "$up" && ! -e "$up" ]]; do up="${up%/*}"; done
+  [[ -n "$up" && -d "$up" ]] || return 1
+  t="$(_ac_term "$up")"
+  if [[ ! -x "$up" ]]; then printf 'it may only look gone: %s cannot be searched' "$t"; return 0; fi
+  [[ -r "$up" ]] || return 1
+  if _ac_removable_root "$up"; then
+    printf 'it may be on a drive that is not mounted: %s is where removable drives are mounted' "$t"; return 0
+  fi
+  if ( shopt -s nullglob dotglob; _pu_e=("$up"/*); (( ${#_pu_e[@]} == 0 )) ); then
+    printf 'it may be on a drive that is not mounted: %s is empty' "$t"; return 0
+  fi
+  return 1
+}
+
+# _prj_reg_bad <file>: why gc does not read that registry — a link, which
+# _prj_rewrite would refuse to rewrite once copies and images were gone, or one
+# that is not a regular file or cannot be read — printed, rc 0; rc 1 when it may
+# be read, or is not there.
+_prj_reg_bad() {
+  if [[ -L "$1" ]]; then printf 'it is a link'; return 0; fi
+  [[ -e "$1" ]] || return 1
+  if [[ ! -f "$1" ]]; then printf 'it is not a regular file'; return 0; fi
+  if [[ ! -r "$1" ]]; then printf 'it cannot be read'; return 0; fi
+  return 1
+}
+
+# _prj_vol_users <volume>: the running containers that mount it, one name per
+# line; rc 0 when any does, 1 when none, 2 when docker could not list them —
+# never read as none, which is what docker_volume_in_use() makes of a failure.
+_prj_vol_users() {
+  local out
+  out="$(docker ps --filter "volume=$1" --format '{{.Names}}' 2>/dev/null)" || return 2
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out"
+}
+
+# _prj_id_images <id>: the local images whose ai-containers.project label is
+# <id>, one reference per line, each once: repository:tag for each tag of a
+# tagged one, the image id for one with none (the image a later build replaced,
+# which a container kept then). By reference, not by id: docker rmi refuses an
+# id that more than one tag names, without --force. rc 1 when docker could not
+# list them.
+_prj_id_images() {
+  local out line ref
+  local -A seen=()
+  out="$(docker images --filter "label=ai-containers.project=$1" --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    ref="${line#* }"
+    if [[ "$ref" == "$line" || "$ref" == *'<none>'* ]]; then ref="${line%% *}"; fi
+    [[ -z "${seen["$ref"]+x}" ]] || continue
+    seen["$ref"]=1
+    printf '%s\n' "$ref"
+  done <<< "$out"
+  return 0
+}
+
+# cmd_gc [--yes]: remove what points at projects that are gone — the projects.conf
+# lines whose project has no .ai-containers, the working copies launched from a
+# directory that is gone, and the images built for a path image-projects.conf
+# maps that is gone, then those lines once no image carries their id — after
+# listing all of it, with what each working copy would lose, and what is kept: a
+# path that may only look gone (a drive not mounted, a directory that cannot be
+# searched), a working copy a running container uses, a .ai-containers that is a
+# link. An image-projects.conf line's id is the one it records: the path it maps
+# is gone, and the id is what the images carry. Ordered as rm is, so a failure
+# part-way leaves what a re-run needs: the working copies (one that cannot be
+# removed stops it), the images, the image-projects.conf lines, the projects.conf
+# lines.
+cmd_gc() {
+  local assume_yes=0 a
+  for a in "$@"; do
+    case "$a" in
+      --yes|-y) assume_yes=1 ;;
+      -*) printf 'ERROR: unknown flag %s\n' "$(_ac_term "$a")" >&2; exit 1 ;;
+      *) printf 'ERROR: unexpected argument %s (usage: ./project.sh gc [--yes])\n' "$(_ac_term "$a")" >&2; exit 1 ;;
+    esac
+  done
+  if ! docker volume ls --quiet >/dev/null 2>&1; then
+    printf 'ERROR: docker cannot be reached, so neither the working copies nor the images can be checked;\n' >&2
+    printf '       refusing. Start docker and run this again.\n' >&2
+    exit 1
+  fi
+  # What is gone, and what is kept — gathered before anything goes. Every value
+  # printed comes from a file or a label, so through _ac_term.
+  local -a kept=() pdrop=() imgs=() img_ids=() img_lines=() ipd=() ipd_path=() copies=() copy_desc=() risks=()
+  local r root dot why t
+
+  # 1. projects.conf: a line whose project has no .ai-containers.
+  local -A seen=()
+  if why="$(_prj_reg_bad "$prj_conf")"; then
+    kept+=("  registry    $(_ac_term "$prj_conf") — not read: $why")
+  else
+    while IFS= read -r r; do
+      [[ -z "${seen["$r"]+x}" ]] || continue
+      seen["$r"]=1
+      root="$(_prj_strip "$r")"; dot="${root%/}/.ai-containers"; t="$(_ac_term "$r")"
+      if [[ "$root" == /* && -L "$dot" ]]; then
+        kept+=("  registry    $t (projects.conf) — kept: its .ai-containers is a link, which ./project.sh rm and mv refuse")
+      elif [[ "$root" == /* && -d "$dot" ]]; then
+        continue
+      elif why="$(_prj_maybe_unmounted "$dot")"; then
+        if [[ "$root" == /* ]]; then why+="; if it is gone for good, ./project.sh rm $t removes its line"; fi
+        kept+=("  registry    $t (projects.conf) — kept: $why")
+      else
+        pdrop+=("$r")
+      fi
+    done < <(prj_roots)
+  fi
+
+  # 2. image-projects.conf: an id whose every line maps a path that is gone. Its
+  #    images go first, and the line once none carries the id (_prj_ip_drop).
+  local line id path refs ref
+  local -a ip_ids=()
+  local -A ip_st=() ip_why=() ip_p=()
+  if why="$(_prj_reg_bad "$image_projects_file")"; then
+    kept+=("  registry    $(_ac_term "$image_projects_file") — not read: $why")
+  elif [[ -f "$image_projects_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%$'\r'}"
+      [[ "$line" == *'|'* && "$line" != '#'* ]] || continue
+      id="${line%%|*}"; path="${line#*|}"
+      [[ -n "$id" ]] || continue
+      if [[ -z "${ip_st["$id"]+x}" ]]; then ip_ids+=("$id"); ip_st["$id"]=gone; ip_p["$id"]="$path"; fi
+      if [[ "$path" == /* ]] && [[ -e "$path" || -L "$path" ]]; then
+        ip_st["$id"]=live
+      elif [[ "${ip_st["$id"]}" == gone ]] && why="$(_prj_maybe_unmounted "$path")"; then
+        ip_st["$id"]=kept; ip_why["$id"]="$why"; ip_p["$id"]="$path"
+      fi
+    done < "$image_projects_file"
+  fi
+  for id in ${ip_ids[@]+"${ip_ids[@]}"}; do
+    path="${ip_p["$id"]}"; t="$(_ac_term "$path")"
+    case "${ip_st["$id"]}" in
+      kept)
+        if refs="$(_prj_id_images "$id")"; then
+          while IFS= read -r ref; do
+            if [[ -n "$ref" ]]; then kept+=("  image       $(_ac_term "$ref") (built for $t) — kept: ${ip_why["$id"]}"); fi
+          done <<< "$refs"
+        fi
+        kept+=("  registry    $t (image-projects.conf) — kept: ${ip_why["$id"]}") ;;
+      gone)
+        if ! refs="$(_prj_id_images "$id")"; then
+          kept+=("  registry    $t (image-projects.conf) — kept: docker could not list the images that carry its id")
+          continue
+        fi
+        while IFS= read -r ref; do
+          [[ -n "$ref" ]] || continue
+          if why="$(_prj_image_why "$ref" "$id")"; then
+            imgs+=("$ref"); img_ids+=("$id"); img_lines+=("  image       $(_ac_term "$ref") (built for $t, which is gone)")
+          else
+            kept+=("  image       $(_ac_term "$ref") — kept: $why")
+          fi
+        done <<< "$refs"
+        ipd+=("$id"); ipd_path+=("$path") ;;
+    esac
+  done
+
+  # 3. The working copies launched from a directory that is gone, unless it may
+  #    only look gone or a running container uses the copy (or docker cannot tell).
+  local v ldir repo desc users urc
+  docker_volume_labels_load
+  while IFS= read -r v; do
+    [[ -n "$v" ]] || continue
+    ldir="$(docker_volume_label "$v" 'ai-containers.launch-dir')"
+    [[ "$ldir" == /* ]] || continue
+    if [[ -e "$ldir" || -L "$ldir" ]]; then continue; fi
+    repo="$(docker_volume_label "$v" 'ai-containers.repo')"
+    desc="$(_ac_term "$v") ($(_ac_term "${repo:-?}"), launched from $(_ac_term "$ldir"))"
+    if why="$(_prj_maybe_unmounted "$ldir")"; then kept+=("  working copy $desc — kept: $why"); continue; fi
+    urc=0; users="$(_prj_vol_users "$v")" || urc=$?
+    case "$urc" in
+      1) copies+=("$v"); copy_desc+=("$desc") ;;
+      0) kept+=("  working copy $desc — kept: a running container uses it ($(_ac_term "$(printf '%s' "$users" | tr '\n' ' ' | sed 's/ $//')"))") ;;
+      *) kept+=("  working copy $desc — kept: docker could not list the running containers, so whether one uses it cannot be told") ;;
+    esac
+  done < <(repo_workcopy_volumes)
+  local i risk at_risk=0
+  # Once for every copy; a seed image that cannot be had makes them "not checked".
+  if (( ${#copies[@]} )); then prj_seed_ready; fi
+  for i in "${!copies[@]}"; do
+    if risk="$(prj_copy_risk "${copies[i]}")"; then :; else at_risk=$((at_risk + 1)); fi
+    risks[i]="$risk"
+  done
+
+  if (( ${#kept[@]} )); then
+    printf 'Kept:\n'
+    printf '%s\n' "${kept[@]}"
+  fi
+  if (( ${#pdrop[@]} + ${#imgs[@]} + ${#ipd[@]} + ${#copies[@]} == 0 )); then
+    printf 'Nothing to collect.\n'
+    return 0
+  fi
+  printf 'About to remove:\n'
+  for r in ${pdrop[@]+"${pdrop[@]}"}; do
+    t="$(_ac_term "$r")"
+    printf '  registry    %s (projects.conf: it has no .ai-containers)\n' "$t"
+    printf '              If %s was moved rather than deleted, answer no and run ./project.sh mv %s <new-dir> (it also works after gc).\n' "$t" "$t"
+  done
+  for line in ${img_lines[@]+"${img_lines[@]}"}; do printf '%s\n' "$line"; done
+  for i in "${!ipd[@]}"; do
+    printf '  registry    %s (image-projects.conf, once no image carries its id)\n' "$(_ac_term "${ipd_path[i]}")"
+  done
+  for i in "${!copies[@]}"; do printf '  working copy %s — %s\n' "${copy_desc[i]}" "${risks[i]}"; done
+  if (( at_risk )); then printf '%d working cop(y/ies) at risk or not checked.\n' "$at_risk"; fi
+
+  if ! confirm "Remove everything listed under About to remove?"; then
+    printf 'Nothing was removed.\n' >&2
+    exit 1
+  fi
+  # A launch during the question (a project moved by hand, launched from where
+  # it is now, reattaching nothing — or a sibling container) would lose its copy.
+  for v in ${copies[@]+"${copies[@]}"}; do
+    urc=0; users="$(_prj_vol_users "$v")" || urc=$?
+    case "$urc" in
+      1) ;;
+      0) printf 'ERROR: a container started using the working copy %s after the listing: %s. Stop it first;\n' \
+           "$(_ac_term "$v")" "$(_ac_term "$(printf '%s' "$users" | tr '\n' ' ' | sed 's/ $//')")" >&2
+         printf '       nothing was removed.\n' >&2
+         exit 1 ;;
+      *) printf 'ERROR: docker could not list the running containers, so whether one uses the working copy %s\n' "$(_ac_term "$v")" >&2
+         printf '       cannot be told; refusing. Nothing was removed.\n' >&2
+         exit 1 ;;
+    esac
+  done
+
+  # 1. The working copies. A failure stops everything: the images and registry
+  #    lines stay, so a re-run lists them again.
+  for v in ${copies[@]+"${copies[@]}"}; do
+    if ! docker volume rm "$v" >/dev/null; then
+      printf 'ERROR: could not remove the working copy %s (in use?). The images and registry lines listed\n' "$(_ac_term "$v")" >&2
+      printf '       are kept; run ./project.sh gc again once it can be.\n' >&2
+      exit 1
+    fi
+    printf 'Removed the working copy %s.\n' "$(_ac_term "$v")"
+  done
+  # 2. The images (prj_image_remove checks each label again).
+  for i in "${!imgs[@]}"; do prj_image_remove "${imgs[i]}" "${img_ids[i]}"; done
+  # 3. The image-projects.conf lines, each once no image carries its id: an image
+  #    left with the id and no line names nothing build.sh can judge (ENV-8).
+  for i in "${!ipd[@]}"; do
+    if ! _prj_ip_drop "${ipd[i]}" "${ipd_path[i]}"; then
+      printf '       The projects.conf lines are kept; run ./project.sh gc again.\n' >&2
+      exit 1
+    fi
+  done
+  # 4. The projects.conf lines.
+  for r in ${pdrop[@]+"${pdrop[@]}"}; do
+    prj_conf_remove "$r" || exit 1
+    printf 'Removed %s from projects.conf.\n' "$(_ac_term "$r")"
+  done
+  printf 'OK: removed what pointed at projects that are gone.\n'
+}
 
 # Sourced for its helpers (tests), not run: by behaviour, as in repo.sh.
 (return 0 2>/dev/null) && return 0

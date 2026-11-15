@@ -27,7 +27,13 @@ export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LOG"
 # are files under $IMGS holding their labels; running containers are the lines
 # of $FAKE_RUNNING, `name|image|mount source|…`, and once more than
 # $FAKE_RUNNING_AFTER `ps` calls (not counting a volume= filter) have been made,
-# those of $FAKE_RUNNING.later. An image file with a `.next` beside it is
+# those of $FAKE_RUNNING.later. A `ps --filter volume=<v>` names the lines with
+# a mount source /var/lib/docker/volumes/<v>/_data (where docker keeps a named
+# volume), and is counted apart: once more than $FAKE_VOLPS_AFTER of them have
+# been made, from $FAKE_RUNNING.later. An image is named by its file: `x` is
+# also `x:latest`, and `images --format` gives it repository `x`, tag `latest`
+# and id `x`, or repository and tag `<none>` for a file named `dangling-…` (an
+# image with no tag, removed by its id). An image file with a `.next` beside it is
 # replaced by that after its first `image inspect`. FAKE_FAIL_VOLUME_RM (a glob)
 # makes `volume rm` of a matching volume fail, FAKE_FAIL_RMI every `rmi`,
 # FAKE_PS_FAIL every `ps` (=ancestor: only the one with an ancestor= filter),
@@ -128,12 +134,23 @@ case "$cmd${sub:+ $sub}" in
       fi
     done ;;
   ps)
-    anc=""
+    anc="" vol=""
     for f in ${filt[@]+"${filt[@]}"}; do
-      case "$f" in ancestor=*) anc="${f#ancestor=}" ;; volume=*) exit 0 ;; esac
+      case "$f" in ancestor=*) anc="${f#ancestor=}" ;; volume=*) vol="${f#volume=}" ;; esac
     done
     if [[ -n "${FAKE_PS_FAIL:-}" ]] && [[ "$FAKE_PS_FAIL" != ancestor || -n "$anc" ]]; then
       echo "Error: cannot list containers" >&2; exit 1
+    fi
+    if [[ -n "$vol" ]]; then
+      n=0; [[ -f "$FAKE_RUNNING.vcount" ]] && n="$(cat "$FAKE_RUNNING.vcount")"
+      n=$((n + 1)); printf '%s\n' "$n" > "$FAKE_RUNNING.vcount"
+      src="$FAKE_RUNNING"
+      if [[ -n "${FAKE_VOLPS_AFTER:-}" ]] && (( n > FAKE_VOLPS_AFTER )); then src="$FAKE_RUNNING.later"; fi
+      [[ -f "$src" ]] || exit 0
+      while IFS= read -r l; do
+        if [[ "|$l|" == *"|/var/lib/docker/volumes/$vol/_data|"* ]]; then printf '%s\n' "${l%%|*}"; fi
+      done < "$src"
+      exit 0
     fi
     n=0; [[ -f "$FAKE_RUNNING.count" ]] && n="$(cat "$FAKE_RUNNING.count")"
     n=$((n + 1)); printf '%s\n' "$n" > "$FAKE_RUNNING.count"
@@ -154,6 +171,7 @@ case "$cmd${sub:+ $sub}" in
     i="${pos[0]}"
     if [[ "$i" == ai-containers-seed ]]; then [[ -z "${FAKE_NO_SEED:-}" ]]; exit; fi
     f="$IMGS/$i"
+    if [[ ! -f "$f" && "$i" == *:latest ]]; then f="$IMGS/${i%:latest}"; fi
     [[ -f "$f" ]] || { echo "Error: No such image: $i" >&2; exit 1; }
     if [[ -f "$f.next" ]]; then trap 'mv "$f.next" "$f"' EXIT; fi
     case "$fmt" in
@@ -175,12 +193,19 @@ case "$cmd${sub:+ $sub}" in
       [[ "$f" == label=* ]] || continue
       for g in "$IMGS"/*; do
         [[ "$g" != *.next ]] || continue
-        if [[ -f "$g" ]] && grep -qxF -- "${f#label=}" "$g"; then printf '%s\n' "${g##*/}"; fi
+        if ! { [[ -f "$g" ]] && grep -qxF -- "${f#label=}" "$g"; }; then continue; fi
+        n="${g##*/}"
+        if [[ -z "$fmt" ]]; then printf '%s\n' "$n"; continue; fi
+        if [[ "$n" == dangling-* ]]; then r='<none>' t='<none>'
+        elif [[ "$n" == *:* ]]; then r="${n%:*}" t="${n##*:}"
+        else r="$n" t=latest; fi
+        o="${fmt//'{{.ID}}'/$n}"; o="${o//'{{.Repository}}'/$r}"; printf '%s\n' "${o//'{{.Tag}}'/$t}"
       done
     done ;;
   rmi)
     [[ -z "${FAKE_FAIL_RMI:-}" ]] || { echo "Error: conflict: the image is used by a stopped container" >&2; exit 1; }
     for i in "${pos[@]}"; do
+      if [[ ! -f "$IMGS/$i" && "$i" == *:latest ]]; then i="${i%:latest}"; fi
       [[ -f "$IMGS/$i" ]] || { echo "Error: No such image: $i" >&2; exit 1; }
       rm -f "$IMGS/$i"
     done ;;
@@ -216,8 +241,9 @@ ok "an unknown command exits 1 and names it" bash -c '[ "$1" = 1 ] && [[ "$2" ==
 out="$(bash "$P" rm x 2>&1)"; rc=$?
 ok "rm reaches project.sh's own cmd_rm, not repo.sh's (which says Nothing to remove, rc 0)" \
   bash -c '[ "$1" = 1 ] && [[ "$2" == *"not a registered project"* ]]' _ "$rc" "$out"
-out="$(bash "$P" gc 2>&1)"; rc=$?
-ok "gc reaches project.sh's own stub, not repo.sh's cmd_gc" bash -c '[ "$1" = 1 ] && [[ "$2" == *"not yet"* ]]' _ "$rc" "$out"
+out="$(bash "$P" gc 2>&1 < /dev/null)"; rc=$?
+ok "gc reaches project.sh's own cmd_gc, not repo.sh's (which says No working copies found)" \
+  bash -c '[ "$1" = 0 ] && [[ "$2" == *"Nothing to collect."* && "$2" != *"No working copies"* ]]' _ "$rc" "$out"
 
 # ── prj_resolve ──
 A="$TMP/work/alpha"; B="$TMP/work/two/beta"; C="$TMP/other/beta"; S="$TMP/work/sp ace"
@@ -350,8 +376,9 @@ W="$TMP/rmw"
 world() {   # nothing registered, built, recorded, running or logged
   [[ -d "$W" ]] && chmod -R u+rwx "$W" 2>/dev/null
   rm -rf "$VOLS" "$IMGS" "$W"; mkdir -p "$VOLS" "$IMGS" "$W"
-  : > "$FAKE_RUNNING"; : > "$DOCKER_LOG"; rm -f "$ENG/projects.conf" "$IP" "$FAKE_RUNNING.count" "$FAKE_RUNNING.later"
-  unset FAKE_FAIL_VOLUME_RM FAKE_FAIL_RMI FAKE_DOCKER_DOWN FAKE_PS_FAIL FAKE_RUNNING_AFTER FAKE_NO_SEED
+  : > "$FAKE_RUNNING"; : > "$DOCKER_LOG"
+  rm -f "$ENG/projects.conf" "$IP" "$FAKE_RUNNING.count" "$FAKE_RUNNING.vcount" "$FAKE_RUNNING.later"
+  unset FAKE_FAIL_VOLUME_RM FAKE_FAIL_RMI FAKE_DOCKER_DOWN FAKE_PS_FAIL FAKE_RUNNING_AFTER FAKE_VOLPS_AFTER FAKE_NO_SEED
   unset FAKE_COPY_BAD FAKE_CP_CORRUPT AI_CONTAINERS_MV_COPY FAKE_MV_PLANT FAKE_MV_PLANT_TO FAKE_CP_TERM
 }
 # mkproj <root> [<sandbox.env text>] [<sandbox.local.env text>]: a registered project
@@ -1285,6 +1312,224 @@ mvrun "$A" "$W/beta" --yes; rc=$?
 ok "mv notes that the old repository tracks .ai-containers when its .git is a file" \
   bash -c '[ "$1" = 0 ] && [ -f "$2/.git" ] && grep -qxF "NOTE: $2'"'"'s repository tracks .ai-containers/; those files now show as deleted there." "$3"' \
   _ "$rc" "$A" "$TMP/out"
+
+# ── gc ──
+gcrun() { ( cd "$TMP" && bash "$P" gc "$@" ) > "$TMP/out" 2>&1 < /dev/null; }
+# gcworld: world, with $W holding something: a path whose nearest existing
+# directory is an empty one may be on a drive that is not mounted, and is kept.
+gcworld() { world; mkdir -p "$W/other"; }
+gc_nothing() {  # nothing was removed: no volume or image, the registries as saved
+  ! logged '^docker (volume rm|rmi)' && cmp -s "$ENG/projects.conf" "$TMP/conf.before" && cmp -s "$IP" "$TMP/ip.before"
+}
+gc_save() { cp "$ENG/projects.conf" "$TMP/conf.before"; cp "$IP" "$TMP/ip.before"; }
+
+gcworld
+mkproj "$W/live"; mkproj "$W/alpha"; rm -rf "$W/alpha/.ai-containers"; printf 'hi\n' > "$W/alpha/README"
+mkproj "$W/beta"; rm -rf "$W/beta"
+gcrun --yes; rc=$?
+ok "gc drops a projects.conf line whose project has no .ai-containers" \
+  bash -c '[ "$1" = 0 ] && [ "$(cat "$2")" = "$3" ] && [ -f "$4/README" ]' _ "$rc" "$ENG/projects.conf" "$W/live" "$W/alpha"
+ok "  … listing each first, with --yes too" \
+  bash -c 'grep -qxF "About to remove:" "$1" && grep -qxF "  registry    $2 (projects.conf: it has no .ai-containers)" "$1" \
+           && grep -qxF "  registry    $3 (projects.conf: it has no .ai-containers)" "$1"' _ "$TMP/out" "$W/alpha" "$W/beta"
+
+gcworld
+mkdir -p "$W/drive" "$W/mnt"; printf '%s\n%s\n' "$W/drive/proj" "$W/mnt" > "$ENG/projects.conf"
+mkproj "$W/alpha"; rm -rf "$W/alpha"
+gcrun --yes; rc=$?
+ok "gc keeps and names a line whose nearest existing directory is empty" \
+  bash -c '[ "$1" = 0 ] && [ "$(cat "$2")" = "$(printf "%s\n%s" "$3/drive/proj" "$3/mnt")" ] \
+           && grep -qF "  registry    $3/drive/proj (projects.conf) — kept: it may be on a drive that is not mounted: $3/drive is empty" "$4" \
+           && grep -qF "  registry    $3/mnt (projects.conf) — kept: it may be on a drive that is not mounted: $3/mnt is empty" "$4"' \
+  _ "$rc" "$ENG/projects.conf" "$W" "$TMP/out"
+ok "  … with the way out if it is gone for good" has_line "if it is gone for good, ./project.sh rm $W/drive/proj removes its line"
+
+gcworld
+mkproj "$W/live" $'IMAGE_NAME=img-live\n'
+printf '# ai-containers: the project each image id names (build.sh). id|path\n' > "$IP"; built "$W/live" img-live
+A="$W/alpha"; mkproj "$A"; ida="$(tid "$A/.ai-containers")"
+printf '%s|%s\n' "$ida" "$(cd "$A/.ai-containers" && pwd -P)" >> "$IP"; rm -rf "$A"
+idl="$(tid "$W/live/.ai-containers")"
+gcrun --yes; rc=$?
+printf '# ai-containers: the project each image id names (build.sh). id|path\n%s|%s\n' "$idl" "$(cd "$W/live/.ai-containers" && pwd -P)" > "$TMP/expect"
+ok "gc drops an image-projects.conf line whose path is gone and whose id no image carries" \
+  bash -c '[ "$1" = 0 ] && cmp -s "$2" "$3" && [ -e "$4" ] && ! grep -q "^docker rmi" "$5"' _ "$rc" "$IP" "$TMP/expect" "$IMGS/img-live" "$DOCKER_LOG"
+
+gcworld
+A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; ida="$(tid "$A/.ai-containers")"
+pa="$(cd "$A/.ai-containers" && pwd -P)"; rm -rf "$A"
+gcrun --yes; rc=$?
+ok "gc lists an image whose project is gone, removes it on --yes, then drops its line" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "  image       img-alpha:latest (built for $2, which is gone)" "$3" && [ ! -e "$4" ] \
+           && ! grep "^docker rmi" "$5" | grep -q -- " -f" && ! grep -qF "$6" "$7" \
+           && r="$(grep -n "^docker rmi img-alpha" "$5" | cut -d: -f1)" && c="$(grep -n "^docker images -q" "$5" | tail -1 | cut -d: -f1)" \
+           && [ -n "$r" ] && [ -n "$c" ] && [ "$r" -lt "$c" ]' \
+  _ "$rc" "$pa" "$TMP/out" "$IMGS/img-alpha" "$DOCKER_LOG" "$ida" "$IP"
+gcworld
+A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; ida="$(tid "$A/.ai-containers")"; rm -rf "$A"
+export FAKE_FAIL_RMI=1
+gcrun --yes; rc=$?
+unset FAKE_FAIL_RMI
+ok "  … and keeps its line while an image it could not remove carries the id" \
+  bash -c '[ "$1" = 0 ] && [ -e "$2" ] && grep -qF "$3" "$4" && grep -qF "NOTE: an image still carries" "$5"' \
+  _ "$rc" "$IMGS/img-alpha" "$ida" "$IP" "$TMP/out"
+gcworld
+A="$W/alpha"; mkproj "$A"; ida="$(tid "$A/.ai-containers")"
+printf '%s|%s\n' "$ida" "$(cd "$A/.ai-containers" && pwd -P)" > "$IP"; rm -rf "$A"
+printf 'ai-containers.project=%s\n' "$ida" > "$IMGS/dangling-1"
+gcrun --yes; rc=$?
+ok "gc removes an image that has no tag by its id" \
+  bash -c '[ "$1" = 0 ] && [ ! -e "$2" ] && grep -qxF "docker rmi dangling-1" "$3" && ! grep -qF "$4" "$5"' \
+  _ "$rc" "$IMGS/dangling-1" "$DOCKER_LOG" "$ida" "$IP"
+
+gcworld
+mkproj "$W/live"; mkbase app
+mkwc app 1 "$W/gone1/.ai-containers" "$CLEAN"
+mkwc app 2 "$W/gone2/.ai-containers" $'PRIMARY|main\nBRANCH|main|0|current\nBRANCH|feature|2|\nWORKTREE|clean\nEND|inspect\n'
+mkwc app 3 "$W/live/.ai-containers" "$CLEAN"
+gcrun --yes; rc=$?
+ok "gc lists working copies whose launch dir is gone, with their risk, and removes them on --yes" \
+  bash -c '[ "$1" = 0 ] \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $2/gone1/.ai-containers) — nothing at risk: every branch pushed, no stash, the checkout clean" "$3" \
+           && grep -qF "  working copy ai-containers-repo-app--wc-2 (app, launched from $2/gone2/.ai-containers) — AT RISK: feature: 2 unpushed" "$3" \
+           && grep -qxF "1 working cop(y/ies) at risk or not checked." "$3" \
+           && [ "$(sed -n "s/^docker volume rm //p" "$4" | LC_ALL=C sort | tr "\n" " ")" = "ai-containers-repo-app--wc-1 ai-containers-repo-app--wc-2 " ] \
+           && [ -d "$5/ai-containers-repo-app--wc-3" ]' _ "$rc" "$W" "$TMP/out" "$DOCKER_LOG" "$VOLS"
+
+gcworld; mkbase app; mkwc app 1 "$W/gone/.ai-containers" "$CLEAN"
+printf 'ctr-wc|some-image|/var/lib/docker/volumes/ai-containers-repo-app--wc-1/_data\n' > "$FAKE_RUNNING"
+gcrun --yes; rc=$?
+ok "gc keeps a working copy a running container uses" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] && ! grep -q "^docker volume rm" "$3" \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/gone/.ai-containers) — kept: a running container uses it (ctr-wc)" "$5" \
+           && grep -qxF "Nothing to collect." "$5"' _ "$rc" "$VOLS" "$DOCKER_LOG" "$W" "$TMP/out"
+gcworld; mkbase app; mkwc app 1 "$W/gone/.ai-containers" "$CLEAN"
+export FAKE_PS_FAIL=1
+gcrun --yes; rc=$?
+unset FAKE_PS_FAIL
+ok "gc keeps a working copy when docker cannot tell whether a container uses it" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] && ! grep -q "^docker volume rm" "$3" \
+           && grep -qF "ai-containers-repo-app--wc-1 (app, launched from $4/gone/.ai-containers) — kept: docker could not list" "$5"' \
+  _ "$rc" "$VOLS" "$DOCKER_LOG" "$W" "$TMP/out"
+
+gcworld; A="$W/alpha"; mkproj "$A"; rm -rf "$A"
+gcrun; rc=$?
+ok "gc points a vanished project at project.sh mv" \
+  has_line "If $A was moved rather than deleted, answer no and run ./project.sh mv $A <new-dir> (it also works after gc)."
+
+gcworld
+mkproj "$W/live" $'IMAGE_NAME=img-live\n'; built "$W/live" img-live; mkbase app; mkwc app 1 "$W/live/.ai-containers" "$CLEAN"
+gc_save
+gcrun --yes; rc=$?
+ok "gc with nothing stale says so and exits 0" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "Nothing to collect." "$2" && ! grep -q "About to remove" "$2" && ! grep -q "^Kept:" "$2"' _ "$rc" "$TMP/out"
+ok "  … changing nothing" gc_nothing
+
+gcworld
+A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; mkbase app; mkwc app 1 "$A/.ai-containers" "$CLEAN"
+rm -rf "$A"; gc_save
+gcrun; rc=$?
+ok "gc refuses on a non-TTY without --yes, changing nothing" \
+  bash -c '[ "$1" = 1 ] && grep -q "About to remove" "$2" && grep -q "^ERROR: " "$2" && grep -qxF "Nothing was removed." "$2" \
+           && [ -e "$3" ] && [ -d "$4/ai-containers-repo-app--wc-1" ]' _ "$rc" "$TMP/out" "$IMGS/img-alpha" "$VOLS"
+ok "  … and the registries are as they were" gc_nothing
+
+gcworld
+mkdir -p "$W/live1/.ai-containers" "$W/live two/.ai-containers"
+printf '# comment\n\n%s\r\n%s\nrel/proj\n%s' "$W/alpha" "$W/live two" "$W/live1" > "$ENG/projects.conf"
+gcrun --yes; rc=$?
+printf '# comment\n\n%s\nrel/proj\n%s' "$W/live two" "$W/live1" > "$TMP/expect"
+ok "gc keeps every other projects.conf byte" bash -c '[ "$1" = 0 ] && cmp -s "$2" "$3"' _ "$rc" "$ENG/projects.conf" "$TMP/expect"
+ok "  … and names a line that is not an absolute path, which it keeps" \
+  has_line "  registry    rel/proj (projects.conf) — kept: it is not an absolute path"
+
+# what may only look gone: a drive that is not mounted, a directory that cannot be searched
+gcworld; mkdir -p "$W/drive"; idd="sha256:$(printf '%064d' 5)"
+printf '%s|%s\n' "$idd" "$W/drive/proj/.ai-containers" > "$IP"; printf 'ai-containers.project=%s\n' "$idd" > "$IMGS/img-drive"
+gcrun --yes; rc=$?
+ok "gc keeps an image whose project path may be on an unmounted drive" \
+  bash -c '[ "$1" = 0 ] && [ -e "$2" ] && grep -qF "$3" "$4" && ! grep -q "^docker rmi" "$5" \
+           && grep -qxF "  image       img-drive:latest (built for $6/drive/proj/.ai-containers) — kept: it may be on a drive that is not mounted: $6/drive is empty" "$7" \
+           && grep -qxF "  registry    $6/drive/proj/.ai-containers (image-projects.conf) — kept: it may be on a drive that is not mounted: $6/drive is empty" "$7"' \
+  _ "$rc" "$IMGS/img-drive" "$idd" "$IP" "$DOCKER_LOG" "$W" "$TMP/out"
+gcworld; mkdir -p "$W/drive"; mkbase app; mkwc app 1 "$W/drive/proj/.ai-containers" "$CLEAN"
+gcrun --yes; rc=$?
+ok "gc keeps a working copy whose launch dir may be on an unmounted drive" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] && ! grep -q "^docker volume rm" "$3" \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/drive/proj/.ai-containers) — kept: it may be on a drive that is not mounted: $4/drive is empty" "$5"' \
+  _ "$rc" "$VOLS" "$DOCKER_LOG" "$W" "$TMP/out"
+if [[ "$(id -u)" == 0 ]]; then
+  printf 'SKIP: a project under a directory that cannot be searched (running as root)\n'
+else
+  gcworld; mkproj "$W/locked/proj"; chmod 000 "$W/locked"
+  gcrun --yes; rc=$?
+  chmod 755 "$W/locked"
+  ok "gc keeps a line under a directory it cannot search" \
+    bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && grep -qF "  registry    $2 (projects.conf) — kept: it may only look gone: $4 cannot be searched" "$5"' \
+    _ "$rc" "$W/locked/proj" "$ENG/projects.conf" "$W/locked" "$TMP/out"
+fi
+
+# rm's safety pattern
+gcworld; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; mkbase app; mkwc app 1 "$A/.ai-containers" "$CLEAN"
+rm -rf "$A"; gc_save
+export FAKE_DOCKER_DOWN=1
+gcrun --yes; rc=$?
+unset FAKE_DOCKER_DOWN
+ok "gc refuses when docker cannot be reached" \
+  bash -c '[ "$1" = 1 ] && grep -q "^ERROR: docker cannot be reached" "$2" && [ -e "$3" ] && [ -d "$4/ai-containers-repo-app--wc-1" ]' \
+  _ "$rc" "$TMP/out" "$IMGS/img-alpha" "$VOLS"
+ok "  … changing nothing" gc_nothing
+# the listing makes two volume= ps calls for the copy (whether one uses it, and
+# the git helper's read-write check); the one after the question sees it in use
+gcworld; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; mkbase app; mkwc app 1 "$A/.ai-containers" "$CLEAN"
+rm -rf "$A"; gc_save
+printf 'ctr-late|some-image|/var/lib/docker/volumes/ai-containers-repo-app--wc-1/_data\n' > "$FAKE_RUNNING.later"
+export FAKE_VOLPS_AFTER=2
+gcrun --yes; rc=$?
+unset FAKE_VOLPS_AFTER
+ok "gc checks again after the question, and refuses a copy a container started using meanwhile" \
+  bash -c '[ "$1" = 1 ] && grep -q "About to remove" "$2" && grep -q "^ERROR: .*started using .*after the listing.*ctr-late" "$2" \
+           && [ -d "$3/ai-containers-repo-app--wc-1" ] && [ -e "$4" ]' _ "$rc" "$TMP/out" "$VOLS" "$IMGS/img-alpha"
+ok "  … changing nothing" gc_nothing
+gcworld; A="$W/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; mkbase app; mkwc app 1 "$A/.ai-containers" "$CLEAN"
+rm -rf "$A"; gc_save
+export FAKE_FAIL_VOLUME_RM='*'
+gcrun --yes; rc=$?
+unset FAKE_FAIL_VOLUME_RM
+ok "gc stops when a working copy cannot be removed, before the images and the registry lines" \
+  bash -c '[ "$1" = 1 ] && grep -q "^ERROR: could not remove the working copy" "$2" && [ -e "$3" ] && ! grep -q "^docker rmi" "$4"' \
+  _ "$rc" "$TMP/out" "$IMGS/img-alpha" "$DOCKER_LOG"
+ok "  … the registries as they were" bash -c 'cmp -s "$1" "$2" && cmp -s "$3" "$4"' _ "$ENG/projects.conf" "$TMP/conf.before" "$IP" "$TMP/ip.before"
+
+# links: a project's .ai-containers, and the registries themselves
+gcworld; mkdir -p "$W/linky"; ln -s "$W/nowhere" "$W/linky/.ai-containers"; printf '%s\n' "$W/linky" > "$ENG/projects.conf"
+gcrun --yes; rc=$?
+ok "gc keeps and names a line whose .ai-containers is a link" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && grep -qF "  registry    $2 (projects.conf) — kept: its .ai-containers is a link" "$4"' \
+  _ "$rc" "$W/linky" "$ENG/projects.conf" "$TMP/out"
+gcworld; mkdir -p "$W/live/.ai-containers"; printf '%s\n%s\n' "$W/live" "$W/gone" > "$TMP/real-conf"
+ln -s "$TMP/real-conf" "$ENG/projects.conf"; mkbase app; mkwc app 1 "$W/gone/.ai-containers" "$CLEAN"
+gcrun --yes; rc=$?
+ok "gc does not read a linked projects.conf, and still collects the rest" \
+  bash -c '[ "$1" = 0 ] && [ -L "$2" ] && [ "$(cat "$3")" = "$(printf "%s\n%s" "$4/live" "$4/gone")" ] \
+           && grep -qF "  registry    $2 — not read: it is a link" "$5" && [ ! -d "$6/ai-containers-repo-app--wc-1" ]' \
+  _ "$rc" "$ENG/projects.conf" "$TMP/real-conf" "$W" "$TMP/out" "$VOLS"
+gcworld; rm -f "$ENG/projects.conf"
+A="$W/alpha"; mkproj "$A"; ida="$(tid "$A/.ai-containers")"; rm -rf "$A"; rm -f "$ENG/projects.conf"
+printf '%s|%s\n' "$ida" "$A/.ai-containers" > "$TMP/real-ip"; ln -s "$TMP/real-ip" "$IP"
+printf 'ai-containers.project=%s\n' "$ida" > "$IMGS/img-alpha"
+gcrun --yes; rc=$?
+ok "gc does not read a linked image-projects.conf, and removes no image through it" \
+  bash -c '[ "$1" = 0 ] && [ -L "$2" ] && [ -e "$3" ] && ! grep -q "^docker rmi" "$4" && grep -qF "  registry    $2 — not read: it is a link" "$5"' \
+  _ "$rc" "$IP" "$IMGS/img-alpha" "$DOCKER_LOG" "$TMP/out"
+rm -f "$IP"
+
+# what a label or a registry line holds reaches the terminal without its escapes
+gcworld; E="$W/esc${ESC}[2Jgone"; printf '%s\n' "$E" > "$ENG/projects.conf"; mkbase app; mkwc app 1 "$E/.ai-containers" "$CLEAN"
+gcrun; rc=$?
+ok "gc prints a registered root and a launch dir holding an ESC byte without it" \
+  bash -c '[ "$1" = 1 ] && grep -qF "registry    $2/esc?[2Jgone (projects.conf" "$3" && grep -qF "launched from $2/esc?[2Jgone/.ai-containers" "$3" \
+           && ! grep -q "$4" "$3"' _ "$rc" "$W" "$TMP/out" "$ESC"
 
 echo
 [[ "$fails" == 0 ]] && { echo "ALL PASSED"; exit 0; } || { echo "$fails FAILED"; exit 1; }
