@@ -181,6 +181,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A checkout named through a link outside the mounts is protected when it
+  cannot be searched.** A checkout the agent has made `chmod 000` is mounted
+  read-only whole and named, with the `chmod` that restores it, so that it
+  cannot be pointed at a repository of the agent's in the next session. The
+  directory was looked for along the path as a worktree's `gitdir` or a
+  `core.worktree` writes it: written through a symlink that lies outside
+  every mount, it was found under no mount and was neither mounted nor
+  named. The path is now followed as the kernel follows it (bugs review
+  GIT-96).
+
 - **A dangling `.git` link no longer hides the bare repository a mount lies
   in.** git cannot follow such a link, takes it for no `.git`, and uses the
   directory itself where that is a bare repository; a git before 2.54 does the

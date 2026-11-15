@@ -2222,5 +2222,75 @@ grep -qF "WARNING: $PROJ/b225/.git reaches $TMP/realb225/gd through a link insid
   || fail "G225 link inside, path outside (rc=$LAUNCH_RC; $(grep -F b225 "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$PROJ/b225" "$PROJ/lb225" "$TMP/realb225"
 
+# ── G290: the directory that blocks a pointer's way is taken where it is ──────
+# _gdi_blocked() walked a pointer's path as written. A checkout named through a
+# link outside the mounts was then found spelled through the link, under no
+# mount's source, and was neither bound nor named once the agent had made it
+# unsearchable; and a `..` after such a link was stepped by name, where the
+# kernel steps from where the link leads (bugs review GIT-96). The way is now
+# walked as the kernel walks it. One launch, a worktree for each way; a mode
+# stops nothing as root.
+if [[ "$(id -u)" != 0 ]]; then
+  nm290="$PROJ/node_modules"; o290="$TMP/o290"; wt290="$PROJ/.git/worktrees"
+  mkdir -p "$nm290" "$o290" "$PROJ/sub290" "$PROJ/.venv/a/b" || { printf 'SCAFFOLD-FAILED: G290 dirs\n'; exit 1; }
+  for k290 in k1 k2 k3 k4 k6; do
+    "${G[@]}" -C "$PROJ" worktree add -q "$nm290/$k290" -b "b290$k290" 2>/dev/null || { printf 'SCAFFOLD-FAILED: G290 %s\n' "$k290"; exit 1; }
+  done
+  "${G[@]}" -C "$PROJ" worktree add -q "$PROJ/.venv/c5" -b b290c5 2>/dev/null \
+    && "${G[@]}" -C "$PROJ" worktree add -q "$o290/k7" -b b290k7 2>/dev/null || { printf 'SCAFFOLD-FAILED: G290 c5, k7\n'; exit 1; }
+  # k1: through a link outside the mounts, its target relative.
+  ln -s proj/node_modules "$TMP/lk290" && printf '%s\n' "$TMP/lk290/k1/.git" > "$wt290/k1/gitdir"
+  # k2: the link is the blocked name itself.
+  ln -s "$nm290/k2" "$TMP/lk290b" && printf '%s\n' "$TMP/lk290b/.git" > "$wt290/k2/gitdir"
+  # k3: a `..` after a link, which the kernel steps from where the link leads
+  # ($PROJ/sub290), not from where it is written ($TMP).
+  ln -s "$PROJ/sub290" "$TMP/lk290c" && printf '%s\n' "$TMP/lk290c/../node_modules/k3/.git" > "$wt290/k3/gitdir"
+  # k4: a link inside the mount on the way, which the agent could have planted.
+  ln -s node_modules "$PROJ/lnk290" && printf '%s\n' "$PROJ/lnk290/k4/.git" > "$wt290/k4/gitdir"
+  # c5: `..` out of a link that lies inside the directory that blocks the way.
+  # Below .venv nothing can be tested; the way is blocked at .venv itself.
+  ln -s a/b "$PROJ/.venv/k5" && printf '%s\n' "$PROJ/.venv/k5/../../c5/.git" > "$wt290/c5/gitdir"
+  # k6: a way padded with 300 `./`, none of which is a step the kernel counts.
+  pad290="$(printf './%.0s' {1..300})" && printf '%s\n' "$PROJ/${pad290}node_modules/k6/.git" > "$wt290/k6/gitdir"
+  # k7: a link loop on the way, which leads nowhere.
+  ln -s lp290b "$TMP/lp290a" && ln -s lp290a "$TMP/lp290b" && printf '%s\n' "$TMP/lp290a/k7/.git" > "$wt290/k7/gitdir"
+  chmod 000 "$nm290/k1" "$nm290/k2" "$nm290/k3" "$nm290/k4" "$nm290/k6" "$PROJ/.venv"
+  launch_timed 120 ..
+  m290="$(mounts)"
+  [[ "$LAUNCH_RC" == 0 ]] && pass "G290 the launch goes ahead, a link loop on one way" \
+    || fail "G290 launch (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -2 | tr '\n' ' '))"
+  for k290 in k1 k2 k3 k6; do
+    case "$k290" in
+      k1) w290="a checkout named through a link outside the mounts" ;;
+      k2) w290="one where the link is the checkout itself" ;;
+      k3) w290="one behind a .. that follows a link, stepped as the kernel steps it" ;;
+      k6) w290="one whose way is padded with ./" ;;
+    esac
+    grep -qxF -- "$nm290/$k290:/workspace/proj/node_modules/$k290:ro" <<<"$m290" \
+      && grep -qF "WARNING: $nm290/$k290 cannot be listed by you" "$ERR" \
+      && pass "G290 $w290, made unsearchable, is read-only whole and named" \
+      || fail "G290 $k290: $w290 ($(grep -F "/$k290" <<<"$m290" | grep -vF /worktrees/ | tr '\n' ' '); $(grep -F "/$k290 cannot" "$ERR" | head -1))"
+  done
+  grep -qxF -- "$PROJ/.venv:/workspace/proj/.venv:ro" <<<"$m290" \
+    && pass "G290 a way that steps back out of a link inside the blocking directory is blocked at that directory" \
+    || fail "G290 c5: .venv not bound ($(grep -F '/.venv' <<<"$m290" | tr '\n' ' '))"
+  ! grep -qF -- "$nm290/k4:" <<<"$m290" \
+    && pass "G290 a link inside the mount on the way still ends the walk: nothing is bound for it" \
+    || fail "G290 k4 bound through a link the agent could have planted ($(grep -F '/k4:' <<<"$m290" | tr '\n' ' '))"
+  # An agent of another id cannot reach into a directory of yours, mode 000:
+  # asked of the directory, never of a link to it, whose own mode says nothing.
+  SANDBOX_UID=4242 SANDBOX_GID=4242 launch_timed 120 ..
+  [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF -- "$nm290/k2:" <<<"$(mounts)" && ! grep -qF -- "$nm290/k1:" <<<"$(mounts)" \
+    && pass "G290 one the agent could not enter either is not bound, a link to it or not" \
+    || fail "G290 agent of another id (rc=$LAUNCH_RC; $(mounts | grep -F -e '/k1:' -e '/k2:' | tr '\n' ' '))"
+  chmod 755 "$nm290/k1" "$nm290/k2" "$nm290/k3" "$nm290/k4" "$nm290/k6" "$PROJ/.venv"
+  rm -rf "$nm290/k1" "$nm290/k2" "$nm290/k3" "$nm290/k4" "$nm290/k6" "$PROJ/.venv" "$PROJ/sub290" "$o290" \
+    "$PROJ/lnk290" "$TMP/lk290" "$TMP/lk290b" "$TMP/lk290c" "$TMP/lp290a" "$TMP/lp290b"
+  "${G[@]}" -C "$PROJ" worktree prune 2>/dev/null
+  for k290 in k1 k2 k3 k4 k6 c5 k7; do "${G[@]}" -C "$PROJ" branch -q -D "b290$k290" 2>/dev/null; done
+else
+  printf 'NOTE: run as root, which searches any directory; G290 is not applicable\n'
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

@@ -4227,11 +4227,25 @@ _path_gone() {
 # (under a pruned name, deeper than six levels), the checkout behind it was
 # neither bound nor named, and the agent could restore the mode in the next
 # session and point its .git at a repository of its own (bugs review GIT-60;
-# G153). Succeeds when it protected one. Walked from / as written, a `..` stepping back where it is written
-# (_lex_link_dir's walk); a link in a writable mount, which the agent could have
-# planted, and a name that is not there end it, judging nothing.
+# G153). Succeeds when it protected one.
+# The way is walked from / as the kernel walks it, a component at a time from a
+# physical directory: a link outside every writable mount is read and its target
+# taken in its place, so a `..` after it steps back from where it led, and the
+# directory that blocks the way is found where it is, which is how the mounts'
+# sources are spelled. Walked as written, a checkout named through a link
+# outside the mounts was found under no mount, and was neither bound nor named
+# (bugs review GIT-96; G290). Each directory is tested as it is entered, so
+# nothing is asked about what lies below one that cannot be searched. A link in
+# a writable mount, which the agent could have planted, ends the walk, judging
+# nothing, before it is read; so do a name that is not there and more links
+# than Linux follows (40). The walk starts no process but one readlink for each
+# link outside the writable mounts. The path's own length is the only other bound: a
+# `.` or an empty component is no step, and a very long way is walked slowly
+# (bugs review GIT-97).
 _gdi_blocked() {
-  local _gb_p="" _gb_rest="${1#/}" _gb_c _gb_b="" _gb_j _gb_did=""
+  local _gb_p="" _gb_rest _gb_c _gb_t _gb_n=0 _gb_b="" _gb_j _gb_did=""
+  [[ "$1" == /* ]] || return 1
+  _gb_rest="${1#/}"
   while [[ -n "$_gb_rest" ]]; do
     _gb_c="${_gb_rest%%/*}"
     if [[ "$_gb_rest" == */* ]]; then _gb_rest="${_gb_rest#*/}"; else _gb_rest=""; fi
@@ -4239,8 +4253,14 @@ _gdi_blocked() {
       ''|.) continue ;;
       ..) _gb_p="${_gb_p%/*}"; continue ;;
     esac
+    if [[ -L "$_gb_p/$_gb_c" ]]; then
+      if _in_writable "$_gb_p/$_gb_c"; then return 1; fi
+      (( ++_gb_n <= 40 )) || return 1
+      _readlink_exact _gb_t "$_gb_p/$_gb_c" || return 1
+      if [[ "$_gb_t" == /* ]]; then _gb_p=""; _gb_rest="${_gb_t#/}${_gb_rest:+/$_gb_rest}"; else _gb_rest="$_gb_t${_gb_rest:+/$_gb_rest}"; fi
+      continue
+    fi
     _gb_p="$_gb_p/$_gb_c"
-    if [[ -L "$_gb_p" ]] && _in_writable "$_gb_p"; then return 1; fi
     [[ -d "$_gb_p" ]] || return 1
     if [[ ! -x "$_gb_p" ]]; then _gb_b="$_gb_p"; break; fi
   done
