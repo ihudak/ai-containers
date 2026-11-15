@@ -360,8 +360,11 @@ ok "a failed rewrite is rc 1, leaves no temp file, and the target is unchanged" 
 # mktemp, which FAKE_MKTEMP_BAD=<glob> makes hand out, for a name that matches,
 # a file no write reaches: with FAKE_MKTEMP_HOW=full a link to /dev/full (every
 # write fails, as on a full disk), with =dir a directory (it cannot be opened).
+# Put in place by fake_mktemp, and taken away after use (a process more for
+# every mktemp otherwise).
 REAL_MKTEMP="$(command -v mktemp)"; export REAL_MKTEMP
-cat > "$TMP/bin/mktemp" <<'FAKEMKTEMP'
+fake_mktemp() {
+  cat > "$TMP/bin/mktemp" <<'FAKEMKTEMP'
 #!/usr/bin/env bash
 out="$("$REAL_MKTEMP" "$@")" || exit
 # shellcheck disable=SC2053  # a glob on purpose
@@ -371,7 +374,9 @@ if [[ -n "${FAKE_MKTEMP_BAD:-}" && "${out##*/}" == $FAKE_MKTEMP_BAD ]]; then
 fi
 printf '%s\n' "$out"
 FAKEMKTEMP
-chmod +x "$TMP/bin/mktemp"
+  chmod +x "$TMP/bin/mktemp"
+}
+fake_mktemp
 edit_fails() {  # <how> <assertion>: each edit, its new content unwritable, is rc 1 with ERROR: and changes nothing
   local how="$1" bad="" op rc
   printf '# c\n/a/one\r\n/b/two\n/c/three' > "$ENG/projects.conf"; cp "$ENG/projects.conf" "$TMP/conf.orig"
@@ -1923,6 +1928,25 @@ ok "rm's ./group.sh rm keeps a group name with a space as one argument" \
 out="$(bash "$P" --help 2>&1)"
 ok "the usage says what gc --all is for" \
   bash -c '[[ "$1" == *"./project.sh gc  [--all] [--yes]"* && "$1" == *"gc --all offers those too: copies made before owner labels,"* ]]' _ "$out"
+
+# gc that cannot rewrite a registry it drops a line from exits 1, and leaves
+# what a re-run needs: an image-projects.conf line first (the projects.conf
+# lines kept), a projects.conf line last
+fake_mktemp
+gcworld; A="$W/alpha"; mkproj "$A"; ida="$(tid "$A/.ai-containers")"
+printf '%s|%s\n' "$ida" "$(cd "$A/.ai-containers" && pwd -P)" > "$IP"; rm -rf "$A"; gc_save
+( export FAKE_MKTEMP_BAD='.image-projects.conf.new.*' FAKE_MKTEMP_HOW=dir; gcrun --yes ); rc=$?
+rm -rf "$HOME/.ai-containers"/.image-projects.conf.new.*
+ok "gc exits 1 when an image-projects.conf line it drops cannot be rewritten, and keeps the projects.conf lines" \
+  bash -c '[ "$1" = 1 ] && grep -qxF "       The projects.conf lines are kept; run ./project.sh gc again." "$2" && ! grep -q "^OK:" "$2" \
+           && cmp -s "$3" "$4" && cmp -s "$5" "$6"' _ "$rc" "$TMP/out" "$ENG/projects.conf" "$TMP/conf.before" "$IP" "$TMP/ip.before"
+gcworld; mkproj "$W/alpha"; rm -rf "$W/alpha"; cp "$ENG/projects.conf" "$TMP/conf.before"
+( export FAKE_MKTEMP_BAD='.projects.conf.new.*' FAKE_MKTEMP_HOW=dir; gcrun --yes ); rc=$?
+rm -rf "$ENG"/.projects.conf.new.*
+ok "gc exits 1 when a projects.conf line it drops cannot be rewritten, saying so" \
+  bash -c '[ "$1" = 1 ] && grep -q "^ERROR: cannot read .*projects.conf, or write its new content beside it" "$2" && ! grep -q "^OK:" "$2" \
+           && cmp -s "$3" "$4"' _ "$rc" "$TMP/out" "$ENG/projects.conf" "$TMP/conf.before"
+rm -f "$TMP/bin/mktemp"
 
 # what a label or a registry line holds reaches the terminal without its escapes
 gcworld; E="$W/esc${ESC}[2Jgone"; printf '%s\n' "$E" > "$ENG/projects.conf"; mkbase app; mkwc app 1 "$E/.ai-containers" "$CLEAN"
