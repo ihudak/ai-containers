@@ -849,7 +849,7 @@ launcher_ro_overlay() {
     fi
     gdirs=(); gfiles=(); glinks=(); gunr=()
     git_dirs_in gdirs gfiles glinks gunr "$src"
-    _git_scan_srcs+=("$src"); _git_bsrc=(${bsrc[@]+"${bsrc[@]}"})
+    _git_scan_srcs+=("$src"); _git_bsrc=(${bsrc[@]+"${bsrc[@]}"}); _git_uid="$uid" _git_gid="$gid"
     # Not once a scan stopped past SANDBOX_GIT_MAX: the launch is refused below,
     # and a stat for each of 20,000 planted directories took it over a minute
     # and a half to say so (bugs review GIT-84; G197).
@@ -4227,11 +4227,25 @@ _path_gone() {
 # (under a pruned name, deeper than six levels), the checkout behind it was
 # neither bound nor named, and the agent could restore the mode in the next
 # session and point its .git at a repository of its own (bugs review GIT-60;
-# G153). Succeeds when it protected one. Walked from / as written, a `..` stepping back where it is written
-# (_lex_link_dir's walk); a link in a writable mount, which the agent could have
-# planted, and a name that is not there end it, judging nothing.
+# G153). Succeeds when it protected one.
+# The way is walked from / as the kernel walks it, a component at a time from a
+# physical directory: a link outside every writable mount is read and its target
+# taken in its place, so a `..` after it steps back from where it led, and the
+# directory that blocks the way is found where it is, which is how the mounts'
+# sources are spelled. Walked as written, a checkout named through a link
+# outside the mounts was found under no mount, and was neither bound nor named
+# (bugs review GIT-96; G290). Each directory is tested as it is entered, so
+# nothing is asked about what lies below one that cannot be searched. A link in
+# a writable mount, which the agent could have planted, ends the walk, judging
+# nothing, before it is read; so do a name that is not there and more links
+# than Linux follows (40). The walk starts no process but one readlink for each
+# link outside the writable mounts. The path's own length is the only other bound: a
+# `.` or an empty component is no step, and a very long way is walked slowly
+# (bugs review GIT-97).
 _gdi_blocked() {
-  local _gb_p="" _gb_rest="${1#/}" _gb_c _gb_b="" _gb_j _gb_did=""
+  local _gb_p="" _gb_rest _gb_c _gb_t _gb_n=0 _gb_b="" _gb_j _gb_did=""
+  [[ "$1" == /* ]] || return 1
+  _gb_rest="${1#/}"
   while [[ -n "$_gb_rest" ]]; do
     _gb_c="${_gb_rest%%/*}"
     if [[ "$_gb_rest" == */* ]]; then _gb_rest="${_gb_rest#*/}"; else _gb_rest=""; fi
@@ -4239,8 +4253,14 @@ _gdi_blocked() {
       ''|.) continue ;;
       ..) _gb_p="${_gb_p%/*}"; continue ;;
     esac
+    if [[ -L "$_gb_p/$_gb_c" ]]; then
+      if _in_writable "$_gb_p/$_gb_c"; then return 1; fi
+      (( ++_gb_n <= 40 )) || return 1
+      _readlink_exact _gb_t "$_gb_p/$_gb_c" || return 1
+      if [[ "$_gb_t" == /* ]]; then _gb_p=""; _gb_rest="${_gb_t#/}${_gb_rest:+/$_gb_rest}"; else _gb_rest="$_gb_t${_gb_rest:+/$_gb_rest}"; fi
+      continue
+    fi
     _gb_p="$_gb_p/$_gb_c"
-    if [[ -L "$_gb_p" ]] && _in_writable "$_gb_p"; then return 1; fi
     [[ -d "$_gb_p" ]] || return 1
     if [[ ! -x "$_gb_p" ]]; then _gb_b="$_gb_p"; break; fi
   done
@@ -4248,8 +4268,8 @@ _gdi_blocked() {
   # Only one the agent could reach into, by launcher_dirs_in's rule: one it owns,
   # which it can chmod back, or one whose mode lets it search. A directory nobody
   # but its owner can enter (a database's data directory) hides nothing the agent
-  # can touch. With no agent identity at hand (the rescan after the session),
-  # every one counts.
+  # can touch. The rescan after the session gets the launch's identity too
+  # (_git_uid, _git_gid; GIT-99); with none at hand, every one counts.
   if [[ -n "${uid:-}" && -n "${gid:-}" ]] && [[ -z "$(find "$_gb_b" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0010 \) \
        -o \( ! -group "$gid" -perm -0001 \) \) -print 2>/dev/null)" ]]; then
     return 1
@@ -4662,6 +4682,11 @@ git_dirs_in() {
               if [[ "$up/.git" == "${bsrc[_j]}"/* ]]; then _xm_t+=("$up/.git"); _xm_by+=("$5"); _xm_j+=("$_j"); fi
             done
           fi
+        elif _is_git_dir "$up/.git" && ! _in_writable "$up/.git"; then
+          # Queued already by a .git file lower in the mount that names it, which
+          # the agent can write: quiet all the same, as the repository the mount
+          # lies in, out of every writable bind, is (bugs review GIT-100; G253).
+          gquiet[$up/.git]=1
         fi
       else
         # The file itself, in another writable mount past that mount's scan, is
@@ -5814,8 +5839,10 @@ _git_after_session() {
   trap '_gas_cut=1' USR1
   mapfile -d '' -t recs < <(
     exec 2>/dev/null
-    # What git_dirs_in reads of the launch's own state: the writable binds, and the bound.
-    bsrc=(${_git_bsrc[@]+"${_git_bsrc[@]}"})
+    # What git_dirs_in reads of the launch's own state: the writable binds, the
+    # bound, and the agent's identity, without which a directory it cannot reach
+    # was taken for one it could, and named as made in the session (GIT-99).
+    bsrc=(${_git_bsrc[@]+"${_git_bsrc[@]}"}); uid="$_git_uid" gid="$_git_gid"
     gitmax="${SANDBOX_GIT_MAX:-200}"; _rd_errfd=""
     # A read cut off here only says the search was cut short, so it gets the
     # first bound: the longer one would lengthen a scan after the session.
@@ -6270,6 +6297,7 @@ declare -A _gref_i=()
 # _gref_add <git directory> <checkout>
 _gref_add() { _gref_t+=("$1"); _gref_d+=("$2"); _gref_i[$1]+="$(( ${#_gref_t[@]} - 1 )) "; }
 _git_bsrc=()               # every writable bind source of the launch (bsrc), for the rescan
+_git_uid="" _git_gid=""    # the agent's identity at the launch, for the rescan (GIT-99)
 # Directories in a writable mount a .git file or commondir names that were no git
 # directory, or not there, at launch: _git_after_session looks at each again
 # (GIT-63, GIT-65). Each is named by a .git file or a git directory the launch

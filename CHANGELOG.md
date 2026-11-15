@@ -216,6 +216,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   outside the git directory git uses. What a `.git` holds is printed with its
   control bytes replaced.
 
+- **A checkout named through a link outside the mounts is protected when it
+  cannot be searched.** A checkout the agent has made `chmod 000` is mounted
+  read-only whole and named, with the `chmod` that restores it, so that it
+  cannot be pointed at a repository of the agent's in the next session. The
+  directory was looked for along the path as a worktree's `gitdir` or a
+  `core.worktree` writes it: written through a symlink that lies outside
+  every mount, it was found under no mount and was neither mounted nor
+  named. The path is now followed as the kernel follows it (bugs review
+  GIT-96).
+
+- **The check after a session no longer names a directory the agent cannot
+  reach**, such as a submodule of yours at mode 000 when the agent runs under
+  another id, as a repository the session made (bugs review GIT-99). **A `.git`
+  file in a mount no longer brings back a warning** about an unreadable index of
+  the repository the mount lies in, outside every mount (GIT-100).
+
 - **A dangling `.git` link no longer hides the bare repository a mount lies
   in.** git cannot follow such a link, takes it for no `.git`, and uses the
   directory itself where that is a bare repository; a git before 2.54 does the

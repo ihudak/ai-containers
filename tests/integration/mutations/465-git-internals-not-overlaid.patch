@@ -12,15 +12,14 @@
 #       project's writability and the agent's commit still PASS; a FAIL there
 #       first would mean the case measures something other than the overlay.
 diff --git a/sandbox.sh b/sandbox.sh
-index 5057696..583f1c6 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -770,7 +770,7 @@ launcher_ro_overlay() {
+@@ -848,7 +848,7 @@
        printf '      your host'\''s git may run what changes there.\n' >&2
      fi
      gdirs=(); gfiles=(); glinks=(); gunr=()
 -    git_dirs_in gdirs gfiles glinks gunr "$src"
 +    :
-     _git_scan_srcs+=("$src"); _git_bsrc=(${bsrc[@]+"${bsrc[@]}"})
+     _git_scan_srcs+=("$src"); _git_bsrc=(${bsrc[@]+"${bsrc[@]}"}); _git_uid="$uid" _git_gid="$gid"
      # Not once a scan stopped past SANDBOX_GIT_MAX: the launch is refused below,
      # and a stat for each of 20,000 planted directories took it over a minute
