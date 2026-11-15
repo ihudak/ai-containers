@@ -1,5 +1,5 @@
 # case: 650-project-mv-moves-workcopy
-# what: prj_copy_volume's copying rsync becomes a no-op, so the new volume is made, empty, and the old one goes
+# what: prj_copy_volume's copying rsync becomes a no-op, so the new volume stays empty; mv's check must catch that and keep the old one
 #
 diff --git a/project.sh b/project.sh
 index 56a04c9..09fba0e 100755
