@@ -2132,5 +2132,95 @@ EXTRA_MOUNTS="$O240/w" launch "$TMP/app"
   || fail "G240 the walk went on past the bare repository ($(grep -F 'runs its git hooks' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$M240" "$R240"
 
+# ── G219: a linked worktree's checkout whose .git is a link to a file ────────
+# Under a pruned node_modules a checkout reached through its worktree's gitdir
+# is read only if its .git names the worktree back (_gdi_points_back(), GIT-57).
+# A .git that is a link to such a file is named, never followed, so that check
+# alone reaches the checkout: its submodule is protected and the worktree is
+# not said to have none (GAP-2's whole-file run, batch 3, item 1).
+U219="$TMP/up219"; A219="$PROJ/node_modules/aw219"
+"${G[@]}" init -q "$U219" && "${G[@]}" -C "$U219" commit -q --allow-empty -m u \
+  && "${G[@]}" -C "$PROJ" worktree add -q "$A219" -b aw219 \
+  && "${G[@]}" clone -q "$U219" "$A219/sub" && "${G[@]}" -C "$A219" add sub 2>/dev/null && "${G[@]}" -C "$A219" commit -q -m n \
+  && mv "$A219/.git" "$TMP/gf219" && ln -s "$TMP/gf219" "$A219/.git" \
+  || { printf 'SCAFFOLD-FAILED: G219\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$A219/sub/.git/config:/workspace/proj/node_modules/aw219/sub/.git/config:ro" \
+  && ! grep -qF "no worktree is known for $PROJ/.git/worktrees/aw219" "$ERR" \
+  && pass "G219 a checkout whose .git is a link to a file naming its worktree back is read, and its submodule protected" \
+  || fail "G219 linked .git under node_modules (rc=$LAUNCH_RC; $(grep -F aw219 "$ERR" | head -2 | tr '\n' ' '))"
+
+# ── G220: a decoy that has a .git file, which does not point back ───────────
+# The worktree's gitdir rewritten to name a directory under node_modules whose
+# .git file holds no gitdir: line, or names a path outside every mount that is
+# not there: neither is the checkout, the real one goes unread, and that is said
+# (batch 3, item 1). The decoy is there, so no "which is not there" (item 2).
+cp "$PROJ/.git/worktrees/aw219/gitdir" "$TMP/gitdir219"
+for k220 in x gone; do
+  rm -rf "$PROJ/node_modules/dec220"; mkdir -p "$PROJ/node_modules/dec220"
+  if [[ "$k220" == x ]]; then printf 'x\n' > "$PROJ/node_modules/dec220/.git"
+  else printf 'gitdir: %s\n' "$TMP/nowhere220" > "$PROJ/node_modules/dec220/.git"; fi
+  printf '%s\n' "$PROJ/node_modules/dec220/.git" > "$PROJ/.git/worktrees/aw219/gitdir"
+  launch ..
+  grep -qF "no worktree is known for $PROJ/.git/worktrees/aw219" "$ERR" \
+    && pass "G220 a decoy whose .git does not point back ($k220) leaves the worktree named" \
+    || fail "G220 decoy .git $k220 (rc=$LAUNCH_RC; $(grep -F WARNING "$ERR" | head -2 | tr '\n' ' '))"
+  [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "which is not there" "$ERR" \
+    && pass "G221 a checkout that is there is not said to be gone ($k220)" \
+    || fail "G221 called gone, $k220 (rc=$LAUNCH_RC; $(grep -F 'not there' "$ERR" | head -1))"
+done
+rm -rf "$PROJ/node_modules/dec220"
+# A gitdir naming a path through a link to a directory: a link on the way is not
+# "gone" (batch 3, item 2).
+mkdir -p "$TMP/lnkd222" && ln -s "$TMP/lnkd222" "$TMP/lnk222" \
+  && printf '%s\n' "$TMP/lnk222/missing/.git" > "$PROJ/.git/worktrees/aw219/gitdir" || { printf 'SCAFFOLD-FAILED: G222\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "no worktree is known for $PROJ/.git/worktrees/aw219" "$ERR" && ! grep -qF "which is not there" "$ERR" \
+  && pass "G222 a checkout named through a link on the way is not said to be gone" \
+  || fail "G222 link on the way (rc=$LAUNCH_RC; $(grep -F 'aw219' "$ERR" | head -3 | tr '\n' ' '))"
+cp "$TMP/gitdir219" "$PROJ/.git/worktrees/aw219/gitdir"; rm -rf "$TMP/gitdir219" "$TMP/lnk222" "$TMP/lnkd222"
+rm -f "$A219/.git"; mv "$TMP/gf219" "$A219/.git"
+"${G[@]}" -C "$PROJ" worktree remove --force "$A219"; "${G[@]}" -C "$PROJ" branch -q -D aw219
+
+# ── G223: a submodule recorded through a link, at a directory you cannot search ─
+# The index records l223/sub, l223 a link in the mount to real223, and
+# real223/sub cannot be searched. _gdi_blocked() returns at the link, protecting
+# nothing there, so the gitlink is still named as not where the index says
+# (batch 3, item 3). Not as root, which searches any directory.
+if [[ "$(id -u)" != 0 ]]; then
+  mkdir -p "$PROJ/real223" && "${G[@]}" clone -q "$U219" "$PROJ/real223/sub" && ln -s real223 "$PROJ/l223" \
+    && "${G[@]}" -C "$PROJ" update-index --add --cacheinfo "160000,$(printf '%040d' 1),l223/sub" \
+    && chmod 000 "$PROJ/real223/sub" || { printf 'SCAFFOLD-FAILED: G223\n'; exit 1; }
+  launch ..
+  grep -qF "WARNING: submodule $PROJ/l223/sub of $PROJ/.git is not where its index says" "$ERR" \
+    && pass "G223 a gitlink through a link to a directory you cannot search is named" \
+    || fail "G223 gitlink through a link (rc=$LAUNCH_RC; $(grep -F l223 "$ERR" | head -2 | tr '\n' ' '))"
+  # update-index, not rm --cached, which refuses a gitlink path through a link.
+  chmod 755 "$PROJ/real223/sub"; "${G[@]}" -C "$PROJ" update-index --force-remove l223/sub; rm -rf "$PROJ/real223" "$PROJ/l223"
+  [[ -z "$("${G[@]}" -C "$PROJ" ls-files -s l223/sub)" ]] || fail "G223 SCAFFOLD: the gitlink l223/sub is still in the project's index"
+else
+  printf 'NOTE: G223 not run as root, which searches any directory\n'
+fi
+rm -rf "$U219"
+
+# ── G224: what _gd_resolve() names, and where ────────────────────────────────
+# A .git file naming a path that is not there outside every mount: the agent
+# cannot make it, so it is not named (batch 3, item 4).
+mkdir -p "$PROJ/x224" && printf 'gitdir: %s\n' "$TMP/nowhere224" > "$PROJ/x224/.git" || { printf 'SCAFFOLD-FAILED: G224\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/x224/.git:/workspace/proj/x224/.git:ro" && ! grep -qF "$TMP/nowhere224, which does not exist" "$ERR" \
+  && pass "G224 a .git naming a path not there outside every mount is not named" \
+  || fail "G224 outside path (rc=$LAUNCH_RC; $(grep -F nowhere224 "$ERR" | head -1))"
+rm -rf "$PROJ/x224"
+# One whose path reads, its .. taken by name, as outside every mount, while the
+# link it goes through lies inside one: named as reached through that link.
+mkdir -p "$TMP/realb225/x/y" "$PROJ/b225" && "${G[@]}" init -q --bare "$TMP/realb225/gd" && ln -s "$TMP/realb225/x/y" "$PROJ/lb225" \
+  && printf 'gitdir: %s\n' "$PROJ/lb225/../../gd" > "$PROJ/b225/.git" || { printf 'SCAFFOLD-FAILED: G225\n'; exit 1; }
+launch ..
+grep -qF "WARNING: $PROJ/b225/.git reaches $TMP/realb225/gd through a link inside the mount" "$ERR" \
+  && pass "G225 a link inside the mount on a path that reads as outside it is named" \
+  || fail "G225 link inside, path outside (rc=$LAUNCH_RC; $(grep -F b225 "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$PROJ/b225" "$PROJ/lb225" "$TMP/realb225"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

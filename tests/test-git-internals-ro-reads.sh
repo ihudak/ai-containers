@@ -289,6 +289,17 @@ PATH="$TMP/fh99:$PATH" TMPDIR="$TMP/rdt99" "$BASH" -c 'source "$1"; _rd_prep; se
 [[ "$rc99" == 0 && "$(cat "$TMP/o99")" == 'gitdir: ../x' ]] \
   && pass "G99 a small git file that takes 2 s to read is read whole" \
   || fail "G99 _rd past the first bound (rc=$rc99; out=$(cat "$TMP/o99"); err=$(cat "$TMP/e99"))"
+# A read well inside the first bound is not counted among the slow ones: a
+# launch with many fast reads keeps the longer bound (GAP-2's whole-file run,
+# batch 3, item 5).
+rm -rf "$TMP/rdt99"; mkdir -p "$TMP/rdt99"
+TMPDIR="$TMP/rdt99" "$BASH" -c 'source "$1"; _rd_prep; set -euo pipefail; x=""
+    IFS= read -r -d "" x < <(_rd 4096 "$2") || true; printf "%s" "$x"' \
+  _ "$fns99" "$TMP/f99" >"$TMP/o99" 2>"$TMP/e99"; rc99=$?
+rdd99="$(ls -d "$TMP"/rdt99/ai-launcher-read.* 2>/dev/null | head -1)"
+[[ "$rc99" == 0 && "$(cat "$TMP/o99")" == 'gitdir: ../x' && -n "$rdd99" && ! -e "$rdd99/spent" ]] \
+  && pass "G226 a fast read is not charged to the budget for slow ones" \
+  || fail "G226 fast read charged (rc=$rc99; out=$(cat "$TMP/o99"); dir=$rdd99; spent=$(cat "$rdd99/spent" 2>&1))"
 rm -rf "$fns99" "$TMP/fg99" "$TMP/fh99" "$TMP/rdt99" "$TMP/st99" "$TMP/c99" "$TMP/f99" "$TMP/o99" "$TMP/e99"
 
 # ── G111: a file git takes a path from is read as git reads it, or refused ───

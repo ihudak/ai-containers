@@ -498,5 +498,24 @@ refused && has "ERROR: $D198/co/.git holds what git reads otherwise" && has "If 
   || fail "G198 odd .git file ($(why))"
 rm -rf "$D198"
 
+# ── G228: only a mount that holds the directory decides whether an overlay does ─
+# Whether a directory lies under a read-only overlay, which withholds the
+# command (_cd_under_ro()), is asked only of the writable mounts that hold it.
+# Asked of another, the directory's whole host path was appended to that
+# mount's destination: a launcher planted there at the first component of the
+# path, as a repository under /tmp has /tmp, took the repository for one under
+# an overlay, and the refusal printed no command (GAP-2's whole-file run,
+# batch 3, item 7).
+c228="${TMP#/}"; c228="${c228%%/*}"
+M228a="$TMP/m228a"; M228b="$TMP/m228b"
+mkdir -p "$M228a" "$M228b/$c228" && "${G[@]}" init -q "$M228a/r" && printf '../x\n' > "$M228a/r/.git/commondir" \
+  && : > "$M228b/$c228/sandbox.sh" && : > "$M228b/$c228/sandbox-common.sh" || { printf 'SCAFFOLD-FAILED: G228\n'; exit 1; }
+EXTRA_MOUNTS="$M228a $M228b" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $M228a/r/.git/commondir sends git to ../x" "$ERR" \
+  && grep -qF "(cd -P -- $M228a/r/.git && " "$ERR" && grep -qF '&& rm commondir)' "$ERR" \
+  && pass "G228 a launcher in another mount at the path's first component does not withhold the command" \
+  || fail "G228 another mount's overlay (rc=$LAUNCH_RC; $(grep -A6 -F 'm228a/r/.git/commondir sends' "$ERR" | tail -n 3 | tr '\n' ' '))"
+rm -rf "$M228a" "$M228b"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
