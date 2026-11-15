@@ -91,6 +91,13 @@ _prj_key() {
   printf '%s' "$k"
 }
 
+# _prj_q <word>: <word> as a command printed to be pasted needs it: printf %q,
+# so a path holding a space stays one argument and a name the agent wrote (a
+# group, a repo) runs nothing, then _ac_term for the terminal. Volume,
+# container and image names docker accepted hold nothing a shell splits or
+# runs, and are printed as they are.
+_prj_q() { _ac_term "$(printf '%q' "$1")"; }
+
 # prj_roots: each registered root, one per line; blank and # lines skipped.
 prj_roots() {
   [[ -f "$prj_conf" ]] || return 0
@@ -392,13 +399,13 @@ _prj_refuse_running() {
   exit 1
 }
 
-# _prj_prefix_check <dot> <command and its arguments>: exit 1 when the
+# _prj_prefix_check <dot> <command> <argument>...: exit 1 when the
 # project's launcher names its repo volumes under another REPO_VOLUME_PREFIX
 # than this run does — its sandbox.local.env sets one, or this engine's does, and
 # the shell none — saying how to run again: its working copies are then not the
 # ones this run would find, or name.
 _prj_prefix_check() {
-  local want from="from its sandbox.local.env"
+  local want from="from its sandbox.local.env" w line=""
   [[ -z "${_prj_shell[REPO_VOLUME_PREFIX]+x}" ]] || return 0
   want="$(prj_env "$1" REPO_VOLUME_PREFIX)"
   if [[ -z "$want" ]]; then want=ai-containers; from="the default"; fi
@@ -406,7 +413,8 @@ _prj_prefix_check() {
   printf 'ERROR: %s names its repo volumes under REPO_VOLUME_PREFIX=%s (%s), and this run\n' \
     "$(_ac_term "$1")" "$(_ac_term "$want")" "$from" >&2
   printf '       looks for working copies under %s; refusing. Run it as\n' "$(_ac_term "$repo_volume_prefix")" >&2
-  printf '         REPO_VOLUME_PREFIX=%s ./project.sh %s\n' "$(_ac_term "$(printf '%q' "$want")")" "$(_ac_term "$2")" >&2
+  for w in "${@:2}"; do line+=" $(_prj_q "$w")"; done
+  printf '         REPO_VOLUME_PREFIX=%s ./project.sh%s\n' "$(_prj_q "$want")" "$line" >&2
   printf '       Nothing was changed.\n' >&2
   exit 1
 }
@@ -701,8 +709,8 @@ prj_unused_shared() {
       "group default")
         printf 'NOTE: group default is used by no other project in this checkout'"'"'s projects.conf; it is the\n'
         printf '      group of every launch that names none, so keep it.\n' ;;
-      group\ *) printf 'NOTE: group %s is used by no other project in this checkout'"'"'s projects.conf; remove it with ./group.sh rm %s\n' "$name" "$name" ;;
-      repo\ *)  printf 'NOTE: repo %s is used by no other project in this checkout'"'"'s projects.conf; remove it with ./repo.sh rm %s\n' "$name" "$name" ;;
+      group\ *) printf 'NOTE: group %s is used by no other project in this checkout'"'"'s projects.conf; remove it with ./group.sh rm %s\n' "$name" "$(_prj_q "${what#* }")" ;;
+      repo\ *)  printf 'NOTE: repo %s is used by no other project in this checkout'"'"'s projects.conf; remove it with ./repo.sh rm %s\n' "$name" "$(_prj_q "${what#* }")" ;;
     esac
     used["$what"]=1
   done < <(_prj_shared "$dot")
@@ -796,10 +804,11 @@ cmd_rm() {
   [[ -n "$arg" ]] || { printf 'ERROR: usage: ./project.sh rm <project> [--yes]\n' >&2; exit 1; }
   prj_resolve "$arg"
   # Printed through _ac_term: projects.conf is a file anyone may have edited.
-  local t_root t_dot
-  t_root="$(_ac_term "$PRJ_ROOT")"; t_dot="$(_ac_term "$PRJ_DOT")"
+  # A path in a command printed to be pasted, quoted (_prj_q).
+  local t_root t_dot q_root
+  t_root="$(_ac_term "$PRJ_ROOT")"; t_dot="$(_ac_term "$PRJ_DOT")"; q_root="$(_prj_q "$PRJ_ROOT")"
   _prj_guard "$PRJ_ROOT" "the registered root" remove registered
-  _prj_prefix_check "$PRJ_DOT" "rm $PRJ_ROOT"
+  _prj_prefix_check "$PRJ_DOT" rm "$PRJ_ROOT"
   if ! docker volume ls --quiet >/dev/null 2>&1; then
     printf 'ERROR: docker cannot be reached, so neither the project'"'"'s running containers nor its working\n' >&2
     printf '       copies can be checked; refusing. Start docker and run this again.\n' >&2
@@ -850,7 +859,7 @@ cmd_rm() {
     else
       printf '  directory   %s (already gone)\n' "$t_dot"
     fi
-    printf '              If %s was moved rather than deleted, answer no and run ./project.sh mv %s <new-dir>:\n' "$t_root" "$t_root"
+    printf '              If %s was moved rather than deleted, answer no and run ./project.sh mv %s <new-dir>:\n' "$t_root" "$q_root"
     printf '              rm would remove its working copies, which mv carries to the new place.\n'
   fi
   if (( rm_root )); then printf '  directory   %s (it holds nothing else)\n' "$(_ac_term "$root")"; fi
@@ -884,7 +893,7 @@ cmd_rm() {
   for wc in ${copies[@]+"${copies[@]}"}; do
     if ! docker volume rm "$wc" >/dev/null; then
       printf 'ERROR: could not remove the working copy %s (in use?). Nothing else was removed;\n' "$(_ac_term "$wc")" >&2
-      printf '       run ./project.sh rm %s again once it can be.\n' "$t_root" >&2
+      printf '       run ./project.sh rm %s again once it can be.\n' "$q_root" >&2
       exit 1
     fi
     printf 'Removed the working copy %s.\n' "$(_ac_term "$wc")"
@@ -901,7 +910,7 @@ cmd_rm() {
   if [[ -e "$PRJ_DOT" ]]; then
     if ! rm -rf -- "$PRJ_DOT" || [[ -e "$PRJ_DOT" || -L "$PRJ_DOT" ]]; then
       printf 'ERROR: could not remove %s (see above). Its registry lines are kept;\n' "$t_dot" >&2
-      printf '       fix what stopped it and run ./project.sh rm %s again.\n' "$t_root" >&2
+      printf '       fix what stopped it and run ./project.sh rm %s again.\n' "$q_root" >&2
       exit 1
     fi
     printf 'Removed %s.\n' "$t_dot"
@@ -909,7 +918,7 @@ cmd_rm() {
   # 4. Its image-projects.conf line, once no image carries the id: another
   #    project's build, or gc, still needs the line to name an image that does.
   if [[ -n "$id" && -n "$ip_path" ]] && ! _prj_ip_drop "$id" "$ip_path"; then
-    printf '       The projects.conf line is kept; run ./project.sh rm %s again.\n' "$t_root" >&2
+    printf '       The projects.conf line is kept; run ./project.sh rm %s again.\n' "$q_root" >&2
     exit 1
   fi
   # 5. Its projects.conf line.
@@ -1414,8 +1423,10 @@ cmd_mv() {
   # Registered already, in any spelling: that line is kept, never doubled.
   local new_line=""
   if new_line="$(_prj_registered_as "$new_root")"; then new_reg=1; fi
-  local t_old t_new t_odot t_ndot
+  # q_*: the paths in a command printed to be pasted, quoted (_prj_q).
+  local t_old t_new t_odot t_ndot q_old q_new
   t_old="$(_ac_term "$old_root")"; t_new="$(_ac_term "$new_root")"
+  q_old="$(_prj_q "$old_root")"; q_new="$(_prj_q "$new_root")"
   t_odot="$(_ac_term "$old_dot")"; t_ndot="$(_ac_term "$new_dot")"
 
   # Neither end may be ~/.ai-containers, hold the engine, or be a link.
@@ -1453,7 +1464,7 @@ cmd_mv() {
     exit 1
   fi
   local src_dot="$old_dot"; if (( moved )); then src_dot="$new_dot"; fi
-  _prj_prefix_check "$src_dot" "mv $old_root $new_root"
+  _prj_prefix_check "$src_dot" mv "$old_root" "$new_root"
   # What the launcher resolves against the launch directory ($PWD, the
   # .ai-containers that moves) would name another directory after the move, or
   # none: a relative EXTRA_MOUNTS entry or pointer. And a working directory other
@@ -1716,7 +1727,7 @@ cmd_mv() {
   # go, the copies this run made (_prj_mv_undo). Set here and put back before
   # this returns: project.sh is sourced by tests, so never a global trap.
   _prj_mv_made=(); _prj_mv_making=""; _prj_mv_first=""; _prj_mv_undo=1
-  _prj_mv_new="$new_root"; _prj_mv_cmd="./project.sh mv $t_old $t_new"
+  _prj_mv_new="$new_root"; _prj_mv_cmd="./project.sh mv $q_old $q_new"
   old_int="$(trap -p INT)"; old_term="$(trap -p TERM)"
   trap '_prj_mv_interrupted 130' INT
   trap '_prj_mv_interrupted 143' TERM
@@ -1772,7 +1783,7 @@ cmd_mv() {
   if (( add_mount )); then
     if ! prj_add_mount "$new_dot" "$old_root"; then
       printf 'ERROR: %s is not in EXTRA_MOUNTS yet (see above), and the registry is not changed;\n' "$t_old" >&2
-      printf '       fix that and run ./project.sh mv %s %s again.\n' "$t_old" "$t_new" >&2
+      printf '       fix that and run ./project.sh mv %s %s again.\n' "$q_old" "$q_new" >&2
       exit 1
     fi
     if [[ -n "$PRJ_MOUNT_COVER" ]]; then
@@ -1801,7 +1812,7 @@ cmd_mv() {
     rebuilt="$PRJ_IMAGE_REMOVED"
   fi
   if [[ -n "$id" && -n "$ip_path" ]] && ! _prj_ip_drop "$id" "$ip_path"; then
-    printf '       Run ./project.sh mv %s %s again to finish.\n' "$t_old" "$t_new" >&2
+    printf '       Run ./project.sh mv %s %s again to finish.\n' "$q_old" "$q_new" >&2
     exit 1
   fi
   if (( rebuilt )); then
@@ -1839,7 +1850,7 @@ cmd_mv() {
     else
       printf 'ERROR: not every old working copy could be removed (see above); once they can be, run\n' >&2
     fi
-    printf '       ./project.sh mv %s %s again to remove them.\n' "$t_old" "$t_new" >&2
+    printf '       ./project.sh mv %s %s again to remove them.\n' "$q_old" "$q_new" >&2
   fi
   if (( fail || leftover )); then exit 1; fi
   eval "${old_int:-trap - INT}"; eval "${old_term:-trap - TERM}"
@@ -2021,7 +2032,7 @@ cmd_gc() {
       elif [[ "$root" == /* && -d "$dot" ]]; then
         continue
       elif why="$(_prj_maybe_unmounted "$dot")"; then
-        if [[ "$root" == /* ]]; then why+="; if it is gone for good, ./project.sh rm $t removes its line"; fi
+        if [[ "$root" == /* ]]; then why+="; if it is gone for good, ./project.sh rm $(_prj_q "$r") removes its line"; fi
         kept+=("  registry    $t (projects.conf) — kept: $why")
       else
         pdrop+=("$r")
@@ -2151,7 +2162,7 @@ cmd_gc() {
   for r in ${pdrop[@]+"${pdrop[@]}"}; do
     t="$(_ac_term "$r")"
     printf '  registry    %s (projects.conf: it has no .ai-containers)\n' "$t"
-    printf '              If %s was moved rather than deleted, answer no and run ./project.sh mv %s <new-dir>:\n' "$t" "$t"
+    printf '              If %s was moved rather than deleted, answer no and run ./project.sh mv %s <new-dir>:\n' "$t" "$(_prj_q "$r")"
     printf '              gc would remove the working copies launched from it, which mv carries to the new\n'
     printf '              place; after gc, mv only registers the new place.\n'
   done

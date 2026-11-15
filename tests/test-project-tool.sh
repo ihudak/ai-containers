@@ -1849,6 +1849,77 @@ ok "  … which gc --all offers, saying it is unlabelled" \
   bash -c '[ "$1" = 0 ] && [ ! -e "$2/ai-containers-repo-app--wc-1" ] \
            && grep -qF "  working copy ai-containers-repo-app--wc-1 (app, launched from $4/nowhere/.ai-containers; unlabelled, under no path this home knows) — " "$3"' \
   _ "$rc" "$VOLS" "$TMP/out" "$W"
+# with --all, another home's copy is still kept while a container, running or
+# stopped, uses it, or while its launch dir may only look gone
+gcworld; mkbase app
+WC_OWNER="$OTHER" mkwc app 1 "$W/gone/.ai-containers" "$CLEAN"
+WC_OWNER="$OTHER" mkwc app 2 "$W/gone2/.ai-containers" "$CLEAN"
+printf 'ctr-run|some-image|/var/lib/docker/volumes/ai-containers-repo-app--wc-1/_data\n' > "$FAKE_RUNNING"
+printf 'ctr-old|some-image|/var/lib/docker/volumes/ai-containers-repo-app--wc-2/_data\n' > "$FAKE_STOPPED"
+gcrun --all --yes; rc=$?
+ok "gc --all keeps another home's copy a container uses, running or stopped, saying so" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-1" ] && [ -d "$2/ai-containers-repo-app--wc-2" ] && ! grep -q "^docker volume rm" "$5" \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-1 (app, launched from $3/gone/.ai-containers; made by another home or user on this docker) — kept: a running container uses it (ctr-run)" "$4" \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-2 (app, launched from $3/gone2/.ai-containers; made by another home or user on this docker) — kept: a stopped container uses it (ctr-old); docker rm it first" "$4"' \
+  _ "$rc" "$VOLS" "$W" "$TMP/out" "$DOCKER_LOG"
+gcworld; mkbase app; mkdir -p "$W/drive"; WC_OWNER="$OTHER" mkwc app 3 "$W/drive/proj/.ai-containers" "$CLEAN"
+gcrun --all --yes; rc=$?
+ok "gc --all keeps another home's copy whose launch dir may be on a drive that is not mounted, saying so" \
+  bash -c '[ "$1" = 0 ] && [ -d "$2/ai-containers-repo-app--wc-3" ] && grep -qxF "Nothing to collect." "$4" \
+           && grep -qxF "  working copy ai-containers-repo-app--wc-3 (app, launched from $3/drive/proj/.ai-containers; made by another home or user on this docker) — kept: it may be on a drive that is not mounted: $3/drive is empty" "$4"' \
+  _ "$rc" "$VOLS" "$W" "$TMP/out"
+
+# a command printed to be pasted keeps a path, or a name the project's files
+# give, with a space as one argument: cmd_word <line marker> <after> <before>
+# <n> is, on the first line of the output holding <line marker>, the command
+# printed between <after> and <before> (the line's end when empty) as a shell
+# parses it, its <n>th word
+cmd_word() {
+  local l c
+  local -a w=()
+  l="$(grep -F -- "$1" "$TMP/out" | head -1)"
+  c="${l#*"$2"}"; if [[ -n "$3" ]]; then c="${c%%"$3"*}"; fi
+  eval "w=($c)" 2>/dev/null || return 1
+  printf '%s' "${w[$4-1]-}"
+}
+world; S="$W/my proj"; mkproj "$S" '' $'REPO_VOLUME_PREFIX=other\n'
+rmrun "$S" --yes
+ok "the REPO_VOLUME_PREFIX refusal's command keeps a project path with a space as one argument" \
+  bash -c '[ "$1" = "$2" ]' _ "$(cmd_word "REPO_VOLUME_PREFIX=other ./project.sh rm" "" "" 4)" "$S"
+world; S="$W/my proj"; mkproj "$S"; mkbase app; mkwc app 1 "$S/.ai-containers" "$CLEAN"
+export FAKE_FAIL_VOLUME_RM='*'
+rmrun "$S" --yes
+unset FAKE_FAIL_VOLUME_RM
+ok "rm's run-it-again command keeps a project path with a space as one argument" \
+  bash -c '[ "$1" = "$2" ]' _ "$(cmd_word "again once it can be" "run " " again" 3)" "$S"
+world; S="$W/my proj"; mkproj "$S"; rm -rf "$S/.ai-containers"
+rmrun "$S"
+ok "rm's mv hint keeps a project path with a space as one argument" \
+  bash -c '[ "$1" = "$2" ]' _ "$(cmd_word "answer no and run ./project.sh mv" "and run " " <new-dir>" 3)" "$S"
+gcworld; S="$W/my proj"; mkproj "$S"; rm -rf "$S"; mkdir -p "$W/drive"; printf '%s\n' "$W/drive/my proj" >> "$ENG/projects.conf"
+gcrun
+ok "gc's mv hint and its rm hint keep a project path with a space as one argument" \
+  bash -c '[ "$1" = "$2" ] && [ "$3" = "$4" ]' _ "$(cmd_word "answer no and run ./project.sh mv" "and run " " <new-dir>" 3)" "$S" \
+  "$(cmd_word "if it is gone for good" "gone for good, " " removes its line" 3)" "$W/drive/my proj"
+world; S="$W/my proj"; mkproj "$S"; mkbase app; mkwc app 1 "$S/.ai-containers"; wcdata "$OLDWC" unpushed
+N="$W/new place/proj two"; export FAKE_FAIL_VOLUME_RM="$OLDWC"
+mvrun "$S" "$N" --yes
+unset FAKE_FAIL_VOLUME_RM
+ok "mv's run-it-again command keeps both paths with a space as one argument each" \
+  bash -c '[ "$1" = "$2" ] && [ "$3" = "$4" ]' _ "$(cmd_word "again to remove them" "       " " again" 3)" "$S" \
+  "$(cmd_word "again to remove them" "       " " again" 4)" "$N"
+world; S="$W/my proj"; mkproj "$S"; mkbase app; mkwc app 1 "$S/.ai-containers"; wcdata "$OLDWC" unpushed
+N="$W/new place/proj two"; export FAKE_RUN_TERM=1
+mvrun "$S" "$N" --yes
+unset FAKE_RUN_TERM
+ok "mv's command after an interrupt keeps both paths with a space as one argument each" \
+  bash -c '[ "$1" = "$2" ] && [ "$3" = "$4" ]' _ "$(cmd_word "again to move the project" "; run " " again" 3)" "$S" \
+  "$(cmd_word "again to move the project" "; run " " again" 4)" "$N"
+world; mkproj "$W/a1" '' $'AI_CONTAINER_GROUP=my group\n'
+rmrun "$W/a1" --yes
+ok "rm's ./group.sh rm keeps a group name with a space as one argument" \
+  bash -c '[ "$1" = "my group" ]' _ "$(cmd_word "remove it with ./group.sh rm" "remove it with " "" 3)"
+
 out="$(bash "$P" --help 2>&1)"
 ok "the usage says what gc --all is for" \
   bash -c '[[ "$1" == *"./project.sh gc  [--all] [--yes]"* && "$1" == *"gc --all offers those too: copies made before owner labels,"* ]]' _ "$out"
