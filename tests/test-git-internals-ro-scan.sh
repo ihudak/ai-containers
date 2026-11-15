@@ -1943,6 +1943,30 @@ EXTRA_MOUNTS="$D216" launch "$TMP/app"
   || fail "G216 ./ before a NUL (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -1); $(ls -A "$D216/n" | tr '\n' ' '))"
 rm -rf "$D216"
 
+# ── G227: a refusal over a FIFO leaves no temporary file behind ──────────────
+# A FIFO inside what a launch binds read-only refuses it (_ro_fifo_search()),
+# and the refusal's advice comes from helpers called under errexit: one that
+# returned 1 ended the launcher before it removed the search's temporary file.
+# Each FIFO in a protected repository's hooks/: one named gitdir (_ptr_say()),
+# one named commondir under hooks/refs/ (_cd_way_out(), its refs/ arm), and one
+# named commondir in a directory whose name ends in a newline (its "cannot be
+# entered" arm) (GAP-2's whole-file run, batch 3, item 6).
+for k227 in gitdir refs newline; do
+  R227="$PROJ/r227"; rm -rf "$R227" "$TMP/t227"; mkdir -p "$TMP/t227" && "${G[@]}" init -q "$R227" || { printf 'SCAFFOLD-FAILED: G227\n'; exit 1; }
+  case "$k227" in
+    gitdir) mkfifo "$R227/.git/hooks/gitdir"; t227='Remove it on the host (rm ' ;;
+    refs) mkdir -p "$R227/.git/hooks/refs" && mkfifo "$R227/.git/hooks/refs/commondir"; t227='No command is printed here.' ;;
+    newline) mkdir -p "$R227/.git/hooks/d"$'\n' && mkfifo "$R227/.git/hooks/d"$'\n'"/commondir"; t227='cannot be entered by a command printed here' ;;
+  esac
+  TMPDIR="$TMP/t227" launch ..
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF "is a FIFO or device inside what this launch binds read-only" "$ERR" \
+    && grep -qF "$t227" "$ERR" \
+    && [[ -z "$(find "$TMP/t227" -maxdepth 1 -name 'ai-launcher-find.*' 2>/dev/null)" ]] \
+    && pass "G227 a refusal over a FIFO in hooks/ ($k227) leaves no temporary file" \
+    || fail "G227 FIFO $k227 (rc=$LAUNCH_RC; left: $(ls -A "$TMP/t227" | tr '\n' ' '); $(grep -F ERROR "$ERR" | head -1))"
+done
+rm -rf "$PROJ/r227" "$TMP/t227"
+
 # ── G195: a repository protected with no placeholder is found again ───────────
 # One whose config sets core.worktree gets no ./ (GIT-73), and the ./ was what
 # found a protected git directory again once a session had moved its HEAD

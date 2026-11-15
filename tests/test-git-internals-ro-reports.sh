@@ -425,5 +425,29 @@ mkdir "$TMP/Cs121" && if [[ ! -d "$TMP/CS121" ]]; then
 fi
 rmdir "$TMP/Cs121"
 
+# ── G229: a slow config does not hide what the session made ──────────────────
+# The check after a session reads a new repository's index for its object
+# format from its config. A read of that config cut off at the rescan's 2 s
+# bound is taken for no answer, sha1, and the index is read all the same: an
+# embedded repository it records under vendor/, which the rescan does not walk,
+# is named, its config setting core.fsmonitor (GAP-2's whole-file run, batch 3,
+# item 8).
+REAL_GIT229="$(command -v git)"; mkdir -p "$TMP/sg229"
+cat > "$TMP/sg229/git" <<'SLOWGIT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == config && "${2:-}" == --file && "${3:-}" == "$SLOW229_CFG" && "${4:-}" == extensions.objectformat ]]; then sleep 4; fi
+exec "$SLOW229_GIT" "$@"
+SLOWGIT
+chmod +x "$TMP/sg229/git"
+S229="$PROJ/s229"; g229='git -c user.email=t@example.invalid -c user.name=t -c init.defaultBranch=main'
+sess229="$g229 init -q '$S229' && $g229 init -q '$S229/vendor/e' && $g229 -C '$S229/vendor/e' commit -q --allow-empty -m e"
+sess229+=" && $g229 -C '$S229/vendor/e' config core.fsmonitor ./fsm && $g229 -C '$S229' add vendor/e 2>/dev/null"
+SLOW229_CFG="$S229/.git/config" SLOW229_GIT="$REAL_GIT229" PATH="$TMP/sg229:$PATH" FAKE_SESSION="$sess229" launch ..
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF 'WARNING: the writable mounts could not all be searched' "$ERR" \
+  && grep -qF "$S229/vendor/e/.git (config: core.fsmonitor" < <(grep -A6 -F 'WARNING: the session made git repositories in a writable mount' "$ERR") \
+  && pass "G229 a repository the session's new index records is named, though its config was slow to read" \
+  || fail "G229 slow config in the rescan (rc=$LAUNCH_RC; $(grep -A6 -F 'WARNING: the session' "$ERR" | tr '\n' ' '))"
+rm -rf "$S229" "$TMP/sg229"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
