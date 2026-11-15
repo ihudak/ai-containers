@@ -1556,9 +1556,11 @@ ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
 world; A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'
 N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"; printf '%s/\n' "$N" >> "$ENG/projects.conf"
 mvrun "$A" "$N" --yes; rc=$?
-ok "mv into a <new-dir> registered already warns first, naming its IMAGE_NAME" \
-  bash -c '[ "$1" = 0 ] && [ "$(sed -n 2p "$2")" = "WARNING: $3/ is a registered project already, IMAGE_NAME img-alpha: mv takes its .ai-containers" ]' \
-  _ "$rc" "$TMP/out" "$N"
+if [[ "$rc" == 0 && "$(sed -n 2p "$TMP/out")" == "WARNING: $N/ is a registered project already, IMAGE_NAME img-alpha: mv takes its .ai-containers" ]]; then
+  pass "mv into a <new-dir> registered already warns first, naming its IMAGE_NAME"
+else
+  fail "mv into a <new-dir> registered already warns first, naming its IMAGE_NAME (rc=$rc; lines 1-3: $(sed -n 1,3p "$TMP/out" | tr '\n' '|'))"
+fi
 ok "  … and leaves one projects.conf line for it, as it was spelled" bash -c '[ "$(cat "$1")" = "$2/" ]' _ "$ENG/projects.conf" "$N"
 world; A="$W/alpha"; mvproj "$A"; N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"
 printf '/x/other\n%s/\n' "$N" > "$ENG/projects.conf"
