@@ -1,6 +1,6 @@
 # Feature-gaps review — 2026-10-26
 
-- **Review date:** 2026-10-26 (statuses updated through 2026-11-14)
+- **Review date:** 2026-10-26 (statuses updated through 2026-11-15)
 - **Last reviewed commit:** `bec1c57` (`bec1c5737acdc549143e2c55e4a4b945ae27a287`, main, 2026-10-18 — "Merge pull request #312")
 - **Scope:** every design, plan and backlog in the repository, wherever written — `docs/superpowers/specs/`, `docs/superpowers/plans/`, the follow-up and falsify backlogs, `tests/falsify/survivors.txt` / `targets.conf`, AGENTS.md, README.md, `docs/`, CHANGELOG.md, and TODO/deferred/follow-up markers in code.
 - **Companion:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md) (defects; doc errors that mislead users are filed there as `DOC-*`).
@@ -384,6 +384,119 @@ A gap is something a design promised that is not in the code at the reviewed com
   - `sandbox.sh:return-flip:4924778e…`, `_q()` returning 1 after it printed the name: equivalent. Each of its 85 calls is a command substitution inside an argument of `printf`, whose status nothing reads.
   - `sandbox.sh:cmp-flip:58aa6fab…`, `_q()`'s loop made `qi > ${#1}`, so it never runs: the loop is not reached on Linux. `_q()` sets `LC_ALL=C`, where `printf %q` writes every byte outside printable ASCII as an octal escape, so `_term` changes nothing and the early return is always taken (15 names tried under three locales, bash 5.3.20). T52 accepts the octal form or the `\xHH` form, so it passes either way. **For a Mac** (with PLAT-10): with the bash the suite runs there (5.1 or later, not `/bin/bash`), run `LC_ALL=C bash -c 'printf "%q\n" "$(printf "a\342\200\256b")"'`. If it prints the octal escapes, the loop is dead there too and the mutant is equivalent everywhere. If it prints the bytes raw, the loop runs on macOS, and T52 should then require the `\xHH` form there.
   - Ten more match equivalents that slices 3 and 4 recorded, the same line and the same damage. The Linux agent writes them up with the run's record.
+
+#### GAP-2, the whole-file run: batch 3 of its survivors, for the WSL native agent
+
+- **Status: OPEN** (handed over 2026-11-15 by the Linux agent, as batches 1 and 2 were). Base: `origin/main` at `4e332af`, which has LNCH-26's fix.
+- **What this is:** survivors 56 to 99 of the same measurement, 44 of them, read when it stood at 1,890 of 3,312 mutants (1,755 killed, 101 survived, 34 unproven). 26 are owed a check, in eight items; 18 are recorded at the end as equivalent, with the reason. Every line quoted below reads the same at `14f42bd`, where the run measures, and at `4e332af`.
+- **Rules:** those of batch 1, with these numbers.
+  - **New checks** from **G219** in the `tests/test-git-internals-ro-*.sh` files and **T80** to **T84**, then T86 to T89, then from T91, in `tests/test-launcher-dir-ro.sh`. Batch 2 took G215 to G218 and T79; T85 is LNCH-26's and T90 is LNCH-27's, which also rewrote T42 in `tests/test-launcher-dir-ro.sh` and G118 in `tests/test-git-internals-ro-reads.sh`. No item below touches those.
+  - **A product bug** found on the way is GIT-95 or later, or LNCH-28 or later, as for batch 2.
+  - **"Run on Linux"** below means: on 2026-11-15, at `4e332af`, the layout was built on `tests/lib-git-internals-ro.sh`, launched once with the unchanged launcher and once with the damage named, and the two launches' stderr and mounts compared. No check was written. "Not run" means read from the code only.
+  - Demonstrate, do not score. No entries in `tests/falsify/survivors.txt`. Results in this section, one line per item.
+- **Item 1: nine mutants in `_gdi_points_back()`, two checks.** Both layouts were run on Linux.
+  - **Where:**
+    ```bash
+    _gdi_points_back() {
+      local _pb_v="" _pb_d=""
+      [[ -f "$1" ]] || return 1
+      _git_ptr_read "$1" _pb_v || return 1
+      [[ "$_pb_v" == "gitdir: "* ]] || return 1
+      _cd_phys _pb_d "${1%/*}" "${_pb_v#gitdir: }" || return 1
+      [[ "$_pb_d" == "$2" ]]
+    }
+    ```
+  - **Seven that make it say no to every `.git`:**
+    - `sandbox.sh:cond-negate:5e6161b0925be29b1a4a3cb8d867e1353a3a4db6`: `[[ ! -f "$1" ]] || return 1`.
+    - `sandbox.sh:logic-flip:5e6161b0925be29b1a4a3cb8d867e1353a3a4db6`: `[[ -f "$1" ]] && return 1`.
+    - `sandbox.sh:logic-flip:d53937aa6467bf6a7cae87bde1eca354707229aa`: `_git_ptr_read "$1" _pb_v && return 1`.
+    - `sandbox.sh:cond-negate:432db7d428fdc80403f70c0e9198949f955d9247`: `[[ ! "$_pb_v" == "gitdir: "* ]] || return 1`.
+    - `sandbox.sh:cmp-flip:432db7d428fdc80403f70c0e9198949f955d9247`: `[[ "$_pb_v" != "gitdir: "* ]] || return 1`.
+    - `sandbox.sh:logic-flip:432db7d428fdc80403f70c0e9198949f955d9247`: `[[ "$_pb_v" == "gitdir: "* ]] && return 1`.
+    - `sandbox.sh:logic-flip:67e0170b502f46e8fae02b2a7ff701eeff9e8272`: `_cd_phys _pb_d "${1%/*}" "${_pb_v#gitdir: }" && return 1`.
+  - **Why they survive:** where the checkout's `.git` is a regular file, the scan follows that file anyway (it joins `_gdi_files`, and `_gdi_follow()` then records the checkout as a referrer and has the git directory read again). So G146's checkout under `node_modules` is reached with the function or without it. A `.git` that is a link to such a file is only named, never followed: there the function alone reaches the checkout.
+  - **A layout:** G146's worktree `aw146` under `node_modules`, with its submodule, and its `.git` file moved out of the mount with a link left in its place: `mv "$PROJ/node_modules/aw146/.git" "$TMP/gf146" && ln -s "$TMP/gf146" "$PROJ/node_modules/aw146/.git"`.
+  - **What it gives:** the unchanged launcher mounts the submodule's config read-only (`$PROJ/node_modules/aw146/sub/.git/config:/workspace/proj/node_modules/aw146/sub/.git/config:ro`) and prints no `no worktree is known for $PROJ/.git/worktrees/aw146`. With the first of the seven, and with the sixth, the mount is gone and that line is printed (run). The other five were not run: by the code each returns 1 for every `.git` that names the directory back. Every damage is quoted here as the damaged line reads.
+  - **Two that take a decoy for the checkout** (GIT-57 again, for a decoy that has a `.git` file):
+    - `sandbox.sh:return-flip:432db7d428fdc80403f70c0e9198949f955d9247`: `[[ "$_pb_v" == "gitdir: "* ]] || return 0`. A `.git` file that holds anything but a `gitdir:` line points back.
+    - `sandbox.sh:return-flip:67e0170b502f46e8fae02b2a7ff701eeff9e8272`: `_cd_phys _pb_d "${1%/*}" "${_pb_v#gitdir: }" || return 0`. A `.git` file naming a directory that cannot be entered points back.
+  - **A layout:** G146's decoy check rewrites the worktree's `gitdir` to name a directory with no `.git` in it. Do the same with a directory under `node_modules` that holds a `.git` file: once holding `x`, once holding `gitdir: ` and a path outside every mount that is not there.
+  - **What it gives:** the unchanged launcher prints `no worktree is known for $PROJ/.git/worktrees/aw146` both times. The first damage is silent for the `x` file and the second for the path that is not there (both run): the decoy silences the warning, and the real checkout goes unread.
+  - **The tenth mutant of those four lines** differs only in the rescan after the session: item 8.
+- **Item 2: six mutants in `_path_gone()`, two assertions.** Both were run on Linux.
+  - **Where:** the end of its loop:
+    ```bash
+        if [[ ! -e "$_pg_p/$_pg_c" && ! -L "$_pg_p/$_pg_c" ]]; then [[ -x "${_pg_p:-/}" ]]; return; fi
+        _pg_p="$_pg_p/$_pg_c"
+        [[ -d "$_pg_p" && ! -L "$_pg_p" ]] || return 1
+      done
+      return 1
+    ```
+  - **What the function decides:** only whether the `no worktree is known` warning adds `Its gitdir names <checkout>, which is not there` and the `git worktree prune` that stops it. G156 checks that those lines are printed for a checkout that is gone. Nothing checks that they are absent for one that is there.
+  - **Four that call a checkout that is there gone:**
+    - `sandbox.sh:cond-negate:9efca30a7725c129b06acbf8c6253103e6f4e359`, twice: `if ! [[ ! -e … && ! -L … ]]; then` and `if [[ ! ! -e … && ! -L … ]]; then`.
+    - `sandbox.sh:logic-flip:9efca30a7725c129b06acbf8c6253103e6f4e359`: `if [[ ! -e … || ! -L … ]]; then`.
+    - `sandbox.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db`: the last line, `return 1`, turned `return 0`. That hash is of the text `return 1`, which many lines share; the run's record names this one by its place, as it did batch 2's.
+  - **An assertion:** G146's decoy check (the `gitdir` rewritten to `$PROJ/.git/worktrees/.git`) already has the launch. Add that stderr holds no `which is not there`. The unchanged launcher prints the warning without it; with the first form of the first and with the last, the line is printed (run). The other two were not run: by the code both answer "gone" at the first component that exists and is no link.
+  - **Two that call a path through a link gone:**
+    - `sandbox.sh:logic-flip:85d377a8d58a7108ec9040076b98a2ff143bfc47`: `[[ -d "$_pg_p" || ! -L "$_pg_p" ]] || return 1`.
+    - `sandbox.sh:return-flip:85d377a8d58a7108ec9040076b98a2ff143bfc47`: `[[ -d "$_pg_p" && ! -L "$_pg_p" ]] || return 0`.
+  - **A layout:** the worktree's `gitdir` naming `$TMP/lnk146/missing/.git`, where `$TMP/lnk146` is a link to a directory. The unchanged launcher prints `no worktree is known` and no `which is not there`: a link on the way is not "gone". With either damage the line is printed (both run).
+- **Item 3: an index entry through a link to a directory you cannot search.** The layout was run on Linux.
+  - **Where:** `_gdi_blocked()`: `if [[ -L "$_gb_p" ]] && _in_writable "$_gb_p"; then return 1; fi`.
+  - **The survivor:** `sandbox.sh:return-flip:ef633bd0434653b30e491fdb194302fc0e6dee64`, that `return 1` turned `return 0`.
+  - **What it does:** one caller reads the answer, in the loop over an index's gitlinks: `if [[ -d "$co" && ! -L "$co" && ! -x "$co" ]] && _gdi_blocked "$co" "$5"; then continue; fi`. With the damage, a recorded submodule whose path goes through a link in the mount and ends at a directory you cannot search is passed over as if `_gdi_blocked()` had protected it, though it returned at the link and protected nothing. The WARNING that follows that line is lost.
+  - **A layout:** in the project, `mkdir real`, a clone at `real/sub`, `ln -s real l`, the index entry `git update-index --add --cacheinfo "160000,$(printf '%040d' 1),l/sub"` (as G146 writes one), then `chmod 000 real/sub`. Not as root, which searches any directory: G153 has the guard.
+  - **What it gives:** the unchanged launcher prints `WARNING: submodule $PROJ/l/sub of $PROJ/.git is not where its index says`. The damaged one does not (run). Both print that `real/sub` cannot be listed and is mounted read-only, which the scan finds on its own.
+- **Item 4: two warnings of `_gd_resolve()`.** Both layouts were run on Linux.
+  - **A path that is not there, outside every mount.** `sandbox.sh:cond-negate:02068a20b9c3a5b3e008f411d8dee53d2c14a2cb`: `if ! _in_writable "$_gr_lex" || _in_writable "$_gr_c"; then`. With it, a `.git` file naming a directory that is not there and lies outside every writable mount gets `names …, which does not exist; if the agent makes it, your host's git`, though the agent cannot make it, and the path joins what the rescan looks at again. Every check of that warning names a path inside a mount. **A layout:** a directory in the project whose `.git` holds `gitdir: $TMP/nowhere`. The unchanged launcher prints no `which does not exist`; the damaged one does (run).
+  - **A link inside the mount, on a path that reads as outside.** `sandbox.sh:logic-flip:d9a5b458f1c75fd24e32da4527422b3bf177d63f`: on the line `&& { _in_writable "$_gr_lex" || _in_writable "$_gr_ld"; } && (( ++_gdi_warned <= 5 )); then`, the `||` turned `&&`. With it, the warning `reaches … through a link inside the mount, which the agent can repoint` is lost where the path as written, its `..` taken by name, lies outside every writable mount while the link it goes through lies inside one. **A layout:** directories `$TMP/realb/x/y`, a bare repository `$TMP/realb/gd`, a link `$PROJ/lb` to `$TMP/realb/x/y`, and `$PROJ/b/.git` holding `gitdir: $PROJ/lb/../../gd`. By name that is `$TMP/gd`, outside the mount; the kernel takes it to `$TMP/realb/gd`. The unchanged launcher prints `WARNING: $PROJ/b/.git reaches $TMP/realb/gd through a link inside the mount`; the damaged one prints nothing for it (run).
+- **Item 5: a fast read charged to the budget for slow ones.** Run on Linux with G99's harness.
+  - **Where:** `_rd_run()`: `if (( ms > _rd_secs * 1000 )) && [[ -n "$_rd_dir" ]]; then`.
+  - **The survivor:** `sandbox.sh:logic-flip:e477e723128d58f59a7f60b270f7442453f79bf9`, the `&&` turned `||`.
+  - **What it does:** every read, however fast, adds its milliseconds to the count of the launch's slow reads, so a launch with many reads loses the longer bound without one slow read. And with nowhere to count (`_rd_dir` empty), a slow read tries to write `/spent`.
+  - **A check:** in G99 (`tests/test-git-internals-ro-reads.sh`), after an ordinary `_rd 4096` of a small file read through `< <( )` as its last check does, the `ai-launcher-read.*` directory holds no `spent`. Seen with the functions extracted as G99 extracts them: the unchanged function leaves none, the damaged one leaves a `spent` holding `3`.
+- **Item 6, low: a temporary file left behind by a refusal.** The layouts were not run.
+  - **Where:** `_ro_fifo_search()`, where it refuses a FIFO or device:
+    ```bash
+        if [[ "${h,,}" == commondir ]]; then _cd_way_out "${fx%/*}"
+        else printf '       Remove it on the host (rm %s).\n' "$(_q "$fx")" >&2; _ptr_say "$fx"; fi
+        rm -f "$ferr"; exit 1
+    ```
+  - **The survivors:**
+    - `sandbox.sh:return-flip:f6b1aac7ce008f84dcdec5306657d562fed2707b`: in `_cd_way_out()`, the `return 0` of `if _cd_refs_loc "$1"; then _cd_refs_say commondir; return 0; fi` turned `return 1`.
+    - `sandbox.sh:return-flip:06d3d9b2060dd51343d5f19f0e531f15c507e3d1`: in `_cd_way_out()`, the `return 0` after `cannot be entered by a command printed here`, turned `return 1`. That hash is of the text `return 0`, which many lines share; the run's record names this one by its place.
+    - `sandbox.sh:return-flip:93b621ad1325e816cf4c0f3e660af0ca1fad1778`: in `_ptr_say()`, the `return 0` of `_cd_wt_loc "${1%/*}" || return 0` turned `return 1`.
+  - **What they do:** errexit is on at that call, so a helper that returns 1 ends the launcher before `rm -f "$ferr"`. The refusal reads the same and the exit status is 1 either way, but an `ai-launcher-find.*` file stays in `TMPDIR`. At every other call of the two helpers nothing differs: an `exit 1` follows at once, or `_rd_fail()` calls them with errexit off.
+  - **Layouts to try,** each a FIFO inside a protected repository's `hooks/`: one named `gitdir` (third survivor); one named `commondir` in `hooks/refs/` (first); one named `commondir` in a directory under `hooks/` whose name ends in a newline (second). After each refusal, `TMPDIR` holds no `ai-launcher-find.*`. The brief's reviewer read that each reaches that call, with no earlier refusal, and that no EXIT trap removes the file.
+  - **If you judge them not worth three checks,** record the three as a gap left open, with this reason. They are not equivalent.
+- **Item 7, to decide: `_cd_under_ro()` and a mount that does not hold the directory.** Not run.
+  - **Where:**
+    ```bash
+        [[ "$1" == "${bsrc[_ur_i]}" || "$1" == "${bsrc[_ur_i]}"/* ]] || continue
+        _ur_at="${bdst[_ur_i]}${1#"${bsrc[_ur_i]}"}"
+    ```
+  - **The survivors:** `sandbox.sh:cond-negate:e5ecbfae1341a5738e598b9db1b763f15f007d87` (`[[ ! "$1" == …`) and `sandbox.sh:cmp-flip:e5ecbfae1341a5738e598b9db1b763f15f007d87` (the first `==` turned `!=`), which are one program.
+  - **What differs, by the Linux agent's reading:** a writable mount whose root is the directory is skipped, which changes nothing: no overlay of a mount covers its own root, and an outer mount that holds the directory still answers. And a writable mount that does not hold the directory is no longer skipped. The directory's whole host path is then appended to that mount's destination and compared with the read-only overlays, so the answer is "under a read-only overlay" only where that mount has an overlay at the same relative path as the directory's absolute host path: a launcher planted at `<other mount>/tmp` for a repository under `/tmp`. `_cd_way_out()` then withholds its `rm commondir` command. (The whole path is appended only where the directory's path does not begin with that mount's source as text, at a `/` or not: `${1#…}` cuts such a beginning off.)
+  - **To decide:** build that layout on a refusal that prints the command (`tests/test-git-internals-ro-wayout.sh` has them), with the planted launcher named after the first component of `$TMP`, or record the two as a gap left open with this reason. Not equivalent. The refusal must be `_git_cd_check()`'s, which runs once the overlays are known (a `commondir` holding a value git does not write, such as `../x`): until then `_cd_under_ro()` returns 2 before it reaches the line, and a refusal over a read (a NUL in the `commondir`) comes that early.
+- **Item 8, to decide: two that differ only in the rescan after the session.** Not run. Both were found by the brief's reviewer, by reading.
+  - **Why only there:** in a launch a read that fails signals the launcher (`_rd_fail()`), whose trap ends it before the damaged `return` matters. `_git_after_session()` sets `trap '_gas_cut=1' USR1` instead and goes on, so there the status is read.
+  - **A read cut off, taken for read.** `sandbox.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db`: the `return 1` after `_rd_fail` at the end of `_rd_run()`, turned `return 0` (the hash of the text `return 1`, as in item 2; named by its place). `_git_index_read()` takes the object format by `fmt="$(_git_file_config "$fcfg" extensions.objectformat 2>/dev/null)" || fmt=sha1`. Unchanged, a read cut off there gives `sha1`, the index is read and its gitlinks are followed. Damaged, `fmt` is empty or cut short, the index is not read, and a git directory that only that index records is not named among those the session made. Both print that the search was cut short.
+  - **A layout to try:** the session (the `FAKE_SESSION` hook of `tests/lib-git-internals-ro.sh`, as G94 uses it) makes a repository whose index records `vendor/e`, an embedded `.git` that sets `core.fsmonitor`. A `git` put first on `PATH`, as G99 builds one, sleeps past 2 s when asked for `extensions.objectformat` of that repository's config; the rescan's bound is 2 s. Assert that the rescan names `vendor/e/.git`.
+  - **A `.git` file that cannot be read, taken for one that points back.** `sandbox.sh:return-flip:d53937aa6467bf6a7cae87bde1eca354707229aa`: in `_gdi_points_back()`, the `return 1` of `_git_ptr_read "$1" _pb_v || return 1` turned `return 0`. In the rescan, a checkout under `node_modules` whose `.git` holds `gitdir: `, its worktree's directory and then a NUL is taken for that worktree's checkout, and the submodules its index records are followed. Unchanged, it is not: the read of that file fails (a NUL), and following it reads nothing. So the damaged rescan names more, a submodule's embedded `.git` that sets `core.fsmonitor`, and both say the search was cut short.
+  - **To decide:** write the first, which pins that a slow config does not hide what the session made. For the second, pin what the rescan names for such a file, or record it as a gap left open with this reason. Neither is equivalent.
+- **Read on Linux and recorded here, no test owed** (18). Each line is quoted as the code has it, with what it was turned into:
+  - `sandbox.sh:logic-flip:64a93b77b04be8c139b7dc1ed83e541d1df17fd9`, the `&&` of `[[ -f "$1/objects" && -f "$1/refs" ]] || return 1` in `_gdi_loose_refs()` turned `||`: equivalent. The `find` two lines below needs both to be regular files, so only `_gdi_cost` grows, and the scan reads that count only for a directory it did not take as a git directory, which this one then is.
+  - `sandbox.sh:return-flip:9c298e9994c67792c298935002b5abcdaa226d3e`, the `return 0` of the second `_cd_refs_loc` line of `_cd_way_out()` turned `return 1`: equivalent by reading. Item 6's call is the only one where the status matters, and its directory comes from `find` under a physical source, so the first `_cd_refs_loc` line has answered for the same path.
+  - `sandbox.sh:logic-flip:d3fd60eb53c866ad32da4be9138ca56a88dcd7dd`, `_git_ptr_read "$1/commondir" _gcc_c || true` in `_git_cd_check()` turned `&& true`: equivalent. A command that fails before `&&` does not fire errexit, and the next line runs either way.
+  - `sandbox.sh:logic-flip:d24a9406234ce82acf1a9c06e867582433d9b0e9`, three lines: `kill -s USR1 "$$" 2>/dev/null || true` turned `&& true`, in `_rd_fail()` and twice in `_disk_spell()`: equivalent. In `_disk_spell()` an `exit 1` follows each. In `_rd_fail()` it is the last command, so the function returns `kill`'s status: a signal to the launcher's own pid does not fail while it runs, and no caller acts on that status (`_rd_run()` has errexit off, and `_git_ptr_read()` returns 1 next).
+  - `sandbox.sh:return-flip:a520824468c27aa4003455b9bbe1342c8d9cde6b`, `sandbox.sh:return-flip:240245d178871090bd7ddf9e990302ace2033d40` and `sandbox.sh:return-flip:04a39d86a7172cfd72e454620a31d5ff4c4cdbb8`, the three `return 0` of `_rd_left()` turned `return 1`: equivalent. Its only caller, `_rd_run()`, turns errexit off first and reads `_rd_lim`, which is set before each return. Run with G99's harness in its `nodir`, `nook` and `spentdir` modes and with a count line that is no number: the file is read whole each time.
+  - `sandbox.sh:return-flip:810458f5cd7bd947cb435ec34f4e85d9564123dd` and `sandbox.sh:return-flip:271439d33cd18d82c5c522e7fa18c592a226ac97`, the two `_rd_fail "$1" odd; return 1` of `_git_ptr_read()` turned `return 0`: equivalent by reading. The value it hands back is empty by then, and every caller that reads the status gets the same answer from the empty value, in the rescan too. (Item 8's is a different damage, in `_gdi_points_back()`'s own line.)
+  - `sandbox.sh:return-flip:b286dc0804140e67efeea154e7416166d13312e6`, the `return 1` of `[[ "$1" == /* ]] || return 1` in `_ci_path()` turned `return 0`: equivalent. Both callers pass an absolute path.
+  - `sandbox.sh:return-flip:5e5d4a86ca27dfc3db707f5d28c123a649877acc`, the `return 0` of `[[ -n "$_ds_k" ]] || return 0` in `_disk_spell()` turned `return 1`: equivalent. Only `_spell_rec()` can pass an empty path, and it reads no status. It runs inside `_walk_exposed()`, which every caller runs as a condition, where errexit is off, and, since LNCH-27, once in `launcher_ro_overlay()` under errexit, on where a mounted host path's way ends: that path has just been found to be the directory the launch bound (`-ef`), and for a directory what is passed on is the path itself, never empty. Only a path whose first component is, by then, no directory, or is a link when it is the whole path, would be passed on empty, and the damaged launcher would then end without a message.
+  - `sandbox.sh:return-flip:7efad11ba695484504de3ae094a48e9b0f2d9a66`, two lines: the `exit 1` after each `kill -s USR1 "$$"` in `_disk_spell()`, turned `exit 0`: equivalent by reading. The launcher is signalled first: in its own shell the trap ends it before that line, and a subshell's status changes nothing once the launch is refused. That hash is of the text `exit 1`; batch 1's item 4 is another line with it.
+  - `sandbox.sh:return-flip:224cda92933450ab841d11ef647062efc67ac178` (the `return 1` of `[[ -d "$_gb_p" ]] || return 1`) and `sandbox.sh:return-flip:17123d118c2fd2ce2bf87d6a0853a406a98575b3` (that of `[[ -n "$_gb_b" ]] || return 1`) in `_gdi_blocked()`, each turned `return 0`: equivalent. Neither line has a side effect, and the one caller that reads the status passes a directory that is there and cannot be searched, where the walk ends with `_gb_b` set and neither line returns.
+  - `sandbox.sh:logic-flip:2e790f8941dab744a044b03fcd8d5f903472860a`, the `&&` of `[[ -n "${uid:-}" && -n "${gid:-}" ]]` in `_gdi_blocked()` turned `||`: equivalent by reading, with one exception left as it is. `launcher_ro_overlay()` sets the two together as locals. The rescan declares neither, so the two differ only when exactly one of lower-case `uid` and `gid` is set where the rescan runs (exported by the launching shell, or set in `sandbox.local.env`): the damaged test then runs `find` with an empty id, which fails and prints nothing, and an unsearchable directory is not named.
 
 
 ### GAP-3: Container-side firewall and capture scripts have no hermetic oracle; entrypoint.sh's row is stale
