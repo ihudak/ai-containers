@@ -181,6 +181,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`repo.sh gc` keeps another home's working copies.** It removed every
+  `:rwcopy` working copy by default, and on a docker daemon several homes
+  share (Docker Desktop's, by every WSL distro, or several users') that took
+  another home's, unpushed work and all. It now reads each copy's
+  `ai-containers.owner` label and removes only this home's by default.
+  Another home's copy, and an unlabelled one (made before the label, so
+  possibly another's), are listed and kept unless `gc --all` is given; every
+  copy made before this release is unlabelled, so the first clean-up takes
+  `--all`. `repo.sh list --copies` shows each copy's owner. Asking makes no
+  `project-id.key`.
+
+- **`repo.sh` prints what a volume label holds with its control bytes
+  replaced**: `list`, `list --copies`, `gc`, `reindex`, and the summaries and
+  refusals that name another repo's label. And `reindex` leaves out, saying
+  so, a volume whose labels `repos.conf` cannot hold as written (a name that
+  is no repo name, a type other than git or path, a source holding `|` or a
+  line break): the registry is one line per repo, split at `|`.
+
+- **`project.sh mv` reads `EXTRA_MOUNTS` and `REPOS` from your shell too.**
+  The launcher reads an exported `EXTRA_MOUNTS` or `REPOS` over the project's
+  `sandbox.local.env`, and `mv` checked only the file: a `<new-dir>` whose
+  basename an entry in the shell's list also has passed, and every launch
+  from it failed. `mv` now checks both lists for that clash and for relative
+  entries. And when the shell's `EXTRA_MOUNTS` does not mount the old
+  directory read-write, the line `mv` adds to `sandbox.local.env` is not the
+  one the launcher reads: `mv` says so before the question and again at the
+  end, since it cannot change your shell.
+
+- **`verify-on-host.sh` runs the bash-floor suite from a git worktree.** The
+  floor container mounts the checkout alone, and a linked worktree's `.git`
+  names its git directory under the main checkout's `.git`, outside that mount,
+  so git in the container found no repository and the floor suite died at its
+  first git call (exit 128). Phase 5 now gives the container that git
+  directory too, read-only like the checkout, at the path the `.git` names, and
+  so for a `.git` link; a relative one that stays inside the checkout needs
+  nothing more. What it cannot give fails the phase before docker, naming why:
+  a submodule checkout, or any git directory that sets `core.worktree` (it
+  leads back to a checkout the container has at `/w` instead; run it from the
+  superproject or a clone), a relative pointer out of the checkout or through
+  a link with an absolute target, one with `.` or `..` in it, and one outside
+  the git directory git uses. What a `.git` holds is printed with its
+  control bytes replaced.
+
 - **A checkout named through a link outside the mounts is protected when it
   cannot be searched.** A checkout the agent has made `chmod 000` is mounted
   read-only whole and named, with the `chmod` that restores it, so that it

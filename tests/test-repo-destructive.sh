@@ -46,6 +46,18 @@ check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected '$2', g
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'export HOME="$REAL_HOME"; rm -rf "$TMP"' EXIT
+# SIGPIPE ignored, as GitHub's hosted runners start every step: a reader that
+# stops early then shows as "write error: Broken pipe" in repo.sh's output here
+# too, not only in CI (project.sh: `prj_roots()` has the story).
+trap '' PIPE
+
+# This HOME's id, which a launch labels each working copy with (ai-containers.owner,
+# sandbox-common.sh: ai_containers_owner_id()), from one fixed key every world
+# gets: gc removes only this home's copies by default, so the world's are.
+OWN_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+mkdir -p "$TMP/keyhome/.ai-containers" && printf '%s\n' "$OWN_KEY" > "$TMP/keyhome/.ai-containers/project-id.key"
+OWN_ID="$(HOME="$TMP/keyhome" bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1 && ai_containers_owner_id' _ "$ENGINE_DIR")"
+[[ "$OWN_ID" == sha256:* ]] || { printf 'SCAFFOLD-FAILED: no owner id (%s)\n' "$OWN_ID"; exit 1; }
 
 # ── the fake docker ───────────────────────────────────────────────────────────
 # Deliberately minimal, and deliberately RECORDING. `volume rm` is the whole
@@ -219,6 +231,7 @@ chmod +x "$FAKE_BIN/docker"
 # state a fresh checkout is in — the one a provisioning script meets first.
 setup_empty_world() {
   export HOME="$TMP/home"; rm -rf "$HOME"; mkdir -p "$HOME/.ai-containers"
+  ( umask 077; printf '%s\n' "$OWN_KEY" > "$HOME/.ai-containers/project-id.key" )
   rm -rf "$VOLS"; mkdir -p "$VOLS"
   : > "$DOCKER_LOG"; : > "$INUSE"
   : > "$HOME/.ai-containers/repos.conf"
@@ -229,6 +242,7 @@ setup_empty_world() {
 # with the subject's — which is the shape a substring filter gets wrong.
 setup_world() {
   export HOME="$TMP/home"; rm -rf "$HOME"; mkdir -p "$HOME/.ai-containers"
+  ( umask 077; printf '%s\n' "$OWN_KEY" > "$HOME/.ai-containers/project-id.key" )
   rm -rf "$VOLS"; mkdir -p "$VOLS"
   : > "$DOCKER_LOG"
   : > "$VOLS/ai-containers-repo-docs"
@@ -246,7 +260,7 @@ setup_world() {
       > "$VOLS/ai-containers-repo-$b.labels"
   done
   for wc in docs--wc-projA docs--wc-projB docs-archive--wc-projA; do
-    printf 'ai-containers.repo=%s\nai-containers.launch-dir=/tmp/%s\n' "${wc%%--wc-*}" "$wc" \
+    printf 'ai-containers.repo=%s\nai-containers.launch-dir=/tmp/%s\nai-containers.owner=%s\n' "${wc%%--wc-*}" "$wc" "$OWN_ID" \
       > "$VOLS/ai-containers-repo-$wc.labels"
   done
   {
@@ -339,7 +353,9 @@ run_repo rm docs --yes
 setup_world
 : > "$VOLS/ai-containers-repo-docs--wc-ui"
 printf 'ai-containers.repo=docs--wc-ui\nai-containers.type=git\n' > "$VOLS/ai-containers-repo-docs--wc-ui.labels"
-run_repo gc --yes
+# --all here and below: without it gc keeps every volume with no owner label
+# whatever it takes it for, and these ask what it takes a volume for.
+run_repo gc --all --yes
 [[ -f "$VOLS/ai-containers-repo-docs--wc-ui" ]] && pass "gc does not take a base volume for a working copy" \
   || fail "gc removed the base volume of repo docs--wc-ui ($(removed))"
 # …nor an UNLABELLED one, from before labels, when the registry has that repo
@@ -349,13 +365,13 @@ setup_world
 : > "$VOLS/ai-containers-repo-docs--wc-ui"
 printf 'docs--wc-ui|git|git@x:docs--wc-ui.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
 rm -f "$VOLS"/ai-containers-repo-docs--wc-projA.labels
-run_repo gc --yes
+run_repo gc --all --yes   # --all: unlabelled copies are kept without it, and this is about which volume is a copy
 [[ -f "$VOLS/ai-containers-repo-docs--wc-ui" && ! -f "$VOLS/ai-containers-repo-docs--wc-projA" ]] \
   && pass "gc leaves an unlabelled base volume the registry names, and still collects an unlabelled working copy" \
   || fail "gc and unlabelled volumes (removed: $(removed))"
 # …and so does every command that collects ONE repo's working copies: rm, reset
 # and gc --repo of docs deleted docs--wc-ui's base (review of REPO-12).
-for cmd in "rm docs --yes" "reset docs --yes" "gc --repo docs --yes"; do
+for cmd in "rm docs --yes" "reset docs --yes" "gc --repo docs --all --yes"; do
   setup_world
   : > "$VOLS/ai-containers-repo-docs--wc-ui"
   printf 'docs--wc-ui|git|git@x:docs--wc-ui.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
@@ -369,16 +385,16 @@ done
 setup_world
 : > "$VOLS/ai-containers-repo-docs--wc-ui"; : > "$VOLS/ai-containers-repo-docs--wc-ui--wc-x_12345678"
 printf 'docs--wc-ui|git|git@x:docs--wc-ui.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
-run_repo gc --repo docs --yes
+run_repo gc --repo docs --all --yes
 docs_kept="$([[ -f "$VOLS/ai-containers-repo-docs--wc-ui--wc-x_12345678" ]] && echo yes || echo no)"
-run_repo gc --repo docs--wc-ui --yes
+run_repo gc --repo docs--wc-ui --all --yes   # its copy is unlabelled
 [[ "$docs_kept" == yes && ! -f "$VOLS/ai-containers-repo-docs--wc-ui--wc-x_12345678" && -f "$VOLS/ai-containers-repo-docs--wc-ui" ]] \
   && pass "an unlabelled copy of a legacy repo is that repo's, not docs'" \
   || fail "the legacy repo's own copy (kept by gc --repo docs: $docs_kept; removed: $(removed))"
 setup_world
 : > "$VOLS/myprj-repo-lib--wc-t"; printf 'ai-containers.repo=lib\n' > "$VOLS/myprj-repo-lib--wc-t.labels"
 : > "$VOLS/prj-repo-lib--wc-t"; printf 'ai-containers.repo=lib\n' > "$VOLS/prj-repo-lib--wc-t.labels"
-REPO_VOLUME_PREFIX=prj run_repo gc --yes
+REPO_VOLUME_PREFIX=prj run_repo gc --all --yes   # both copies unlabelled: --all
 [[ -f "$VOLS/myprj-repo-lib--wc-t" && ! -f "$VOLS/prj-repo-lib--wc-t" ]] \
   && pass "gc under one prefix removes only that prefix's working copies" \
   || fail "gc crossed prefixes ($(removed))"
@@ -387,7 +403,7 @@ REPO_VOLUME_PREFIX=prj run_repo gc --yes
 # taken for a working copy and deleted (review of batch 4, finding 1).
 setup_world
 : > "$VOLS/prjx-repo-team-repo-x"; printf 'ai-containers.repo=x\nai-containers.type=git\n' > "$VOLS/prjx-repo-team-repo-x.labels"
-REPO_VOLUME_PREFIX=prjx run_repo gc --yes
+REPO_VOLUME_PREFIX=prjx run_repo gc --all --yes
 [[ -f "$VOLS/prjx-repo-team-repo-x" ]] && pass "gc never takes a volume it cannot classify for a working copy" \
   || fail "gc removed a base volume under a nested prefix ($(removed))"
 # REPO-11: a base volume is found by name, and under a nested prefix two repos'
@@ -788,6 +804,120 @@ case "$(removed)" in
   *) fail "  … control: without --unused, an in-use copy is still removed — got: $(removed)" ;;
 esac
 
+# ── 16b. gc keeps another home's working copies unless --all ─────────────────
+# One docker daemon can serve several homes (Docker Desktop's, by every WSL
+# distro, where one user name gives the same launch paths), and a launch labels
+# each copy with the home that made it (ai-containers.owner, sandbox-common.sh:
+# ai_containers_owner_id()). gc removed every copy, another home's unpushed work
+# included. An unlabelled copy, made before the label, says nothing about whose
+# it is, and may be another home's: kept too unless --all.
+owner_world() {   # projA: this home's; projB: another home's; docs-archive's: unlabelled
+  setup_world
+  printf 'ai-containers.repo=docs\nai-containers.launch-dir=/tmp/docs--wc-projB\nai-containers.owner=sha256:%064d\n' 0 \
+    > "$VOLS/ai-containers-repo-docs--wc-projB.labels"
+  printf 'ai-containers.repo=docs-archive\nai-containers.launch-dir=/tmp/docs-archive--wc-projA\n' \
+    > "$VOLS/ai-containers-repo-docs-archive--wc-projA.labels"
+}
+owner_world
+run_repo gc --yes
+check "gc --yes removes this home's copies, and keeps another home's and unlabelled ones" \
+  "ai-containers-repo-docs--wc-projA|" "$(removed)"
+grep -qE "^  no +ai-containers-repo-docs--wc-projB +docs +another +/tmp/docs--wc-projB  \[another home's — kept; --all removes it\]$" "$OUT" \
+  && grep -qE "^  no +ai-containers-repo-docs-archive--wc-projA +docs-archive +unlabelled +/tmp/docs-archive--wc-projA  \[no owner label — kept; --all removes it\]$" "$OUT" \
+  && pass "  … saying which ones it kept, whose they are, and how to remove them" \
+  || fail "  … saying which ones it kept (got: $(tr '\n' '|' < "$OUT"))"
+grep -qE "^  no +ai-containers-repo-docs--wc-projA +docs +this home +/tmp/docs--wc-projA$" "$OUT" \
+  && pass "  … naming this home's copy as such" \
+  || fail "  … naming this home's copy (got: $(tr '\n' '|' < "$OUT"))"
+owner_world
+run_repo gc --all --yes
+check "gc --all --yes removes another home's copies too" \
+  "ai-containers-repo-docs--wc-projA|ai-containers-repo-docs--wc-projB|ai-containers-repo-docs-archive--wc-projA|" "$(removed)"
+owner_world
+run_repo gc --repo docs --yes
+check "gc --repo docs keeps another home's copy of docs" "ai-containers-repo-docs--wc-projA|" "$(removed)"
+# No key in this HOME yet: no copy can carry its id, so a labelled one is
+# another home's; and asking whose a copy is makes no key.
+owner_world
+rm -f "$HOME/.ai-containers/project-id.key"
+run_repo gc --yes
+check "gc with no key here keeps every copy: none can be this home's" \
+  "" "$(removed)"
+[[ ! -e "$HOME/.ai-containers/project-id.key" ]] \
+  && pass "  … and makes no key by asking" \
+  || fail "  … and makes no key by asking — gc wrote $HOME/.ai-containers/project-id.key"
+# list --copies says whose each copy is, and what "another" means for gc.
+owner_world
+run_repo list --copies
+grep -qE "^no +ai-containers-repo-docs--wc-projA +docs +- +this home +/tmp/docs--wc-projA$" "$OUT" \
+  && grep -qE "^no +ai-containers-repo-docs--wc-projB +docs +- +another +/tmp/docs--wc-projB$" "$OUT" \
+  && grep -qE "^no +ai-containers-repo-docs-archive--wc-projA +docs-archive +- +unlabelled +/tmp/docs-archive--wc-projA$" "$OUT" \
+  && pass "list --copies names each copy's owner: this home, another, unlabelled" \
+  || fail "list --copies names each copy's owner (got: $(tr '\n' '|' < "$OUT"))"
+grep -qF "its launch directory is a path there, not here. ./repo.sh gc keeps it unless given --all." "$OUT" \
+  && grep -qF "another home's. ./repo.sh gc keeps it unless given --all." "$OUT" \
+  && pass "  … and says that gc keeps another home's copy and an unlabelled one unless --all" \
+  || fail "  … and says that gc keeps another home's copy and an unlabelled one unless --all (got: $(tr '\n' '|' < "$OUT"))"
+setup_world
+run_repo list --copies
+! grep -qF 'another home' "$OUT" && ! grep -qF '"unlabelled":' "$OUT" \
+  && pass "  … notes it leaves out where every copy is this home's" \
+  || fail "  … notes it leaves out where every copy is this home's (got: $(tr '\n' '|' < "$OUT"))"
+
+# ── 16c. what a label holds is printed with its control bytes replaced ───────
+# A volume's labels are whatever made it wrote (sandbox-common.sh: _ac_term()).
+setup_world
+# gc prints a copy on one of three rows: to remove (projA, this home's), kept
+# for its owner (projB, unlabelled), kept in use (docs-archive's, with --unused).
+printf 'ai-containers.repo=docs\nai-containers.launch-dir=/tmp/x\033[2Jy\nai-containers.owner=%s\n' "$OWN_ID" > "$VOLS/ai-containers-repo-docs--wc-projA.labels"
+printf 'ai-containers.repo=docs\nai-containers.launch-dir=/tmp/z\033[2Jw\n' > "$VOLS/ai-containers-repo-docs--wc-projB.labels"
+printf 'ai-containers.repo=docs-archive\nai-containers.launch-dir=/tmp/u\033[2Jv\nai-containers.owner=%s\n' "$OWN_ID" > "$VOLS/ai-containers-repo-docs-archive--wc-projA.labels"
+printf 'ai-containers-repo-docs-archive--wc-projA\n' > "$INUSE"
+printf 'ai-containers.repo=cluster\nai-containers.type=git\nai-containers.source=git@x:\033]0;t\007c.git\n' > "$VOLS/ai-containers-repo-cluster.labels"
+run_repo list --copies; lc="$(cat "$OUT")"
+run_repo gc --unused; gco="$(cat "$OUT")"
+run_repo list; lo="$(cat "$OUT")"
+if [[ "$lc$gco$lo" != *$'\033'* && "$lc$gco$lo" != *$'\007'* && "$lc" == *'/tmp/x?[2Jy'* && "$lo" == *'git@x:?]0;t?c.git'* \
+      && "$gco" == *'/tmp/x?[2Jy'* && "$gco" == *'/tmp/z?[2Jw'* && "$gco" == *'/tmp/u?[2Jv'* ]]; then
+  pass "list --copies, gc (each of its rows) and list print a label's control bytes as '?'"
+else
+  fail "list --copies, gc (each of its rows) and list print a label's control bytes as '?' (got: $(printf '%s' "$lc$gco$lo" | od -c | grep -m2 '033\|007' | tr -s ' '))"
+fi
+setup_world
+printf 'ai-containers.repo=ot\033[2Jher\nai-containers.type=git\n' > "$VOLS/ai-containers-repo-docs.labels"
+run_repo rm docs --yes
+[[ "$RC" == 1 ]] && ! grep -q $'\033' "$ERR" && grep -qF 'labelled for repo "ot?[2Jher"' "$ERR" \
+  && pass "  … and rm's refusal of a volume labelled for another repo" \
+  || fail "  … and rm's refusal of a volume labelled for another repo (rc=$RC; $(od -c "$ERR" | grep -m1 033 | tr -s ' '))"
+run_repo reset docs
+[[ "$(cat "$OUT" "$ERR")" != *$'\033'* ]] && grep -qF "labelled for repo 'ot?[2Jher' — will be left untouched" "$OUT" \
+  && pass "  … and reset's summary of it" \
+  || fail "  … and reset's summary of it (got: $(cat "$OUT" "$ERR" | od -c | grep -m1 033 | tr -s ' '))"
+# list's NAME column: a registry line written before reindex checked names, or
+# by hand. And reindex, which writes labels into that registry, one line per
+# repo split at '|': a volume docker can name (uppercase, '_', '.') that is no
+# repo name, or a source holding '|', is left out.
+setup_world
+printf 'ev\033[2Jil|git|git@x:e.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
+run_repo list
+[[ "$(cat "$OUT")" != *$'\033'* ]] && grep -qE '^ev\?\[2Jil ' "$OUT" \
+  && pass "  … and list's NAME column, for a registry line holding one" \
+  || fail "  … and list's NAME column (got: $(od -c "$OUT" | grep -m1 033 | tr -s ' '))"
+setup_world
+: > "$VOLS/ai-containers-repo-Ev_il"
+printf 'ai-containers.repo=Ev_il\nai-containers.type=git\nai-containers.source=git@x:e.git\n' > "$VOLS/ai-containers-repo-Ev_il.labels"
+: > "$VOLS/ai-containers-repo-pipe"
+printf 'ai-containers.repo=pipe\nai-containers.type=git\nai-containers.source=git@x:a|b.git\n' > "$VOLS/ai-containers-repo-pipe.labels"
+reg_before="$(cat "$HOME/.ai-containers/repos.conf")"
+run_repo reindex
+reg_after="$(cat "$HOME/.ai-containers/repos.conf")"
+[[ "$RC" == 0 && "$reg_after" != *Ev_il* && "$reg_after" != *'a|b'* ]] \
+  && grep -qF 'skip Ev_il: volume "ai-containers-repo-Ev_il" is labelled with a repo name, type or source the registry cannot hold' "$ERR" \
+  && grep -qF 'skip pipe: volume "ai-containers-repo-pipe" is labelled with a repo name, type or source the registry cannot hold' "$ERR" \
+  && grep -q '^docs|git|git@x:docs.git|' "$HOME/.ai-containers/repos.conf" \
+  && pass "reindex leaves out a volume whose labels the registry cannot hold, saying so, and indexes the rest" \
+  || fail "reindex and labels the registry cannot hold (rc=$RC; err: $(tr '\n' '|' < "$ERR"); registry changed: $([[ "$reg_before" == "$reg_after" ]] && echo no || echo yes))"
+
 # ── 17. gc refuses what it cannot scope ──────────────────────────────────────
 setup_world
 run_repo gc --repo '../../etc' --yes
@@ -1060,7 +1190,7 @@ grep -q "registry entry in $HOME/.ai-containers/repos.conf" "$OUT" \
 # copy in front of them is the one holding their work.
 setup_world
 run_repo gc
-grep -qE 'ai-containers-repo-docs--wc-projA +docs +/tmp/docs--wc-projA' "$OUT" \
+grep -qE 'ai-containers-repo-docs--wc-projA +docs +this home +/tmp/docs--wc-projA' "$OUT" \
   && pass "gc's table shows each copy's repo and launch dir, from its labels" \
   || fail "gc's table shows each copy's repo and launch dir (got: $(tr '\n' '|' < "$OUT"))"
 
@@ -1139,7 +1269,7 @@ cov="$(PATH="$FAKE_BIN:$PATH" bash -c '
 setup_world
 rm -f "$VOLS"/ai-containers-repo-docs--wc-projA.labels
 run_repo gc
-grep -qE 'ai-containers-repo-docs--wc-projA +\? +\(unlabeled\)' "$OUT" \
+grep -qE 'ai-containers-repo-docs--wc-projA +\? +unlabelled +\(unlabeled\)' "$OUT" \
   && pass "gc marks an unlabelled copy '?' and '(unlabeled)' rather than blank" \
   || fail "gc marks an unlabelled copy '?' and '(unlabeled)' (got: $(tr '\n' '|' < "$OUT"))"
 
@@ -1563,6 +1693,7 @@ fi
 # from nothing and the volume's contents are what gets deleted.
 setup_path_world() {
   export HOME="$TMP/home"; rm -rf "$HOME"; mkdir -p "$HOME/.ai-containers"
+  ( umask 077; printf '%s\n' "$OWN_KEY" > "$HOME/.ai-containers/project-id.key" )
   rm -rf "$VOLS"; mkdir -p "$VOLS"; : > "$DOCKER_LOG"; : > "$INUSE"
   : > "$VOLS/ai-containers-repo-localvol"
   printf 'localvol|path|%s|1700000000|1700000000|volume\n' "$TMP/pathsrc" \

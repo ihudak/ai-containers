@@ -522,6 +522,140 @@ else
   fail "phase 5: a checkout path holding ':' (rc=$rc, run: ${floor_run:-none}; $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
 fi
 mv "$TMP/re:po" "$r"
+
+# ── The floor container from a linked worktree ────────────────────────────────
+# A worktree's .git is a FILE naming its git directory under the main checkout's
+# .git, outside the one mount the container had, so git there found no
+# repository and the floor suite died at its first git call (exit 128). That git
+# directory now goes in too, read-only, at the path the .git file names — as
+# written, since the container takes it literally (verify-on-host.sh:
+# floor_git_dir()).
+floor_binds() { grep '^STUB:docker-run ' "$WITNESS_LOG" | grep -o ' -v [^ ]*' | sed 's/^ -v //'; }
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r" 5)"
+if [[ "$rc" == 0 && "$(floor_binds)" == "$r:/w:ro" ]]; then
+  pass "phase 5: a plain checkout's floor container gets the checkout and no git directory besides"
+else
+  fail "phase 5: a plain checkout's floor container (rc=$rc, binds: $(floor_binds | tr '\n' ' '))"
+fi
+gd="$(cd "$r/.git" && pwd -P)"
+rm -rf "$TMP/wt"
+git -C "$r" worktree add -q --detach "$TMP/wt" >/dev/null 2>&1 \
+  && wt_ptr="$(sed -n 's/^gitdir: //p' "$TMP/wt/.git")" && [[ "$wt_ptr" == /*/worktrees/wt ]] \
+  || { printf 'SCAFFOLD-FAILED: git worktree add (pointer: %s)\n' "${wt_ptr:-none}"; exit 1; }
+: > "$WITNESS_LOG"
+rc="$(run_verify "$TMP/wt" 5)"
+if [[ "$rc" == 0 && "$(floor_binds)" == "$TMP/wt:/w:ro"$'\n'"$gd:${wt_ptr%/worktrees/wt}:ro" ]]; then
+  pass "phase 5: a worktree's floor container also gets the main checkout's .git, read-only, where its .git file names it"
+else
+  fail "phase 5: a worktree's floor container (rc=$rc, binds: $(floor_binds | tr '\n' ' '); $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
+fi
+# Named through a link: the bind's source is the physical directory, and its
+# destination the path as the .git file spells it.
+ln -s "$r" "$TMP/lnk" || { printf 'SCAFFOLD-FAILED: ln -s\n'; exit 1; }
+printf 'gitdir: %s\n' "$TMP/lnk/.git/worktrees/wt" > "$TMP/wt/.git"
+: > "$WITNESS_LOG"
+rc="$(run_verify "$TMP/wt" 5)"
+if [[ "$rc" == 0 && "$(floor_binds)" == "$TMP/wt:/w:ro"$'\n'"$gd:$TMP/lnk/.git:ro" ]]; then
+  pass "phase 5: a .git file naming its git directory through a link: the physical directory, at the path as written"
+else
+  fail "phase 5: a .git file naming its git directory through a link (rc=$rc, binds: $(floor_binds | tr '\n' ' '); $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
+fi
+# What the container cannot be given is refused with the reason, and no
+# container runs.
+floor_refused() {  # $1=label $2=text the reason must hold
+  : > "$WITNESS_LOG"
+  rc="$(run_verify "$TMP/wt" 5)"
+  if [[ "$rc" == 1 ]] && grep -q 'cannot be given this checkout.s git directory: .*'"$2" "$TMP/out.log" \
+     && ! grep -q '^STUB:docker-run ' "$WITNESS_LOG"; then
+    pass "phase 5: $1 is refused before docker, naming why"
+  else
+    fail "phase 5: $1 (rc=$rc, runs: $(grep -c '^STUB:docker-run ' "$WITNESS_LOG"); $(grep -i 'floor\|git directory' "$TMP/out.log" | tail -2 | tr '\n' ' '))"
+  fi
+}
+printf 'gitdir: ../%s/.git/worktrees/wt\n' "${r##*/}" > "$TMP/wt/.git"
+floor_refused "a .git file naming a relative path" "a relative path"
+printf 'gitdir: %s\n' "$gd/worktrees/../worktrees/wt" > "$TMP/wt/.git"
+floor_refused "a .git file naming a path with .. in it" ". or .. components"
+cp -a "$gd/worktrees/wt" "$TMP/odd" && printf '%s\n' "$gd" > "$TMP/odd/commondir" \
+  || { printf 'SCAFFOLD-FAILED: odd git directory\n'; exit 1; }
+printf 'gitdir: %s\n' "$TMP/odd" > "$TMP/wt/.git"
+floor_refused "a .git file naming a directory outside the git directory git uses" "outside the git directory"
+printf 'not a pointer\n' > "$TMP/wt/.git"
+floor_refused "a .git file with no gitdir line" "names no git directory"
+cp -a "$gd/worktrees/wt" "$TMP/wt/.wtgit" && printf '%s\n' "$gd" > "$TMP/wt/.wtgit/commondir" \
+  && printf 'gitdir: .wtgit\n' > "$TMP/wt/.git" || { printf 'SCAFFOLD-FAILED: in-checkout git directory\n'; exit 1; }
+floor_refused "a relative .git inside the checkout whose common git directory lies outside it" "inside the checkout, but the git directory git uses for it"
+rm -rf "$TMP/wt/.wtgit"
+printf 'gitdir: %s\n' "$wt_ptr" > "$TMP/wt/.git"
+git -C "$r" worktree remove --force "$TMP/wt" >/dev/null 2>&1; rm -rf "$TMP/wt" "$TMP/odd" "$TMP/lnk"
+# A .git that is a link to a git directory elsewhere: the same, through the link.
+r2="$(mk_repo 0)"
+mv "$r2/.git" "$TMP/r2git" && ln -s "$TMP/r2git" "$r2/.git" || { printf 'SCAFFOLD-FAILED: .git link\n'; exit 1; }
+r2gd="$(cd "$TMP/r2git" && pwd -P)"
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r2" 5)"
+if [[ "$rc" == 0 && "$(floor_binds)" == "$r2:/w:ro"$'\n'"$r2gd:$TMP/r2git:ro" ]]; then
+  pass "phase 5: a .git that is a link: the directory it names goes in too, read-only, at that path"
+else
+  fail "phase 5: a .git that is a link (rc=$rc, binds: $(floor_binds | tr '\n' ' '); $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
+fi
+# A relative link that stays inside the checkout is in /w already: no bind.
+# (mk_repo builds every stub at $TMP/repo: each kept is moved to its own path.)
+r3="$TMP/rel"; rm -rf "$r3"; mv "$(mk_repo 0)" "$r3" \
+  && mv "$r3/.git" "$r3/.realgit" && ln -s .realgit "$r3/.git" || { printf 'SCAFFOLD-FAILED: relative .git link\n'; exit 1; }
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r3" 5)"
+if [[ "$rc" == 0 && "$(floor_binds)" == "$r3:/w:ro" ]]; then
+  pass "phase 5: a relative .git link inside the checkout needs no git directory besides it"
+else
+  fail "phase 5: a relative .git link inside the checkout (rc=$rc, binds: $(floor_binds | tr '\n' ' '); $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
+fi
+# A relative link whose way runs through a link with an absolute target into
+# the checkout: in the container that target is a host path it does not have.
+r4="$TMP/rel4"; rm -rf "$r4"; mv "$(mk_repo 0)" "$r4" \
+  && mv "$r4/.git" "$r4/.realgit" && ln -s "$r4" "$r4/self" && ln -s self/.realgit "$r4/.git" \
+  && mkdir -p "$r4/${r4#/}/.realgit" \
+  || { printf 'SCAFFOLD-FAILED: relative .git link through an absolute one\n'; exit 1; }
+# (That last directory is the absolute target's path again, under the checkout:
+# a walk that read the target as relative would find it, so only the refusal
+# of an absolute target stops it.)
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r4" 5)"
+if [[ "$rc" == 1 ]] && grep -q 'whose way runs through a link with an absolute target' "$TMP/out.log" \
+   && ! grep -q '^STUB:docker-run ' "$WITNESS_LOG"; then
+  pass "phase 5: a relative .git through a link with an absolute target is refused before docker, naming why"
+else
+  fail "phase 5: a relative .git through a link with an absolute target (rc=$rc; $(grep -i 'git directory' "$TMP/out.log" | tail -1))"
+fi
+# A submodule checkout: its git directory's core.worktree leads back from where
+# that directory lies, which the container cannot follow; refused, saying so.
+rsrc="$TMP/subsrc"; rsup="$TMP/super"; rm -rf "$rsrc" "$rsup"
+mv "$(mk_repo 0)" "$rsrc" && mv "$(mk_repo 0)" "$rsup" || { printf 'SCAFFOLD-FAILED: submodule repos\n'; exit 1; }
+git -C "$rsup" -c protocol.file.allow=always submodule add -q "$rsrc" mod >/dev/null 2>&1 \
+  && [[ -f "$rsup/mod/.git" && -f "$rsup/mod/build.sh" ]] \
+  || { printf 'SCAFFOLD-FAILED: git submodule add\n'; exit 1; }
+: > "$WITNESS_LOG"
+rc="$(run_verify "$rsup/mod" 5)"
+if [[ "$rc" == 1 ]] && grep -q 'sets core.worktree, as a submodule checkout.s does: .*run Phase 5 from the superproject or a clone' "$TMP/out.log" \
+   && ! grep -q '^STUB:docker-run ' "$WITNESS_LOG"; then
+  pass "phase 5: a submodule checkout is refused before docker, naming why"
+else
+  fail "phase 5: a submodule checkout (rc=$rc; $(grep -i 'git directory' "$TMP/out.log" | tail -1))"
+fi
+# What a .git holds is printed with its control bytes replaced: an agent can
+# write the file (verify-on-host.sh: vh_term()).
+printf 'gitdir: /no/such\033[2J/dir\n' > "$r3/.git.tmp" && rm -f "$r3/.git" && mv "$r3/.git.tmp" "$r3/.git" \
+  || { printf 'SCAFFOLD-FAILED: .git file with ESC\n'; exit 1; }
+rc="$(run_verify "$r3" 5)"
+if [[ "$rc" == 1 ]] && grep -qF 'points at /no/such?[2J/dir, which is not a directory' "$TMP/out.log" \
+   && ! grep -q $'\033' "$TMP/out.log"; then
+  pass "phase 5: a .git's content is printed with its control bytes replaced"
+else
+  fail "phase 5: a .git's content printed raw (rc=$rc; $(grep -i 'git directory' "$TMP/out.log" | tail -1 | od -c | head -3 | tr '\n' ' '))"
+fi
+r="$(mk_repo 0)"   # the stub the checks below use, at $TMP/repo again
+
 rc="$(run_verify "$r" 5 SELINUX_LABEL=bogus)"
 expect_rc "phase 5: an unknown SELINUX_LABEL fails the phase" 1 "$rc"
 grep -q 'SELINUX_LABEL' "$TMP/out.log" \

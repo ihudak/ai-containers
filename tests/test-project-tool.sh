@@ -13,6 +13,12 @@ ok()   { if "${@:2}"; then pass "$1"; else fail "$1"; fi; }
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS SANDBOX_ENV_FILE SANDBOX_WORKDIR
+# SIGPIPE ignored, as GitHub's hosted runners start every step, and as it stays
+# in what they start: a loop that stops reading a pipe early then makes its
+# writer fail with EPIPE rather than end quietly, and bash prints "write error:
+# Broken pipe" into project.sh's output. Elsewhere SIGPIPE is at its default and
+# the same code was silent, so only CI's suite jobs failed (project.sh: `prj_roots()`).
+trap '' PIPE
 ENG="$TMP/engine"; mkdir -p "$ENG" "$TMP/bin"
 # The engine is listed by git BEFORE HOME moves: a checkout owned by another
 # user (the floor container runs as root against the host user's mount) is
@@ -1501,6 +1507,84 @@ world; A="$W/alpha"; mvproj "$A" '' $'DOCS_PATH=/x/manual\n'
 mvrun "$A" "$W/new/docs" --yes; rc=$?
 unset DOCS_PATH
 ok "mv takes the shell's empty DOCS_PATH over the project's, as the launcher does" bash -c '[ "$1" = 0 ]' _ "$rc"
+
+# EXTRA_MOUNTS and REPOS the shell exports: the launcher reads them over the
+# project's sandbox.local.env, so mv checks them too, and says when the old root
+# it adds to that file is not in the shell's list (it cannot write the shell).
+export EXTRA_MOUNTS=/x/gamma
+clash '' "$W/new/gamma" "and the EXTRA_MOUNTS entry /x/gamma (set in your shell) would both be mounted at /workspace/gamma" \
+  "mv refuses a <new-dir> with the basename of an EXTRA_MOUNTS entry the shell sets"
+export EXTRA_MOUNTS='/x/one ../shared'
+relative '' "the EXTRA_MOUNTS entry ../shared in your shell is relative" "mv refuses a relative EXTRA_MOUNTS entry the shell sets, naming it and the shell"
+unset EXTRA_MOUNTS
+export REPOS='lib:ro delta:rw'
+clash '' "$W/new/delta" "and the REPOS repo delta (set in your shell) would both be mounted at /workspace/delta" \
+  "mv refuses a <new-dir> with the name of a REPOS repo the shell sets"
+unset REPOS
+# Not the engine's own: project.sh loads this checkout's sandbox.local.env into
+# itself, and that is not what a project's launcher reads.
+printf 'EXTRA_MOUNTS=/x/gamma\nREPOS=delta:rw\n' > "$ENG/sandbox.local.env"
+world; A="$W/alpha"; mvproj "$A"
+mvrun "$A" "$W/new/gamma" --yes; rc=$?
+world; A="$W/alpha"; mvproj "$A"
+mvrun "$A" "$W/new/delta" --yes; rc3=$?
+rm -f "$ENG/sandbox.local.env"
+ok "mv does not take the engine checkout's own EXTRA_MOUNTS or REPOS for the shell's" \
+  bash -c '[ "$1" = 0 ] && [ "$2" = 0 ] && [ -f "$3/new/delta/.ai-containers/sandbox.env" ]' _ "$rc" "$rc3" "$W"
+# The old root added to sandbox.local.env, which the shell's EXTRA_MOUNTS
+# shadows: said before the question and again at the end.
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS=/x/one
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where the shell's EXTRA_MOUNTS does not mount the old root still adds it to sandbox.local.env" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "EXTRA_MOUNTS=\"$2\"" "$3/.ai-containers/sandbox.local.env"' _ "$rc" "$A" "$N"
+ok "  … warning before the question that the shell's list does not mount it" \
+  bash -c 'grep -qxF "WARNING: your shell exports EXTRA_MOUNTS, which the launcher reads instead of sandbox.local.env," "$1" \
+           && grep -qxF "         and it does not mount $2: add it there, or the container will not see that" "$1" \
+           && [ "$(grep -n "^WARNING: your shell" "$1" | cut -d: -f1)" -lt "$(grep -n "^Copied " "$1" | cut -d: -f1)" ]' _ "$TMP/out" "$A"
+ok "  … and again at the end" hasx "WARNING: add $A to the EXTRA_MOUNTS your shell exports: the launcher reads that one, not"
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS="/x/one $W"
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where the shell's EXTRA_MOUNTS mounts the old root read-write warns of nothing" \
+  bash -c '[ "$1" = 0 ] && ! grep -q "your shell" "$2"' _ "$rc" "$TMP/out"
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS="$W:ro"
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where the shell's EXTRA_MOUNTS mounts the old root only read-only says so, naming the entry" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "         and mounts $2 only read-only ($3:ro): add $2 to it, or the container" "$4"' _ "$rc" "$A" "$W" "$TMP/out"
+# The launcher mounts the shell's EXTRA_MOUNTS or sandbox.local.env's, never
+# both: the old root mv adds to the file cannot clash with a shell entry, and
+# listing the old root there, as the warning says to, must not stop mv.
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS="$A"
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where the shell's EXTRA_MOUNTS lists the old root itself moves, warning of nothing" \
+  bash -c '[ "$1" = 0 ] && ! grep -q "your shell" "$2" && grep -qxF "EXTRA_MOUNTS=\"$3\"" "$4/.ai-containers/sandbox.local.env"' _ "$rc" "$TMP/out" "$A" "$N"
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS=/mnt/other/alpha
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where a shell entry has the old root's basename moves, and says that adding it there would clash" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "         Its entry /mnt/other/alpha has the same basename, /workspace/alpha: the launcher would refuse" "$2"' _ "$rc" "$TMP/out"
+# The closing warning is not lost when a later step fails.
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS=/x/one FAKE_FAIL_VOLUME_RM='*--wc-1'
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS FAKE_FAIL_VOLUME_RM
+ok "mv that fails to remove an old working copy still says to add the old root to the shell's EXTRA_MOUNTS" \
+  bash -c '[ "$1" = 1 ] && grep -qxF "WARNING: add $2 to the EXTRA_MOUNTS your shell exports: the launcher reads that one, not" "$3"' _ "$rc" "$A" "$TMP/out"
+
+world; A="$W/outer/alpha"; mvproj "$A"; N="$W/outer"
+export EXTRA_MOUNTS=/x/one
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv into a directory that holds the old root warns of nothing about the shell's EXTRA_MOUNTS" \
+  bash -c '[ "$1" = 0 ] && grep -qF "lies inside $3, which the container mounts" "$2" && ! grep -q "your shell" "$2"' _ "$rc" "$TMP/out" "$N"
 world; A="$W/alpha"; N="$W/new/docs"; mvproj "$A" '' "DOCS_PATH=$N:ro"$'\n'
 mvrun "$A" "$N" --yes; rc=$?
 ok "mv takes a <new-dir> named docs that DOCS_PATH itself names: the launcher mounts the working directory once" \
@@ -1556,9 +1640,11 @@ ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
 world; A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'
 N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"; printf '%s/\n' "$N" >> "$ENG/projects.conf"
 mvrun "$A" "$N" --yes; rc=$?
-ok "mv into a <new-dir> registered already warns first, naming its IMAGE_NAME" \
-  bash -c '[ "$1" = 0 ] && [ "$(sed -n 2p "$2")" = "WARNING: $3/ is a registered project already, IMAGE_NAME img-alpha: mv takes its .ai-containers" ]' \
-  _ "$rc" "$TMP/out" "$N"
+if [[ "$rc" == 0 && "$(sed -n 2p "$TMP/out")" == "WARNING: $N/ is a registered project already, IMAGE_NAME img-alpha: mv takes its .ai-containers" ]]; then
+  pass "mv into a <new-dir> registered already warns first, naming its IMAGE_NAME"
+else
+  fail "mv into a <new-dir> registered already warns first, naming its IMAGE_NAME (rc=$rc; lines 1-3: $(sed -n 1,3p "$TMP/out" | tr '\n' '|'))"
+fi
 ok "  … and leaves one projects.conf line for it, as it was spelled" bash -c '[ "$(cat "$1")" = "$2/" ]' _ "$ENG/projects.conf" "$N"
 world; A="$W/alpha"; mvproj "$A"; N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"
 printf '/x/other\n%s/\n' "$N" > "$ENG/projects.conf"

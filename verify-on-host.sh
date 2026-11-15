@@ -142,6 +142,126 @@ TESTS_DIR="$REPO/tests"
 # tests/test-verify-lint-scope.sh drives both layouts.
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 
+# floor_git_dir: sets FLOOR_GIT_SRC and FLOOR_GIT_DST to the git directory Phase
+# 5's floor container must be given besides the checkout, and where, or leaves
+# them empty when the checkout's .git is a directory of its own (or absent); rc 1
+# with the reason in FLOOR_GIT_WHY when it cannot be given one.
+#
+# The container mounts the checkout alone, at /w. A linked worktree's .git is a
+# FILE naming its git directory under the main checkout's .git, and a .git may
+# be a link: either can point out of /w, and then git in the container found no
+# repository and the floor suite died at its first git call (exit 128). The git
+# directory holding the one named — the common one, which for a worktree holds
+# the worktree's own — is bound read-only, as /w is, at the path the pointer
+# names, so it resolves in the container as it does here: as WRITTEN, which the
+# container takes literally, and the physical directory git finds from it is the
+# bind's source. A relative pointer is taken from the checkout, as git and the
+# kernel take it, and one that stays inside it needs no bind. Refused, with the
+# reason, before docker: a submodule checkout (its git directory's core.worktree
+# leads from where that directory lies back to the checkout, which the container
+# has at /w instead), a relative pointer out of the checkout (it would resolve
+# against /w; git 2.48's worktree.useRelativePaths writes those, and the floor's
+# git 2.34 refuses that extension anyway), and one outside the git directory git
+# finds, under /w, or spelled with . or .. components or a doubled /.
+# vh_term <text>: <text> as sandbox-common.sh's _ac_term() prints it, control
+# characters and bidi overrides replaced: what floor_git_dir() reports comes from
+# a .git an agent may have written. From a subshell, as the library's other uses
+# here: sourcing it loads sandbox.env into the shell and exports it.
+vh_term() { ( source "$REPO/sandbox-common.sh" >/dev/null 2>&1 && _ac_term "$1" ) || printf '%s' "${1//[[:cntrl:]]/?}"; }
+
+# _floor_rel_ok <physical root> <relative path>: rc 0 when <path>, taken from
+# <root> one component at a time as the kernel takes it, reaches a directory
+# without leaving <root> and without following a link whose target is absolute:
+# in the container <root> is /w, so an absolute target there names a host path
+# it does not have. At most 40 links, as the kernel allows.
+_floor_rel_ok() {
+  local root="$1" rest="$2" cur="$1" c t hops=0
+  while [[ -n "$rest" ]]; do
+    c="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    case "$c" in
+      ''|.) continue ;;
+      ..) [[ "$cur" != "$root" ]] || return 1; cur="${cur%/*}"; continue ;;
+    esac
+    if [[ -L "$cur/$c" ]]; then
+      (( ++hops <= 40 )) || return 1
+      t="$(readlink "$cur/$c")" || return 1
+      [[ "$t" != /* ]] || return 1
+      rest="$t${rest:+/$rest}"
+    else
+      cur="$cur/$c"
+    fi
+  done
+  [[ -d "$cur" ]]
+}
+
+floor_git_dir() {
+  local dot="$REPO_ROOT/.git" ptr="" gd pphys cphys rphys suffix dst
+  FLOOR_GIT_SRC="" FLOOR_GIT_DST="" FLOOR_GIT_WHY=""
+  if [[ -L "$dot" ]]; then
+    ptr="$(readlink "$dot")" || ptr=""
+  elif [[ -f "$dot" ]]; then
+    IFS= read -r ptr < "$dot" || [[ -n "$ptr" ]] || ptr=""
+    ptr="${ptr%$'\r'}"
+    if [[ "$ptr" != "gitdir: "* ]]; then
+      FLOOR_GIT_WHY="$dot is a file that names no git directory (no 'gitdir: ' line)"
+      return 1
+    fi
+    ptr="${ptr#gitdir: }"
+  else
+    return 0
+  fi
+  ptr="${ptr%/}"
+  gd="$ptr"; [[ "$gd" == /* ]] || gd="$REPO_ROOT/$gd"
+  if ! pphys="$(cd "$gd" 2>/dev/null && pwd -P)"; then
+    FLOOR_GIT_WHY="$dot points at $ptr, which is not a directory"
+    return 1
+  fi
+  if [[ -f "$pphys/config" ]] && git config --file "$pphys/config" --get core.worktree >/dev/null 2>&1; then
+    FLOOR_GIT_WHY="its git directory $pphys sets core.worktree, as a submodule checkout's does: a way back to the checkout that the container, which has it at /w, cannot follow; run Phase 5 from the superproject or a clone"
+    return 1
+  fi
+  if ! cphys="$(cd "$REPO_ROOT" && c="$(git rev-parse --git-common-dir 2>/dev/null)" && cd "$c" && pwd -P)"; then
+    FLOOR_GIT_WHY="git finds no repository through $dot"
+    return 1
+  fi
+  if [[ "$ptr" != /* ]]; then
+    rphys="$(cd "$REPO_ROOT" && pwd -P)"
+    if [[ "$pphys" == "$rphys"/* ]]; then
+      if ! _floor_rel_ok "$rphys" "$ptr"; then
+        FLOOR_GIT_WHY="$dot points at $ptr, whose way runs through a link with an absolute target or out of the checkout: the container has the checkout at /w, not at that path"
+        return 1
+      fi
+      if [[ "$cphys" == "$rphys"/* ]]; then return 0; fi
+      FLOOR_GIT_WHY="$dot points at $ptr, inside the checkout, but the git directory git uses for it, $cphys, lies outside"
+      return 1
+    fi
+    FLOOR_GIT_WHY="$dot points at $ptr, a relative path out of the checkout, which the container would resolve against /w"
+    return 1
+  fi
+  case "$ptr/" in
+    */./*|*/../*|*//*)
+      FLOOR_GIT_WHY="$dot points at $ptr, whose . or .. components or doubled / the container cannot be given"
+      return 1 ;;
+  esac
+  if [[ "$pphys" != "$cphys" && "$pphys" != "$cphys"/* ]]; then
+    FLOOR_GIT_WHY="$dot points at $ptr, outside the git directory git uses for it ($cphys)"
+    return 1
+  fi
+  suffix="${pphys#"$cphys"}"
+  if [[ "$ptr" != *"$suffix" ]]; then
+    FLOOR_GIT_WHY="$dot points at $ptr, which does not end in ${suffix#/} as its physical path $pphys does"
+    return 1
+  fi
+  dst="${ptr%"$suffix"}"
+  case "$dst/" in
+    /w/*)
+      FLOOR_GIT_WHY="$dot points at $ptr, under /w, where the container mounts the checkout"
+      return 1 ;;
+  esac
+  FLOOR_GIT_SRC="$cphys" FLOOR_GIT_DST="$dst"
+}
+
 # Same base/-vs-repo-root duality as TESTS_DIR above, for the schema-gate
 # script: upstream ai-containers keeps check-sandbox-version.sh next to
 # build.sh; mgd-ai-containers keeps it at the repo root, one level above the
@@ -310,7 +430,15 @@ else
   elif ! mapfile -d '' -t floor_bind < <(source "$REPO/sandbox-common.sh" && b=() \
          && docker_bind b "$REPO_ROOT" /w ro "The checkout" && printf '%s\0' "${b[@]}") || (( ${#floor_bind[@]} != 2 )); then
     phase_fail 5 "the checkout cannot be bound into the floor container (see the ERROR above) — the floor suite did not run"
+  # A worktree's .git, or a linked one, can name a git directory outside /w,
+  # which the container is given too, read-only (floor_git_dir()).
+  elif floor_gbind=() && ! floor_git_dir; then
+    phase_fail 5 "the floor container cannot be given this checkout's git directory: $(vh_term "$FLOOR_GIT_WHY") — the floor suite did not run; run it from the main checkout or a clone"
+  elif [[ -n "$FLOOR_GIT_SRC" ]] && { ! mapfile -d '' -t floor_gbind < <(source "$REPO/sandbox-common.sh" && b=() \
+         && docker_bind b "$FLOOR_GIT_SRC" "$FLOOR_GIT_DST" ro "The git directory" && printf '%s\0' "${b[@]}") || (( ${#floor_gbind[@]} != 2 )); }; then
+    phase_fail 5 "the git directory $(vh_term "$FLOOR_GIT_SRC") cannot be bound into the floor container (see the ERROR above) — the floor suite did not run"
   else
+    [[ -z "$FLOOR_GIT_SRC" ]] || sub "giving the floor container $(vh_term "$FLOOR_GIT_SRC") at $(vh_term "$FLOOR_GIT_DST") (read-only): the checkout's .git names it"
     sub "running the suite at the declared floor ($floor_img, bash 5.1)"
     # This container runs as root (the image's default user) against a repo
     # bind-mount owned by the HOST user, so git >= 2.35.2's ownership check
@@ -370,7 +498,9 @@ else
     # --init, as CI's suite-floor job: without it PID 1 is the bash below, which
     # never reaps orphans, and `kill -0` is true for a zombie, so the capture
     # tests saw fakes that had exited as still running (bd0901f).
-    docker run --rm --init ${selinux_opt:+"$selinux_opt"} "${floor_bind[@]}" -w /w "$floor_img" bash -c \
+    # The git directory a worktree's .git names (floor_gbind) is :ro for the same
+    # reason: it is the main checkout's own .git.
+    docker run --rm --init ${selinux_opt:+"$selinux_opt"} "${floor_bind[@]}" "${floor_gbind[@]}" -w /w "$floor_img" bash -c \
       'apt-get update -qq && apt-get install -y -qq git rsync >/dev/null 2>&1 && \
        git config --global --add safe.directory /w && \
        git config --global --add safe.directory "*" && \
