@@ -653,7 +653,8 @@ _vl_covers() { [[ -n "$_vl_loaded" && "$1" == "$_vl_loaded"* ]]; }
 # review, M2). A value that needed any escaping drops the table altogether. The
 # names keep docker's order (`_vl_names`), which sorts them naturally, `p_9`
 # before `p_10`; a sort here differed by locale (its review, M1).
-_vl_keys=(ai-containers.repo ai-containers.type ai-containers.workcopy ai-containers.source ai-containers.launch-dir)
+_vl_keys=(ai-containers.repo ai-containers.type ai-containers.workcopy ai-containers.source ai-containers.launch-dir
+          ai-containers.owner)
 declare -gA _vl_cache=() _vl_known=()
 declare -ga _vl_names=()
 _vl_loaded=""
@@ -1402,6 +1403,23 @@ ai_containers_project_id() {   # <physical dir> → sha256:<64 hex>, or rc 1
   local k h
   k="$(_ac_project_key)" || return 1
   h="$(printf '%s\n%s' "$k" "$1" | ai_containers_sha256)" || return 1
+  [[ ${#h} == 64 ]] || return 1
+  printf 'sha256:%s' "$h"
+}
+
+# ai_containers_owner_id: this HOME's id, sha256:<64 hex>, or rc 1 — the
+# ai-containers.owner label of the :rwcopy working copies launched from here.
+# One docker daemon can serve several homes (Docker Desktop shares one between
+# WSL distros, and users can share one), and a working copy's launch-dir label
+# is a path, which the same user name makes the same in each: this label tells
+# this home's copies from another's (project.sh rm, mv, gc). The keyed hash of
+# ai_containers_project_id(), with the same key, over a fixed string no project
+# path (absolute) can be: one id for every launch from this HOME, another for
+# another HOME's key, and it names neither.
+ai_containers_owner_id() {
+  local k h
+  k="$(_ac_project_key)" || return 1
+  h="$(printf '%s\n%s' "$k" 'ai-containers owner' | ai_containers_sha256)" || return 1
   [[ ${#h} == 64 ]] || return 1
   printf 'sha256:%s' "$h"
 }
