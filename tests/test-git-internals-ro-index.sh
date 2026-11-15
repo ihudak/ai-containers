@@ -26,6 +26,13 @@ launch ..
   || has_mount "$PROJ/vendor/emb/.git:/workspace/proj/vendor/emb/.git:ro"; } \
   && pass "G22 a submodule under vendor/ with an embedded .git is found through the index and protected" \
   || fail "G22 embedded vendor/ submodule (git mounts: $(git_mounts | grep vendor | tr '\n' ' '))"
+# The project's own index, the first a launch reads, is read: the read that makes
+# the launcher's throwaway repository for an object format reads it too (GAP-2's
+# whole-file run, batch 2, item 1). The ; keeps a line for a directory under
+# .git/modules from matching.
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "cannot read the index of $PROJ/.git;" "$ERR" \
+  && pass "G215 the first index a launch reads, the project's, is read" \
+  || fail "G215 the project's index called unreadable (rc=$LAUNCH_RC; $(grep -F 'cannot read the index' "$ERR" | head -2 | tr '\n' ' '))"
 
 # ── G28: reading the index runs no transport ──────────────────────────────────
 # git_dirs_in reads each repository's index with the host's git. In a partial
@@ -2047,6 +2054,21 @@ for o213 in "$B213a $B213b" "$B213b $B213a"; do
     || fail "G213 two configs, mounts ${o213//$TMP\//} (rc=$LAUNCH_RC; $(grep -F 'runs its git hooks' "$ERR" | tr '\n' ' '))"
 done
 rm -rf "$O213" "$B213a" "$B213b"
+
+# ── G217: no git runs on an index beside a shared part that is no regular file ─
+# A sharedindex.* in a git directory that is no regular file and no link to one
+# fails the index read before git runs, as a FIFO's does (G37), even where the
+# index, not split, names none: here a dangling link, which a concurrent
+# container can repoint between this check and the read (GAP-2's whole-file
+# run, batch 2, item 4).
+B217="$TMP/b217"; mkdir -p "$B217" && "${G[@]}" init -q "$B217/r" && : > "$B217/r/f" && "${G[@]}" -C "$B217/r" add f \
+  && ln -s nowhere "$B217/r/.git/sharedindex.0000000000000000000000000000000000000000" \
+  || { printf 'SCAFFOLD-FAILED: G217\n'; exit 1; }
+EXTRA_MOUNTS="$B217" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "cannot read the index of $B217/r/.git;" "$ERR" \
+  && pass "G217 an index beside a sharedindex that is a dangling link is not read" \
+  || fail "G217 dangling sharedindex (rc=$LAUNCH_RC; $(grep -E 'index|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$B217"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

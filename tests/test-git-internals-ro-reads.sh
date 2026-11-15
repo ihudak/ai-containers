@@ -1040,6 +1040,23 @@ TMPDIR="$TMP/none128" run128 fresh; rc128=$?
 [[ "$rc128" != 0 && ! -s "$TMP/o128" ]] && grep -qF "cannot make a temporary directory in" "$TMP/e128" \
   && pass "G128 a listing with no temporary directory refuses the launch" \
   || fail "G128 listing, no temporary directory (rc=$rc128; $(cat "$TMP/o128" "$TMP/e128" | tr '\n' ' '))"
+# ── G218: a filesystem mounted inside the mount, off the file's device ──────
+# A filesystem mounted inside a writable mount is listed on its own only where
+# it is on the file's device and its parent directory is not (that one's
+# listing would hold it already), or where its device cannot be read. One on
+# another device, under a parent on another device too, holds no name of the
+# file, and is not listed (GAP-2's whole-file run, batch 2, item 5).
+mkdir -p "$M128/a/p/q" || { printf 'SCAFFOLD-FAILED: G218\n'; exit 1; }
+: > "$TMP/to128.log"
+PATH="$sh128:$PATH" bash -c 'source "$1"; A="$2" f="$3"
+  eval "$(declare -f _launcher_dev_ino | sed "1s/^_launcher_dev_ino/_ldi218/")"
+  _launcher_dev_ino() { case "$1" in "$A/p/q") echo "888888 1" ;; "$A/p") echo "777777 1" ;; *) _ldi218 "$1" ;; esac; }
+  _fs_mp_read=1; _fs_mp=("$A/p/q")
+  m=("$A"); di="$(_launcher_dev_ino "$f")"; rc=0; _fs_linked_in "$di" m o || rc=$?
+  printf "%s %s\n" "$rc" "$o"; rm -rf "$_fs_ml_dir"' _ "$fns128" "$M128/a" "$M128/a/f" >"$TMP/o128" 2>"$TMP/e128"
+[[ "$(cat "$TMP/o128")" == "0 $M128/a" ]] && grep -qxE "[0-9]+ $M128/a" "$TMP/to128.log" && ! grep -qF " $M128/a/p/q" "$TMP/to128.log" \
+  && pass "G218 a filesystem inside the mount, on another device under a parent on another device, is not listed" \
+  || fail "G218 nested mount off the device (got '$(cat "$TMP/o128")', listed: $(tr '\n' ' ' < "$TMP/to128.log"); $(tr '\n' ' ' < "$TMP/e128"))"
 rm -rf "$fns128" "$M128" "$sh128" "$TMP/to128.log" "$TMP/o128" "$TMP/e128"
 
 # ── G129: a hard-linked file reached through a link, driven directly ─────────
