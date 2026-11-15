@@ -2292,5 +2292,201 @@ else
   printf 'NOTE: run as root, which searches any directory; G290 is not applicable\n'
 fi
 
+# ── G241 to G251: GAP-2's whole-file run, batch 4 ────────────────────────────
+# Each check below kills survivors of the Linux machine's measurement of
+# sandbox.sh, by the brief's layouts (feature-gaps review, GAP-2, batch 4).
+# As root a mode stops nothing, so G241, G244 and G249 are skipped there.
+skip_root() { pass "$1 skipped: as root a mode stops nothing"; }
+
+# G241 (item 1): a gitlink at a directory of yours, mode 000, that an agent of
+# another id cannot reach: _gdi_blocked() finds it unreachable, protects
+# nothing, and the gitlink is named as not where its index says.
+if [[ "$(id -u)" != 0 ]]; then
+  "${G[@]}" init -q "$PROJ/sm241" && "${G[@]}" -C "$PROJ/sm241" commit -q --allow-empty -m s \
+    && "${G[@]}" -C "$PROJ" add sm241 2>/dev/null && chmod 000 "$PROJ/sm241" || { printf 'SCAFFOLD-FAILED: G241\n'; exit 1; }
+  SANDBOX_UID=4242 SANDBOX_GID=4242 launch ..
+  grep -qF "WARNING: submodule $PROJ/sm241 of $PROJ/.git is not where its index says" "$ERR" \
+    && pass "G241 a gitlink at a directory an agent of another id cannot reach is named" \
+    || fail "G241 unreachable gitlink (rc=$LAUNCH_RC; $(grep -F sm241 "$ERR" | head -2 | tr '\n' ' '))"
+  chmod 755 "$PROJ/sm241"; "${G[@]}" -C "$PROJ" update-index --force-remove sm241; rm -rf "$PROJ/sm241"
+  [[ -z "$("${G[@]}" -C "$PROJ" ls-files -s sm241)" ]] || fail "G241 SCAFFOLD: the gitlink sm241 is still in the project's index"
+else skip_root G241; fi
+
+# G242 (item 2): what the walk up names as a .git link: not a .git directory,
+# and not a link under a read-only overlay.
+M242="$TMP/m242"; mkdir -p "$M242/node_modules/a/b" "$M242/node_modules/a/.git" || { printf 'SCAFFOLD-FAILED: G242\n'; exit 1; }
+EXTRA_MOUNTS="$M242 $M242/node_modules/a/b" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "is a symlink inside a writable mount" "$ERR" \
+  && pass "G242 a .git directory on the walk up is not named as a link" \
+  || fail "G242 directory named as a link (rc=$LAUNCH_RC; $(grep -F symlink "$ERR" | head -1))"
+rm -rf "$M242"; mkdir -p "$M242/L/a/b" "$TMP/nongit242" && : > "$M242/L/sandbox.sh" && : > "$M242/L/sandbox-common.sh" \
+  && ln -s "$TMP/nongit242" "$M242/L/a/.git" || { printf 'SCAFFOLD-FAILED: G242 overlay\n'; exit 1; }
+EXTRA_MOUNTS="$M242 $M242/L/a/b" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$M242/L:/workspace/m242/L:ro" && ! grep -qF "is a symlink inside a writable mount" "$ERR" \
+  && pass "G242 a .git link under a read-only overlay is not named" \
+  || fail "G242 link under an overlay named (rc=$LAUNCH_RC; $(grep -F symlink "$ERR" | head -1))"
+rm -rf "$M242" "$TMP/nongit242"
+
+# G243 (item 3): one scan reaching the same git directory outside the mounts
+# twice, by the walk up and by a .git file in the mount: the launch starts.
+R243="$TMP/r243"; "${G[@]}" init -q "$R243" && "${G[@]}" -C "$R243" commit -q --allow-empty -m i && mkdir -p "$R243/sub/x" \
+  && printf 'gitdir: ../../.git\n' > "$R243/sub/x/.git" || { printf 'SCAFFOLD-FAILED: G243\n'; exit 1; }
+launch "$R243/sub"
+[[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] \
+  && pass "G243 a git directory outside the mounts reached twice by one scan does not end the launch" \
+  || fail "G243 reached twice (rc=$LAUNCH_RC; $(tail -n 2 "$ERR" | tr '\n' ' '))"
+rm -rf "$R243"
+
+# G244 (item 4): a worktrees/ directory, or one in it, you can search but not
+# list, in a git directory reached through a .git file under node_modules:
+# refused, as one the scan finds is.
+if [[ "$(id -u)" != 0 ]]; then
+  S244="$PROJ/node_modules/sgd244"; mkdir -p "$PROJ/node_modules" && "${G[@]}" init -q --separate-git-dir "$S244" "$PROJ/w244" \
+    && "${G[@]}" -C "$PROJ/w244" commit -q --allow-empty -m i && "${G[@]}" -C "$PROJ/w244" worktree add -q "$PROJ/w244b" -b wb244 \
+    && chmod 300 "$S244/worktrees" || { printf 'SCAFFOLD-FAILED: G244\n'; exit 1; }
+  launch ..
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $S244/worktrees can be searched but not listed by you" "$ERR" \
+    && pass "G244 a worktrees/ you can search but not list refuses the launch" \
+    || fail "G244 worktrees/ (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  chmod 755 "$S244/worktrees"; rm -rf "$PROJ/w244b"; chmod 300 "$S244/worktrees/w244b"
+  launch ..
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $S244/worktrees/w244b can be searched but not listed by you" "$ERR" \
+    && pass "G244 a worktree's directory there you can search but not list refuses the launch" \
+    || fail "G244 worktree directory (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  chmod 755 "$S244/worktrees/w244b"; rm -rf "$PROJ/w244" "$S244"; rmdir "$PROJ/node_modules" 2>/dev/null || true
+else skip_root G244; fi
+
+# G245 (item 5): the walk up stops at the repository git uses, past a
+# repository's .git and past a bare repository with no .git in it.
+R245="$TMP/r245"; "${G[@]}" init -q "$R245" && "${G[@]}" init -q "$R245/r" && "${G[@]}" -C "$R245/r" commit -q --allow-empty -m i \
+  && mkdir -p "$R245/r/sub/hooks" && "${G[@]}" -C "$R245" config core.hooksPath "$R245/r/sub/hooks" || { printf 'SCAFFOLD-FAILED: G245\n'; exit 1; }
+launch "$R245/r/sub"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$R245/.git runs its git hooks" "$ERR" \
+  && pass "G245 the walk up stops at a repository's .git, the one above it not judged" \
+  || fail "G245 past a .git (rc=$LAUNCH_RC; $(grep -F 'runs its git hooks' "$ERR" | head -1))"
+rm -rf "$R245"; "${G[@]}" init -q "$R245" && "${G[@]}" -C "$R245" commit -q --allow-empty -m i && "${G[@]}" init -q --bare "$R245/a" \
+  && mkdir -p "$R245/a/b/hooks" && "${G[@]}" --git-dir="$R245/a" config core.worktree "$R245/a/b" \
+  && "${G[@]}" -C "$R245" config core.hooksPath "$R245/a/b/hooks" || { printf 'SCAFFOLD-FAILED: G245 bare\n'; exit 1; }
+launch "$R245/a/b"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$R245/.git runs its git hooks" "$ERR" \
+  && pass "G245 the walk up stops at a bare repository, the one above it not judged" \
+  || fail "G245 past a bare repository (rc=$LAUNCH_RC; $(grep -F 'runs its git hooks' "$ERR" | head -1))"
+rm -rf "$R245"
+
+# G246 (item 6): a .git file above a nested mount, past the outer mount's scan
+# and found by the walk alone, is bound read-only in the outer mount's view.
+M246="$TMP/m246"; mkdir -p "$M246/node_modules" && "${G[@]}" init -q --separate-git-dir "$TMP/gdr246" "$M246/node_modules/r" \
+  && "${G[@]}" -C "$M246/node_modules/r" commit -q --allow-empty -m i && mkdir "$M246/node_modules/r/sub" || { printf 'SCAFFOLD-FAILED: G246\n'; exit 1; }
+EXTRA_MOUNTS="$M246 $M246/node_modules/r/sub" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$M246/node_modules/r/.git:/workspace/m246/node_modules/r/.git:ro" \
+  && pass "G246 a .git file above a nested mount, found by the walk, is read-only in the outer mount" \
+  || fail "G246 .git file above the mount (rc=$LAUNCH_RC; $(mounts | grep -F 'r/.git' | tr '\n' ' '); $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$M246" "$TMP/gdr246"
+
+# G247 (item 7): a .git link above a nested mount whose target lies in the
+# outer mount, past its scan: protected there.
+M247="$TMP/m247"; mkdir -p "$M247/node_modules/r/sub" && "${G[@]}" init -q "$TMP/t247" && "${G[@]}" -C "$TMP/t247" commit -q --allow-empty -m i \
+  && mv "$TMP/t247/.git" "$M247/node_modules/gd" && ln -s ../gd "$M247/node_modules/r/.git" || { printf 'SCAFFOLD-FAILED: G247\n'; exit 1; }
+EXTRA_MOUNTS="$M247 $M247/node_modules/r/sub" launch "$TMP/app"
+ok247=1; for f247 in config hooks commondir config.worktree; do has_mount "$M247/node_modules/gd/$f247:/workspace/m247/node_modules/gd/$f247:ro" || ok247=""; done
+[[ "$LAUNCH_RC" == 0 && -n "$ok247" ]] \
+  && pass "G247 a .git link above a nested mount, its target in the outer mount, is protected there" \
+  || fail "G247 link target in the outer mount (rc=$LAUNCH_RC; $(mounts | grep -F 'node_modules/gd' | tr '\n' ' '); $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$M247" "$TMP/t247"
+
+# G248 (item 8): a git directory named through a .git link to a .git file is
+# quiet about an index it cannot read out of every mount, and says so in one.
+for k248 in out in; do
+  Q248="$TMP/q248$k248"; mkdir -p "$Q248/w/sub"
+  if [[ "$k248" == out ]]; then g248="$TMP/gd248$k248"; else g248="$Q248/w/sub/gd"; fi
+  "${G[@]}" init -q --separate-git-dir "$g248" "$Q248/w" && printf 'x\n' > "$Q248/w/sub/f" && "${G[@]}" -C "$Q248/w" add sub/f \
+    && "${G[@]}" -C "$Q248/w" commit -q -m i && mv "$Q248/w/.git" "$TMP/gf248$k248" && ln -s "$TMP/gf248$k248" "$Q248/w/.git" \
+    && printf garbage > "$g248/index" || { printf 'SCAFFOLD-FAILED: G248 %s\n' "$k248"; exit 1; }
+  launch "$Q248/w/sub"
+  if [[ "$k248" == out ]]; then
+    [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "cannot read the index" "$ERR" \
+      && pass "G248 an unreadable index out of every mount, reached through a .git link to a file, is not named" \
+      || fail "G248 out of every mount (rc=$LAUNCH_RC; $(grep -F 'cannot read the index' "$ERR" | head -1))"
+  else
+    [[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: cannot read the index of $g248" "$ERR" \
+      && pass "G248 one in the mount is named" \
+      || fail "G248 in the mount (rc=$LAUNCH_RC; $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  rm -rf "$Q248" "$TMP/gd248$k248" "$TMP/gf248$k248"
+done
+
+# G249 (item 9): a directory you cannot list that only another writable mount
+# holds is read-only whole there, and named.
+if [[ "$(id -u)" != 0 ]]; then
+  A249="$TMP/a249"; B249="$TMP/b249"; "${G[@]}" init -q "$A249/r" && "${G[@]}" -C "$A249/r" commit -q --allow-empty -m i \
+    && mkdir -p "$B249/node_modules" && "${G[@]}" -C "$A249/r" worktree add -q "$B249/node_modules/co" -b co249 \
+    && chmod 000 "$B249/node_modules/co" || { printf 'SCAFFOLD-FAILED: G249\n'; exit 1; }
+  EXTRA_MOUNTS="$A249 $B249" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$B249/node_modules/co:/workspace/b249/node_modules/co:ro" \
+    && grep -qF "WARNING: $B249/node_modules/co cannot be listed by you" "$ERR" \
+    && pass "G249 a directory you cannot list that only another mount holds is read-only there, and named" \
+    || fail "G249 blocked in the other mount (rc=$LAUNCH_RC; $(grep -E 'WARNING|ERROR' "$ERR" | grep -F co | head -2 | tr '\n' ' '))"
+  chmod 755 "$B249/node_modules/co"; rm -rf "$A249" "$B249"
+else skip_root G249; fi
+
+# G250 (item 10): a directory under a worktrees/ deeper in a .git, under a
+# directory that is no git directory, is not taken for a repository.
+mkdir -p "$PROJ/.git/x250/worktrees/y" || { printf 'SCAFFOLD-FAILED: G250\n'; exit 1; }
+launch ..
+[[ "$LAUNCH_RC" == 0 && -z "$(find "$PROJ/.git/x250/worktrees/y" -mindepth 1)" ]] && ! grep -qF "/.git/x250" < <(mounts) \
+  && pass "G250 a directory under a worktrees/ that belongs to no git directory is left alone" \
+  || fail "G250 taken for a repository (rc=$LAUNCH_RC; $(ls -A "$PROJ/.git/x250/worktrees/y" | tr '\n' ' '))"
+rm -rf "$PROJ/.git/x250"
+
+# G251 (item 11): a bare repository the walk reaches that a .git file lower on
+# the same walk named first stops the walk all the same.
+R251="$TMP/r251"; "${G[@]}" init -q "$R251" && "${G[@]}" -C "$R251" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$R251" config core.hooksPath "$R251/b/w/hooks" && "${G[@]}" init -q --bare "$R251/b" \
+  && mkdir -p "$R251/b/w/hooks" "$R251/b/w/node_modules/p/sub" && printf 'gitdir: %s\n' "$R251/b" > "$R251/b/w/node_modules/p/.git" \
+  || { printf 'SCAFFOLD-FAILED: G251\n'; exit 1; }
+EXTRA_MOUNTS="$R251/b/w $R251/b/w/node_modules/p/sub" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$R251/.git runs its git hooks" "$ERR" \
+  && pass "G251 a bare repository a .git file named first still stops the walk up" \
+  || fail "G251 past a named bare repository (rc=$LAUNCH_RC; $(grep -F 'runs its git hooks' "$ERR" | head -1))"
+rm -rf "$R251"
+
+# ── G252: the check after a session knows the agent's identity ───────────────
+# A directory of yours, mode 000, that an agent of another id cannot reach was
+# not reported at launch, rightly; the check after the session, which had no
+# agent identity, took it for one the agent could reach and named it among the
+# repositories the session made, though no session made anything (bugs review
+# GIT-99, found with batch 4's item 1).
+if [[ "$(id -u)" != 0 ]]; then
+  "${G[@]}" init -q "$PROJ/sm252" && "${G[@]}" -C "$PROJ/sm252" commit -q --allow-empty -m s \
+    && "${G[@]}" -C "$PROJ" add sm252 2>/dev/null && chmod 000 "$PROJ/sm252" || { printf 'SCAFFOLD-FAILED: G252\n'; exit 1; }
+  SANDBOX_UID=4242 SANDBOX_GID=4242 launch ..
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: submodule $PROJ/sm252 of $PROJ/.git is not where its index says" "$ERR" \
+    && ! grep -qF "$PROJ/sm252 (cannot be listed" "$ERR" \
+    && pass "G252 a directory the agent cannot reach is not reported after the session" \
+    || fail "G252 false report after the session (rc=$LAUNCH_RC; $(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
+  chmod 755 "$PROJ/sm252"; "${G[@]}" -C "$PROJ" update-index --force-remove sm252; rm -rf "$PROJ/sm252"
+  [[ -z "$("${G[@]}" -C "$PROJ" ls-files -s sm252)" ]] || fail "G252 SCAFFOLD: the gitlink sm252 is still in the project's index"
+else skip_root G252; fi
+
+# ── G253: the repository a mount lies in, out of every mount, is quiet ───────
+# Its unreadable index is the user's own and is not named at every launch (the
+# walk up marks it quiet). A .git file the agent writes lower in the mount,
+# naming it first, brought the warning back (bugs review GIT-100, batch 4's
+# first entry to decide).
+R253="$TMP/r253"; "${G[@]}" init -q "$R253" && "${G[@]}" -C "$R253" commit -q --allow-empty -m i \
+  && mkdir -p "$R253/w/node_modules/p/sub" && printf 'gitdir: %s\n' "$R253/.git" > "$R253/w/node_modules/p/.git" \
+  && printf garbage > "$R253/.git/index" || { printf 'SCAFFOLD-FAILED: G253\n'; exit 1; }
+EXTRA_MOUNTS="$R253/w $R253/w/node_modules/p/sub" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "cannot read the index of $R253/.git" "$ERR" \
+  && pass "G253 the repository a mount lies in, out of every mount, is quiet though a .git file in the mount names it" \
+  || fail "G253 named (rc=$LAUNCH_RC; $(grep -F 'cannot read the index' "$ERR" | head -1))"
+# …and without the .git file, as before.
+rm -f "$R253/w/node_modules/p/.git"
+EXTRA_MOUNTS="$R253/w" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "cannot read the index of $R253/.git" "$ERR" \
+  && pass "G253 …and without it" \
+  || fail "G253 named without the .git file (rc=$LAUNCH_RC; $(grep -F 'cannot read the index' "$ERR" | head -1))"
+rm -rf "$R253"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
