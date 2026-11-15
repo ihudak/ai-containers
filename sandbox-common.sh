@@ -1424,6 +1424,14 @@ ai_containers_owner_id() {
   printf 'sha256:%s' "$h"
 }
 
+# ai_containers_owner_known: ai_containers_owner_id, or rc 1 where this HOME has
+# no key yet — no working copy can carry its id then — without making one:
+# asking whose a copy is must not write a key (project.sh, repo.sh gc and list).
+ai_containers_owner_known() {
+  [[ -e "$project_id_key_file" || -L "$project_id_key_file" ]] || return 1
+  ai_containers_owner_id
+}
+
 # ai_containers_project_record <physical dir>: add its id|path line, once, on a
 # line of its own. A path that a line cannot give back whole (a newline) is not
 # recorded; nor is anything when the record cannot be written, which leaves

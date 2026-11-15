@@ -22,7 +22,7 @@ _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # launcher reads the shell's value first (load_env_defaults() fills only what is
 # unset), and never this engine's files (prj_launch_env).
 declare -gA _prj_shell=()
-for _prj_k in VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH REPO_VOLUME_PREFIX; do
+for _prj_k in VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH REPO_VOLUME_PREFIX EXTRA_MOUNTS REPOS; do
   if [[ -n "${!_prj_k+x}" ]]; then _prj_shell["$_prj_k"]="${!_prj_k}"; fi
 done
 unset _prj_k
@@ -328,10 +328,7 @@ prj_launch_env() {
 # prj_owner: this home's ai-containers.owner id (ai_containers_owner_id()), or
 # rc 1 where there is no key yet — no working copy carries this home's id then —
 # without making one: asking must not write a key.
-prj_owner() {
-  [[ -e "$project_id_key_file" || -L "$project_id_key_file" ]] || return 1
-  ai_containers_owner_id
-}
+prj_owner() { ai_containers_owner_known; }
 
 # prj_id <path>: the id build.sh gives the image it builds there
 # (ai_containers_project_id() of the physical directory); for a path that is
@@ -1305,8 +1302,29 @@ _prj_mounts_rewrite() {
 # covers it, is rc 1: it cannot be an entry, since they are separated by it.
 PRJ_MOUNT_COVER=""
 PRJ_MOUNT_RO=""
+# _prj_mounts_cover <path> <entry>...: rc 0, the entry named in PRJ_MOUNT_COVER,
+# where one of those EXTRA_MOUNTS entries covers <path> — is it or a directory
+# above it, its :<options> aside, either spelling, and not read-only. A
+# read-only one that does is named in PRJ_MOUNT_RO and covers nothing.
+_prj_mounts_cover() {
+  local path="$1" e d df pf
+  shift
+  PRJ_MOUNT_COVER=""; PRJ_MOUNT_RO=""
+  for e in "$@"; do
+    d="$(_prj_mount_dir "$e")"; d="${d/#\~/$HOME}"
+    [[ "$d" == /* ]] || continue
+    for df in "$d" "$(_prj_phys "$d")"; do
+      for pf in "$path" "$(_prj_phys "$path")"; do
+        _prj_within "$pf" "$df" || continue
+        if _prj_mount_ro "$e"; then PRJ_MOUNT_RO="$e"; continue 3; fi
+        PRJ_MOUNT_COVER="$e"; return 0
+      done
+    done
+  done
+  return 1
+}
 prj_add_mount() {
-  local dot="$1" path file mode="${3:-}" tmpd perms e d df pf entry list bad=0
+  local dot="$1" path file mode="${3:-}" tmpd perms entry list bad=0
   local -a ents=() got=()
   path="$(_prj_strip "$2")"; file="$dot/sandbox.local.env"; PRJ_MOUNT_COVER=""; PRJ_MOUNT_RO=""
   if ! _prj_load_init; then
@@ -1325,17 +1343,7 @@ prj_add_mount() {
     perms="$_proj_perms"
   fi
   read -r -a ents <<<"$(_prj_env_get "$tmpd/old" EXTRA_MOUNTS)" || true
-  for e in ${ents[@]+"${ents[@]}"}; do
-    d="$(_prj_mount_dir "$e")"; d="${d/#\~/$HOME}"
-    [[ "$d" == /* ]] || continue
-    for df in "$d" "$(_prj_phys "$d")"; do
-      for pf in "$path" "$(_prj_phys "$path")"; do
-        _prj_within "$pf" "$df" || continue
-        if _prj_mount_ro "$e"; then PRJ_MOUNT_RO="$e"; continue 3; fi
-        PRJ_MOUNT_COVER="$e"; rm -rf "$tmpd"; return 0
-      done
-    done
-  done
+  if _prj_mounts_cover "$path" ${ents[@]+"${ents[@]}"}; then rm -rf "$tmpd"; return 0; fi
   if [[ "$path" == *[[:space:]]* ]]; then
     rm -rf "$tmpd"
     printf 'ERROR: %s holds whitespace, which separates EXTRA_MOUNTS entries; it cannot be one.\n' "$(_ac_term "$path")" >&2
@@ -1472,13 +1480,21 @@ cmd_mv() {
   # .ai-containers that moves) would name another directory after the move, or
   # none: a relative EXTRA_MOUNTS entry or pointer. And a working directory other
   # than the project itself leaves the project's mounts unknown here.
-  local e d v k lf="$src_dot/sandbox.local.env"
-  local -a em=()
+  # EXTRA_MOUNTS and REPOS are the project's and, where the shell exports them,
+  # the shell's too (em_sh, rp_sh): the launcher reads the shell's over the
+  # project's files, and those files are what it reads once the shell's is gone.
+  local e d v k i lf="$src_dot/sandbox.local.env"
+  local -a em=() em_sh=() em_from=()
   read -r -d '' -a em < <(prj_env "$src_dot" EXTRA_MOUNTS) || true
-  for e in ${em[@]+"${em[@]}"}; do
-    d="$(_prj_mount_dir "$e")"
+  for e in ${em[@]+"${em[@]}"}; do em_from+=("$lf"); done
+  if [[ -n "${_prj_shell[EXTRA_MOUNTS]+x}" ]]; then
+    read -r -d '' -a em_sh <<<"${_prj_shell[EXTRA_MOUNTS]}" || true
+    for e in ${em_sh[@]+"${em_sh[@]}"}; do em+=("$e"); em_from+=("your shell"); done
+  fi
+  for i in "${!em[@]}"; do
+    e="${em[i]}"; d="$(_prj_mount_dir "$e")"
     if [[ "$d" != /* && "$d" != '~'* ]]; then
-      printf 'ERROR: the EXTRA_MOUNTS entry %s in %s is relative: the launcher resolves it against\n' "$(_ac_term "$e")" "$(_ac_term "$lf")" >&2
+      printf 'ERROR: the EXTRA_MOUNTS entry %s in %s is relative: the launcher resolves it against\n' "$(_ac_term "$e")" "$(_ac_term "${em_from[i]}")" >&2
       printf '       the launch directory, which moves, so it would name another directory. Make it absolute,\n' >&2
       printf '       then run this again. Nothing was changed.\n' >&2
       exit 1
@@ -1595,7 +1611,7 @@ cmd_mv() {
   # inside <new-dir> (the container mounts it there), or added to EXTRA_MOUNTS —
   # unless an entry covers it. One that cannot be an entry (whitespace) is
   # refused: it is usually the project's code, and no edit could mount it.
-  local rm_old_root=0 add_mount=0 cover="" cover_ro="" inside=0
+  local rm_old_root=0 add_mount=0 cover="" cover_ro="" inside=0 sh_miss=0 sh_ro=""
   if [[ -d "$old_root" ]]; then
     if [[ ! -L "$old_root" ]] && _prj_only_dot "$old_root"; then rm_old_root=1
     elif _prj_within "$old_root" "$new_root" || _prj_within "$(_prj_phys "$old_root")" "$(_prj_phys "$new_root")"; then inside=1
@@ -1609,6 +1625,10 @@ cmd_mv() {
     else
       cover="$PRJ_MOUNT_COVER"; cover_ro="$PRJ_MOUNT_RO"
       if [[ -z "$cover" ]]; then add_mount=1; fi
+      # The shell's list is the one the launcher reads, and mv cannot write it.
+      if [[ -n "${_prj_shell[EXTRA_MOUNTS]+x}" ]] && ! _prj_mounts_cover "$old_root" ${em_sh[@]+"${em_sh[@]}"}; then
+        sh_miss=1; sh_ro="$PRJ_MOUNT_RO"
+      fi
     fi
   fi
   # One name the launcher would mount twice under /workspace makes every launch
@@ -1617,9 +1637,19 @@ cmd_mv() {
   local nb ob n_set pn self from
   local -a names=() whats=() rp=() nb_ok=()
   nb="$(_prj_base "$new_root")"; ob="$(_prj_base "$old_root")"
+  local tag
+  local -a rp_sh=() rp_from=()
   read -r -d '' -a rp < <(prj_env "$src_dot" REPOS) || true
-  for e in ${em[@]+"${em[@]}"}; do names+=("$(_prj_base "$(_prj_mount_dir "$e")")"); whats+=("the EXTRA_MOUNTS entry $e"); nb_ok+=(""); done
-  for e in ${rp[@]+"${rp[@]}"}; do names+=("${e%%:*}"); whats+=("the REPOS repo ${e%%:*}"); nb_ok+=(""); done
+  for e in ${rp[@]+"${rp[@]}"}; do rp_from+=(""); done
+  if [[ -n "${_prj_shell[REPOS]+x}" ]]; then
+    read -r -d '' -a rp_sh <<<"${_prj_shell[REPOS]}" || true
+    for e in ${rp_sh[@]+"${rp_sh[@]}"}; do rp+=("$e"); rp_from+=(" (set in your shell)"); done
+  fi
+  for i in "${!em[@]}"; do
+    tag=""; if [[ "${em_from[i]}" == "your shell" ]]; then tag=" (set in your shell)"; fi
+    names+=("$(_prj_base "$(_prj_mount_dir "${em[i]}")")"); whats+=("the EXTRA_MOUNTS entry ${em[i]}$tag"); nb_ok+=("")
+  done
+  for i in "${!rp[@]}"; do names+=("${rp[i]%%:*}"); whats+=("the REPOS repo ${rp[i]%%:*}${rp_from[i]}"); nb_ok+=(""); done
   # The pointers, as the launch reads them — the shell's value over the project's
   # sandbox.local.env (prj_launch_env), a :ro or :rw taken off DOCS_PATH's and
   # ARCHITECTURE_REPO_PATH's (sandbox.sh: `parse_pointer_spec()`) — mount at
@@ -1714,6 +1744,16 @@ cmd_mv() {
     fi
   elif [[ -n "$cover" ]]; then printf '  EXTRA_MOUNTS %s is already covered by %s\n' "$t_old" "$(_ac_term "$cover")"
   elif (( inside )); then printf '  EXTRA_MOUNTS %s lies inside %s, which the container mounts: nothing to add\n' "$t_old" "$t_new"
+  fi
+  if (( sh_miss )); then
+    printf 'WARNING: your shell exports EXTRA_MOUNTS, which the launcher reads instead of sandbox.local.env,\n'
+    if [[ -n "$sh_ro" ]]; then
+      printf '         and mounts %s only read-only (%s): add %s to it, or the container\n' "$t_old" "$(_ac_term "$sh_ro")" "$t_old"
+      printf '         will not see that directory read-write. mv cannot change your shell.\n'
+    else
+      printf '         and it does not mount %s: add it there, or the container will not see that\n' "$t_old"
+      printf '         directory. mv cannot change your shell.\n'
+    fi
   fi
 
   if ! confirm "Move all of the above?"; then
@@ -1857,6 +1897,10 @@ cmd_mv() {
   fi
   if (( fail || leftover )); then exit 1; fi
   eval "${old_int:-trap - INT}"; eval "${old_term:-trap - TERM}"
+  if (( sh_miss )); then
+    printf 'WARNING: add %s to the EXTRA_MOUNTS your shell exports: the launcher reads that one, not\n' "$t_old" >&2
+    printf '         %s/sandbox.local.env.\n' "$t_ndot" >&2
+  fi
   printf 'OK: moved project %s to %s.\n' "$t_old" "$t_new"
 }
 

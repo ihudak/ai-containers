@@ -1501,6 +1501,61 @@ world; A="$W/alpha"; mvproj "$A" '' $'DOCS_PATH=/x/manual\n'
 mvrun "$A" "$W/new/docs" --yes; rc=$?
 unset DOCS_PATH
 ok "mv takes the shell's empty DOCS_PATH over the project's, as the launcher does" bash -c '[ "$1" = 0 ]' _ "$rc"
+
+# EXTRA_MOUNTS and REPOS the shell exports: the launcher reads them over the
+# project's sandbox.local.env, so mv checks them too, and says when the old root
+# it adds to that file is not in the shell's list (it cannot write the shell).
+export EXTRA_MOUNTS=/x/gamma
+clash '' "$W/new/gamma" "and the EXTRA_MOUNTS entry /x/gamma (set in your shell) would both be mounted at /workspace/gamma" \
+  "mv refuses a <new-dir> with the basename of an EXTRA_MOUNTS entry the shell sets"
+export EXTRA_MOUNTS='/x/one ../shared'
+relative '' "the EXTRA_MOUNTS entry ../shared in your shell is relative" "mv refuses a relative EXTRA_MOUNTS entry the shell sets, naming it and the shell"
+unset EXTRA_MOUNTS
+export REPOS='lib:ro delta:rw'
+clash '' "$W/new/delta" "and the REPOS repo delta (set in your shell) would both be mounted at /workspace/delta" \
+  "mv refuses a <new-dir> with the name of a REPOS repo the shell sets"
+unset REPOS
+# Not the engine's own: project.sh loads this checkout's sandbox.local.env into
+# itself, and that is not what a project's launcher reads.
+printf 'EXTRA_MOUNTS=/x/gamma\nREPOS=delta:rw\n' > "$ENG/sandbox.local.env"
+world; A="$W/alpha"; mvproj "$A"
+mvrun "$A" "$W/new/gamma" --yes; rc=$?
+world; A="$W/alpha"; mvproj "$A"
+mvrun "$A" "$W/new/delta" --yes; rc3=$?
+rm -f "$ENG/sandbox.local.env"
+ok "mv does not take the engine checkout's own EXTRA_MOUNTS or REPOS for the shell's" \
+  bash -c '[ "$1" = 0 ] && [ "$2" = 0 ] && [ -f "$3/new/delta/.ai-containers/sandbox.env" ]' _ "$rc" "$rc3" "$W"
+# The old root added to sandbox.local.env, which the shell's EXTRA_MOUNTS
+# shadows: said before the question and again at the end.
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS=/x/one
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where the shell's EXTRA_MOUNTS does not mount the old root still adds it to sandbox.local.env" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "EXTRA_MOUNTS=\"$2\"" "$3/.ai-containers/sandbox.local.env"' _ "$rc" "$A" "$N"
+ok "  … warning before the question that the shell's list does not mount it" \
+  bash -c 'grep -qxF "WARNING: your shell exports EXTRA_MOUNTS, which the launcher reads instead of sandbox.local.env," "$1" \
+           && grep -qxF "         and it does not mount $2: add it there, or the container will not see that" "$1" \
+           && [ "$(grep -n "^WARNING: your shell" "$1" | cut -d: -f1)" -lt "$(grep -n "^Copied " "$1" | cut -d: -f1)" ]' _ "$TMP/out" "$A"
+ok "  … and again at the end" hasx "WARNING: add $A to the EXTRA_MOUNTS your shell exports: the launcher reads that one, not"
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS="/x/one $W"
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where the shell's EXTRA_MOUNTS mounts the old root read-write warns of nothing" \
+  bash -c '[ "$1" = 0 ] && ! grep -q "your shell" "$2"' _ "$rc" "$TMP/out"
+world; A="$W/alpha"; mvproj "$A"; N="$W/new/beta"
+export EXTRA_MOUNTS="$W:ro"
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv where the shell's EXTRA_MOUNTS mounts the old root only read-only says so, naming the entry" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "         and mounts $2 only read-only ($3:ro): add $2 to it, or the container" "$4"' _ "$rc" "$A" "$W" "$TMP/out"
+world; A="$W/outer/alpha"; mvproj "$A"; N="$W/outer"
+export EXTRA_MOUNTS=/x/one
+mvrun "$A" "$N" --yes; rc=$?
+unset EXTRA_MOUNTS
+ok "mv into a directory that holds the old root warns of nothing about the shell's EXTRA_MOUNTS" \
+  bash -c '[ "$1" = 0 ] && grep -qF "lies inside $3, which the container mounts" "$2" && ! grep -q "your shell" "$2"' _ "$rc" "$TMP/out" "$N"
 world; A="$W/alpha"; N="$W/new/docs"; mvproj "$A" '' "DOCS_PATH=$N:ro"$'\n'
 mvrun "$A" "$N" --yes; rc=$?
 ok "mv takes a <new-dir> named docs that DOCS_PATH itself names: the launcher mounts the working directory once" \

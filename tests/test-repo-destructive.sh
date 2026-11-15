@@ -788,6 +788,64 @@ case "$(removed)" in
   *) fail "  … control: without --unused, an in-use copy is still removed — got: $(removed)" ;;
 esac
 
+# ── 16b. gc keeps another home's working copies unless --all ─────────────────
+# One docker daemon can serve several homes (Docker Desktop's, by every WSL
+# distro, where one user name gives the same launch paths), and a launch labels
+# each copy with the home that made it (ai-containers.owner, sandbox-common.sh:
+# ai_containers_owner_id()). gc removed every copy, another home's unpushed work
+# included. An unlabelled copy says nothing about whose it is: removed as before.
+owner_world() {   # projA: this home's; projB: another home's; docs-archive's: unlabelled
+  setup_world
+  own_id="$(bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1 && ai_containers_owner_id' _ "$ENGINE_DIR")"
+  [[ "$own_id" == sha256:* ]] || { printf 'SCAFFOLD-FAILED: no owner id (%s)\n' "$own_id"; exit 1; }
+  printf 'ai-containers.owner=%s\n' "$own_id" >> "$VOLS/ai-containers-repo-docs--wc-projA.labels"
+  printf 'ai-containers.owner=sha256:%064d\n' 0 >> "$VOLS/ai-containers-repo-docs--wc-projB.labels"
+}
+owner_world
+run_repo gc --yes
+check "gc --yes removes this home's copies and unlabelled ones, and keeps another home's" \
+  "ai-containers-repo-docs--wc-projA|ai-containers-repo-docs-archive--wc-projA|" "$(removed)"
+grep -qE "^  no +ai-containers-repo-docs--wc-projB +docs +another +/tmp/docs--wc-projB  \[another home's — kept; --all removes it\]$" "$OUT" \
+  && pass "  … saying which one it kept, whose it is, and how to remove it" \
+  || fail "  … saying which one it kept (got: $(tr '\n' '|' < "$OUT"))"
+grep -qE "^  no +ai-containers-repo-docs--wc-projA +docs +this home +/tmp/docs--wc-projA$" "$OUT" \
+  && grep -qE "^  no +ai-containers-repo-docs-archive--wc-projA +docs-archive +unlabelled +/tmp/docs-archive--wc-projA$" "$OUT" \
+  && pass "  … naming this home's copy and the unlabelled one as such" \
+  || fail "  … naming this home's copy and the unlabelled one (got: $(tr '\n' '|' < "$OUT"))"
+owner_world
+run_repo gc --all --yes
+check "gc --all --yes removes another home's copies too" \
+  "ai-containers-repo-docs--wc-projA|ai-containers-repo-docs--wc-projB|ai-containers-repo-docs-archive--wc-projA|" "$(removed)"
+owner_world
+run_repo gc --repo docs --yes
+check "gc --repo docs keeps another home's copy of docs" "ai-containers-repo-docs--wc-projA|" "$(removed)"
+# No key in this HOME yet: no copy can carry its id, so a labelled one is
+# another home's; and asking whose a copy is makes no key.
+owner_world
+rm -f "$HOME/.ai-containers/project-id.key"
+run_repo gc --yes
+check "gc with no key here keeps every labelled copy, as another home's" \
+  "ai-containers-repo-docs-archive--wc-projA|" "$(removed)"
+[[ ! -e "$HOME/.ai-containers/project-id.key" ]] \
+  && pass "  … and makes no key by asking" \
+  || fail "  … and makes no key by asking — gc wrote $HOME/.ai-containers/project-id.key"
+# list --copies says whose each copy is, and what "another" means for gc.
+owner_world
+run_repo list --copies
+grep -qE "^no +ai-containers-repo-docs--wc-projA +docs +- +this home +/tmp/docs--wc-projA$" "$OUT" \
+  && grep -qE "^no +ai-containers-repo-docs--wc-projB +docs +- +another +/tmp/docs--wc-projB$" "$OUT" \
+  && grep -qE "^no +ai-containers-repo-docs-archive--wc-projA +docs-archive +- +unlabelled +/tmp/docs-archive--wc-projA$" "$OUT" \
+  && pass "list --copies names each copy's owner: this home, another, unlabelled" \
+  || fail "list --copies names each copy's owner (got: $(tr '\n' '|' < "$OUT"))"
+grep -qF './repo.sh gc keeps it unless given --all.' "$OUT" \
+  && pass "  … and says that gc keeps another home's copy unless --all" \
+  || fail "  … and says that gc keeps another home's copy unless --all (got: $(tr '\n' '|' < "$OUT"))"
+setup_world
+run_repo list --copies
+! grep -qF 'another home' "$OUT" \
+  && pass "  … a note it leaves out where no copy is another home's" \
+  || fail "  … a note it leaves out where no copy is another home's (got: $(tr '\n' '|' < "$OUT"))"
+
 # ── 17. gc refuses what it cannot scope ──────────────────────────────────────
 setup_world
 run_repo gc --repo '../../etc' --yes
@@ -1060,7 +1118,7 @@ grep -q "registry entry in $HOME/.ai-containers/repos.conf" "$OUT" \
 # copy in front of them is the one holding their work.
 setup_world
 run_repo gc
-grep -qE 'ai-containers-repo-docs--wc-projA +docs +/tmp/docs--wc-projA' "$OUT" \
+grep -qE 'ai-containers-repo-docs--wc-projA +docs +unlabelled +/tmp/docs--wc-projA' "$OUT" \
   && pass "gc's table shows each copy's repo and launch dir, from its labels" \
   || fail "gc's table shows each copy's repo and launch dir (got: $(tr '\n' '|' < "$OUT"))"
 
@@ -1139,7 +1197,7 @@ cov="$(PATH="$FAKE_BIN:$PATH" bash -c '
 setup_world
 rm -f "$VOLS"/ai-containers-repo-docs--wc-projA.labels
 run_repo gc
-grep -qE 'ai-containers-repo-docs--wc-projA +\? +\(unlabeled\)' "$OUT" \
+grep -qE 'ai-containers-repo-docs--wc-projA +\? +unlabelled +\(unlabeled\)' "$OUT" \
   && pass "gc marks an unlabelled copy '?' and '(unlabeled)' rather than blank" \
   || fail "gc marks an unlabelled copy '?' and '(unlabeled)' (got: $(tr '\n' '|' < "$OUT"))"
 

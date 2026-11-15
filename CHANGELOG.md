@@ -181,6 +181,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`repo.sh gc` keeps another home's working copies.** It removed every
+  `:rwcopy` working copy by default, and on a docker daemon several homes
+  share (Docker Desktop's, by every WSL distro, or several users') that took
+  another home's, unpushed work and all. It now reads each copy's
+  `ai-containers.owner` label: another home's copy is listed and kept unless
+  `gc --all` is given; this home's, and an unlabelled one (made before the
+  label, nothing says whose), are removed as before. `repo.sh list --copies`
+  shows each copy's owner. Asking makes no `project-id.key`.
+
+- **`project.sh mv` reads `EXTRA_MOUNTS` and `REPOS` from your shell too.**
+  The launcher reads an exported `EXTRA_MOUNTS` or `REPOS` over the project's
+  `sandbox.local.env`, and `mv` checked only the file: a `<new-dir>` whose
+  basename an entry in the shell's list also has passed, and every launch
+  from it failed. `mv` now checks both lists for that clash and for relative
+  entries. And when the shell's `EXTRA_MOUNTS` does not mount the old
+  directory read-write, the line `mv` adds to `sandbox.local.env` is not the
+  one the launcher reads: `mv` says so before the question and again at the
+  end, since it cannot change your shell.
+
 - **`verify-on-host.sh` runs the bash-floor suite from a git worktree.** The
   floor container mounts the checkout alone, and a linked worktree's `.git`
   names its git directory under the main checkout's `.git`, outside that mount,

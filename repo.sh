@@ -24,7 +24,7 @@ Usage:
   ./repo.sh reset <name | --all> [--yes]         Clean slate: primary branch, remote tip, other branches dropped
   ./repo.sh list [--sizes] [--copies]            List repos (--copies lists :rwcopy working copies)
   ./repo.sh rm   <name> [--yes]                  Remove a repo volume + its working copies
-  ./repo.sh gc   [--repo <name>] [--unused] [--yes]
+  ./repo.sh gc   [--repo <name>] [--unused] [--all] [--yes]
                                                  Prune :rwcopy working-copy volumes
   ./repo.sh reindex                              Rebuild the registry from volume labels
 
@@ -37,6 +37,9 @@ Notes:
     'list'/'gc' read them directly. The registry (repos.conf) is a cache: it is
     authoritative only for Linux bind-backend repos (no volume) and the mutable
     last-synced time, and is rebuildable from labels with 'reindex'.
+  - A working copy is labelled with the home that made it. 'gc' keeps another
+    home's (another WSL distro or user sharing this docker daemon) unless given
+    --all; 'list --copies' shows whose each one is.
   - Authentication for git-url sources uses your HOST ~/.ssh (mounted read-only).
   - Volume contents are chowned to SANDBOX_UID/SANDBOX_GID (default id -u/id -g),
     the SAME identity sandbox.sh runs the container as. If you override these, set
@@ -511,8 +514,21 @@ cmd_sync() {
   printf 'NOTE: :rw / :rwcopy working copies are NOT updated by sync — use ./repo.sh reset <name>, or remove the working-copy volumes to re-seed.\n'
 }
 
-# List working-copy (:rwcopy) volumes with their parent repo, originating launch
-# directory (from labels), in-use state, and optionally size.
+# wc_owner <volume> <this HOME's id, or empty>: whose working copy it is, by its
+# ai-containers.owner label (sandbox-common.sh: ai_containers_owner_id()): "this
+# home", "another" — another HOME sharing this docker daemon (Docker Desktop's,
+# shared by every WSL distro, where one user name gives the same launch paths) —
+# or "unlabelled": made before there was a label, or by a launch that could not
+# compute one, so nothing says whose.
+wc_owner() {
+  local o; o="$(docker_volume_label "$1" 'ai-containers.owner')"
+  if [[ -z "$o" ]]; then printf 'unlabelled'
+  elif [[ "$o" == "$2" ]]; then printf 'this home'
+  else printf 'another'; fi
+}
+
+# List working-copy (:rwcopy) volumes with their parent repo, owner, originating
+# launch directory (from labels), in-use state, and optionally size.
 list_copies() {
   local show_sizes="$1"
   local copies; copies="$(repo_workcopy_volumes)"
@@ -520,17 +536,23 @@ list_copies() {
     printf 'No :rwcopy working copies exist.\n'
     return 0
   fi
-  printf '%-4s %-44s %-14s %-7s %s\n' "USE" "WORKING COPY VOLUME" "REPO" "SIZE" "LAUNCH DIR"
-  local wc repo ldir inuse size
+  local wc repo ldir inuse size owner own others=0
+  own="$(ai_containers_owner_known)" || own=""
+  printf '%-4s %-44s %-14s %-7s %-10s %s\n' "USE" "WORKING COPY VOLUME" "REPO" "SIZE" "OWNER" "LAUNCH DIR"
   while IFS= read -r wc; do
     [[ -z "$wc" ]] && continue
     if docker_volume_in_use "$wc"; then inuse="yes"; else inuse="no"; fi
     repo="$(docker_volume_label "$wc" 'ai-containers.repo')"; [[ -z "$repo" ]] && repo="?"
     ldir="$(docker_volume_label "$wc" 'ai-containers.launch-dir')"; [[ -z "$ldir" ]] && ldir="(unlabeled)"
+    owner="$(wc_owner "$wc" "$own")"; [[ "$owner" != another ]] || others=$((others + 1))
     size="-"
     (( show_sizes )) && size="$(docker run --rm --entrypoint sh -v "$wc":/v "$seed_image" -c 'du -sh /v 2>/dev/null | cut -f1' 2>/dev/null || echo '?')"
-    printf '%-4s %-44s %-14s %-7s %s\n' "$inuse" "$wc" "$repo" "$size" "$ldir"
+    printf '%-4s %-44s %-14s %-7s %-10s %s\n' "$inuse" "$wc" "$repo" "$size" "$owner" "$ldir"
   done <<< "$copies"
+  if (( others )); then
+    printf '\n"another": made by another home that shares this docker daemon (another WSL distro or user);\n'
+    printf 'its launch directory is a path there, not here. ./repo.sh gc keeps it unless given --all.\n'
+  fi
 }
 
 cmd_list() {
@@ -992,16 +1014,19 @@ cmd_reset() {
   printf 'OK: reset complete.\n'
 }
 
-# Prune :rwcopy working-copy volumes. By default removes ALL working copies (of
-# all repos); narrow with --repo <name>, and/or restrict to copies not currently
-# mounted by a running container with --unused. Working copies may hold
-# UNCOMMITTED work, so it confirms unless --yes.
+# Prune :rwcopy working-copy volumes. By default removes ALL of this home's
+# working copies (of all repos), and the unlabelled ones, which nothing says are
+# another's; another home's (wc_owner) are kept unless --all. Narrow with --repo
+# <name>, and/or restrict to copies not currently mounted by a running container
+# with --unused. Working copies may hold UNCOMMITTED work, so it confirms unless
+# --yes.
 cmd_gc() {
-  local target_repo="" only_unused=0 assume_yes=0
+  local target_repo="" only_unused=0 assume_yes=0 all_homes=0
   while (( $# )); do
     case "$1" in
       --repo)   shift; target_repo="${1:-}"; [[ -z "$target_repo" ]] && { printf 'ERROR: --repo needs a name\n' >&2; exit 1; } ;;
       --unused) only_unused=1 ;;
+      --all)    all_homes=1 ;;
       --yes|-y) assume_yes=1 ;;
       -*)       printf 'ERROR: unknown flag %s\n' "$1" >&2; exit 1 ;;
       *)        printf 'ERROR: unexpected argument %s\n' "$1" >&2; exit 1 ;;
@@ -1017,19 +1042,25 @@ cmd_gc() {
     return 0
   fi
 
-  local victims=() wc repo ldir inuse
+  local victims=() wc repo ldir inuse owner own
+  own="$(ai_containers_owner_known)" || own=""
   printf 'Working copies%s:\n' "${target_repo:+ for \"$target_repo\"}"
-  printf '  %-4s %-44s %-14s %s\n' "USE" "VOLUME" "REPO" "LAUNCH DIR"
+  printf '  %-4s %-44s %-14s %-10s %s\n' "USE" "VOLUME" "REPO" "OWNER" "LAUNCH DIR"
   while IFS= read -r wc; do
     [[ -z "$wc" ]] && continue
     if docker_volume_in_use "$wc"; then inuse="yes"; else inuse="no"; fi
     repo="$(docker_volume_label "$wc" 'ai-containers.repo')"; [[ -z "$repo" ]] && repo="?"
     ldir="$(docker_volume_label "$wc" 'ai-containers.launch-dir')"; [[ -z "$ldir" ]] && ldir="(unlabeled)"
+    owner="$(wc_owner "$wc" "$own")"
     if (( only_unused )) && [[ "$inuse" == "yes" ]]; then
-      printf '  %-4s %-44s %-14s %s  [in use — kept]\n' "$inuse" "$wc" "$repo" "$ldir"
+      printf '  %-4s %-44s %-14s %-10s %s  [in use — kept]\n' "$inuse" "$wc" "$repo" "$owner" "$ldir"
       continue
     fi
-    printf '  %-4s %-44s %-14s %s\n' "$inuse" "$wc" "$repo" "$ldir"
+    if (( ! all_homes )) && [[ "$owner" == another ]]; then
+      printf '  %-4s %-44s %-14s %-10s %s  [another home'"'"'s — kept; --all removes it]\n' "$inuse" "$wc" "$repo" "$owner" "$ldir"
+      continue
+    fi
+    printf '  %-4s %-44s %-14s %-10s %s\n' "$inuse" "$wc" "$repo" "$owner" "$ldir"
     victims+=("$wc")
   done <<< "$all"
 
