@@ -666,6 +666,12 @@ repo-git-reset.sh:return-flip:b0efa2e821599ba0486d07566c82033a71591e15
 repo-git-reset.sh:return-flip:c58fded937f10de7cac0d87b49895241c22ac3a9
 repo-git-reset.sh:return-flip:06d3d9b2060dd51343d5f19f0e531f15c507e3d1
 repo-git-reset.sh:logic-flip:ba96bc5c1e6cd853fba23e56089b13f2a3833a98
+repo-git-reset.sh:return-flip:108bb68c42deda209266e7f16fe38f73ea92125a
+repo-git-reset.sh:return-flip:a40c65f6c9b3a20d37b0dfd62491744493e161bc
+repo-git-reset.sh:return-flip:b73014221ca338b40fd35301b6284611fa3a10be
+repo-git-reset.sh:return-flip:e9010fd23d8d40b20a673f837cc76b2f61ff559c
+repo-git-reset.sh:return-flip:58d8b10ae5d6476af1fdc5cf137421df23328c93
+repo-git-reset.sh:return-flip:9d7c988cf3bdae6cd2abe2e7113b07531c473153
   git config --global --add safe.directory "$1" >/dev/null 2>&1 || true
   git … update-index -q --ignore-submodules --refresh >/dev/null 2>&1 || true
   git -C "$F" branch --quiet --set-upstream-to="origin/$b" "$b" >/dev/null 2>&1 || true
@@ -677,6 +683,16 @@ repo-git-reset.sh:logic-flip:ba96bc5c1e6cd853fba23e56089b13f2a3833a98
   [[ -f "$gd/packed-refs" ]] || return 0           (volume_refs and other_ref)
   [[ -f "$1/.git/HEAD" ]] || return 0              (volume_head)
   return 0                                         (the end of volume_head)
+  worktree_state()'s `printf '?'; return 0` exits (the guards on cloned/branch, the
+                                                   tip's shape, read-tree, the
+                                                   ls-files status) and its
+                                                   `changed`/`?` case arms:
+                                                   each returns 1 instead of 0.
+                                                   Its one caller is
+                                                   `printf 'WORKTREE|%s\n' "$(worktree_state …)"`
+                                                   in cmd_inspect, which drops the
+                                                   status; the printed word is
+                                                   unchanged.
   damaged:  the first four become `&& true`; the rest return 1 instead of 0.
   EQUIVALENT: no test could kill these, because nothing anywhere reads the
   status they change. This file sets `set -uo pipefail` and deliberately NOT
@@ -1099,3 +1115,19 @@ project-files.sh:logic-flip:15e05666749c02ec7429120ca42cbe76eb97e0f5
     callers run under it), so neither ends anything; the next line reads
     _pp_out, which the read set either way, and the function's status is the
     final `[[ -n "$_pp_out" ]]`.
+
+# ── 28 ────────────────────────────────────────────────────────────────────────
+GROUP: worktree_state()'s first guard, && turned into ||
+repo-git-reset.sh:logic-flip:108bb68c42deda209266e7f16fe38f73ea92125a
+  [[ -n "$cloned" && -n "$b" ]] || { printf '?'; return 0; }
+  damaged:  `&&` becomes `||`, so the guard answers ? only when BOTH are empty.
+  EQUIVALENT: every input the mutated guard lets through that the original
+    stopped is answered ? a few lines on, so the printed record is the same.
+    cloned empty means fresh_clone failed, and `git clone` removes the
+    directory it failed to make, so $F/.git does not exist and the
+    `read-tree` step fails and prints ?. The branch empty means a detached
+    HEAD (volume_head prints nothing), volume_branches never yields a branch
+    with an empty name, so tip stays empty, fails the 40/64-hex test and
+    prints ?. The two ? paths are asserted ("remote cannot be cloned",
+    "detached HEAD"); no input separates the two programs. If fresh_clone
+    ever leaves a usable $F/.git behind on failure, re-measure.

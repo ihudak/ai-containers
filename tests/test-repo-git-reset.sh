@@ -314,6 +314,14 @@ g "$W" push -q origin main >/dev/null 2>&1
 printf 'x\n' > "$W/debug.log"
 run_script inspect "$W"
 wt_check "inspect reports WORKTREE|clean when the only extra file is ignored by the checkout's .gitignore" clean
+# More untracked names than a pipe holds (64 KiB): `head -c 1` closes the pipe
+# while git still has output, so git exits 141 (SIGPIPE), which is an answer.
+W="$(mk_repo wt-untracked-many)"
+mkdir "$W/u"
+pad="$(printf 'n%.0s' {1..100})"
+for ((i = 0; i < 800; i++)); do : > "$W/u/$pad$i"; done
+run_script inspect "$W"
+wt_check "inspect reports WORKTREE|changed for more untracked names than a pipe holds" changed
 W="$(mk_repo wt-offline)"
 rm -rf "$TMP/wt-offline.git"
 run_script inspect "$W"
