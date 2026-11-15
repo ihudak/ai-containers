@@ -234,6 +234,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   named. The path is now followed as the kernel follows it (bugs review
   GIT-96).
 
+- **A `core.worktree` too long for the launcher to enter refuses the launch.**
+  git follows an absolute `core.worktree` one directory at a time, whatever its
+  length; the launcher entered it in one step, which fails past the length a
+  path can have (4096 bytes on Linux, 1024 on macOS). The checkout git used
+  was then unknown to the launch: the submodules its index records were not
+  looked for, and one under `node_modules` or `vendor` stayed writable, with
+  only `no worktree is known` printed. A `core.worktree` of more than 1000
+  bytes that cannot be entered now refuses the launch, naming the config file
+  and the length. One that can be entered is followed as before (bugs review
+  GIT-101).
+
 - **A very long `core.worktree` or `gitdir` no longer costs every launch minutes.**
   The search for the directory that blocks such a path took the path apart a
   component at a time, copying what was left at each step, so its cost grew

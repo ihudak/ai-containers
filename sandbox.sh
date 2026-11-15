@@ -3759,6 +3759,7 @@ _rd_fail() {
     odd) why="holds what git reads otherwise than this launcher: a NUL, more than 4096 bytes, or a gitdir's space or tab at its end" ;;
     norun) why="could not be read: the command that bounds the read ran nothing (it exited 125)" ;;
     spent) why="could not be read within ${3:-?} s, though it is a regular file, and this launch has no more time for slow reads" ;;
+    long) why="sets a core.worktree of ${3:-?} bytes that this launcher cannot enter" ;;
     *) why="could not be read within ${3:-its bound} s, and is not a regular file now (swapped for a FIFO, or removed)" ;;
   esac
   # To the launcher's own stderr: every caller sends its stderr to /dev/null, and
@@ -3766,6 +3767,11 @@ _rd_fail() {
   printf 'ERROR: %s %s; refusing the launch.\n' "$(_term "$1")" "$why" >&"${_rd_errfd:-2}"
   if [[ "${2:-}" == slow || "${2:-}" == spent ]]; then
     printf '       The host may be busy: launch again.\n' >&"${_rd_errfd:-2}"
+  elif [[ "${2:-}" == long ]]; then
+    printf '       It is too long to tell whether your git reaches a directory through it: git follows an\n' >&"${_rd_errfd:-2}"
+    printf '       absolute path of any length, a component at a time, where this launcher enters a path in\n' >&"${_rd_errfd:-2}"
+    printf '       one step, and what git uses there would go unprotected. If the directory is there, write\n' >&"${_rd_errfd:-2}"
+    printf '       its real path in that file; if it is not, remove the core.worktree from it.\n' >&"${_rd_errfd:-2}"
   elif [[ "${2:-}" == odd ]]; then
     why="${1##*/}"
     if [[ "${why,,}" == commondir ]]; then
@@ -4216,6 +4222,31 @@ _path_gone() {
   return 1
 }
 
+# _git_wt_long <config file> <core.worktree as written>: one of more than 1000
+# bytes that could not be entered refuses the launch, naming the file and the
+# length, never the value; succeeds when it did. git follows an absolute
+# core.worktree a component at a time, whatever its length (measured, git 2.56:
+# 60 KB), and enters a relative one with one chdir; this launcher enters either
+# with one cd, a relative one behind ./, which the kernel refuses at the length
+# a path can have. The checkout git used was then no worktree here: the
+# submodules its index records were not followed, and one under a pruned
+# node_modules went unprotected behind "no worktree is known" (bugs review
+# GIT-101; G292). Long and not entered cannot be told from too long to enter,
+# so both refuse: on Linux a value of 1001 to about 4090 bytes is refused
+# because it is not there, has a file on its way or cannot be searched, never
+# for its length, and the refusal's words fit both. 1000 bytes, under the
+# shortest such length there is (macOS's 1024) less the ./ and the NUL, so no
+# table of platforms. Bytes: the count is taken in the C locale, and only the
+# count. Asked whatever extensions.worktreeConfig says, as the two places are.
+_git_wt_long() {
+  local _wl_n
+  _byte_len _wl_n "$2"
+  (( _wl_n > 1000 )) || return 1
+  _rd_fail "$1" long "$_wl_n"
+  return 0
+}
+_byte_len() { local LC_ALL=C; printf -v "$1" '%s' "${#2}"; }
+
 # _path_parts <array name> <path>: the path's components, split at every / in
 # one pass, in time linear in its length. A leading or a doubled / gives an
 # empty component, which the caller passes over. Split by the shell's own word
@@ -4263,7 +4294,10 @@ _path_parts() {
 # the way. Taken off the front of a string one at a time, each step copied all
 # that was left, and a core.worktree of 16 KB, which nothing bounds, cost a
 # launch a minute (bugs review GIT-97; G291). The cost still grows with the
-# way's length, and nothing bounds that yet (GIT-101).
+# way's length: a core.worktree, the one pointer with no bound on its length,
+# is refused before it comes here when it is long (_git_wt_long; GIT-101), and
+# a way of many real directories still costs the square of its depth, each
+# test below looking the whole of it up again (GIT-102).
 _gdi_blocked() {
   local _gb_p="" _gb_c _gb_t _gb_n=0 _gb_b="" _gb_j _gb_did="" _gb_k _gb_sn=0
   local -a _gb_w=() _gb_tw=() _gb_s=()
@@ -4858,6 +4892,9 @@ git_dirs_in() {
       _git_config_get wt "$wcf" core.worktree || continue
       if [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"
       elif [[ -n "$wt" ]]; then
+        # Too long to tell whether git reaches it: refused (GIT-101). The check
+        # after a session, where a refusal only cuts the search short, goes on.
+        if _git_wt_long "$wcf" "$wt"; then continue; fi
         # Not reached for a directory on the way you cannot search (GIT-60).
         [[ "$wt" == /* ]] || wt="$g/$wt"
         _gdi_blocked "$wt" "$5" || true
@@ -4869,8 +4906,9 @@ git_dirs_in() {
     if [[ -f "$g/commondir" ]]; then
       tgt=""; _git_ptr_read "$g/commondir" tgt || true
       if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]] && _cd_phys wcf "$g" "$tgt" \
-         && _git_config_get wt "$wcf/config" core.worktree && [[ -n "$wt" ]] && _cd_phys wtp "$g" "$wt"; then
-        _gdi_add_top "$wtp"
+         && _git_config_get wt "$wcf/config" core.worktree && [[ -n "$wt" ]]; then
+        # One too long to enter from here is refused, as above (GIT-101).
+        if _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"; else _git_wt_long "$wcf/config" "$wt" || true; fi
       fi
     fi
     # Every git directory — a .git one too, a linked worktree's, a separate git
