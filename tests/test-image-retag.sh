@@ -291,9 +291,22 @@ other_id="$(HOME="$TMP/home2" bash -c 'source "$1/sandbox-common.sh" >/dev/null 
    && "$other_id" == sha256:* && "$other_id" != "$ME_ID" ]] \
   && pass "the id's key is this user's, 0600, and stable; another key gives another id" \
   || fail "the id's key (mode $(p_stat_mode "$key"); again: $(ai_containers_project_id "$ME"); other: $other_id)"
-# A key that is not one this tool made gives no id, promptly and quietly: a FIFO,
-# a directory, a short or uppercase one, one it cannot read (second review of
-# the fix, L3, L5); and where hard links fail, the key is made all the same.
+# The owner id a working copy carries (ai-containers.owner): this HOME's, the
+# same on every call, another HOME's key giving another; keyed, so not the
+# plain hash of its fixed string, and no project's id. A HOME with no key yet
+# gets one made, 0600, as for a project id.
+own_id="$(ai_containers_owner_id)"
+own_other="$(HOME="$TMP/home4" bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_owner_id' _ "$ENGINE")"
+[[ "$own_id" == sha256:* && ${#own_id} == 71 && "$(ai_containers_owner_id)" == "$own_id" \
+   && "$own_other" == sha256:* && ${#own_other} == 71 && "$own_other" != "$own_id" && "$own_id" != "$ME_ID" \
+   && "$own_id" != "sha256:$(printf 'ai-containers owner' | ai_containers_sha256)" \
+   && "$(p_stat_mode "$TMP/home4/.ai-containers/project-id.key")" == 600 ]] \
+  && pass "the owner id is this HOME's: keyed, stable, another HOME's key gives another; a missing key is made 0600" \
+  || fail "the owner id (this: $own_id; again: $(ai_containers_owner_id); another HOME: $own_other)"
+# A key that is not one this tool made gives no id, project or owner, promptly
+# and quietly: a FIFO, a directory, a short or uppercase one, one it cannot read
+# (second review of the fix, L3, L5); and where hard links fail, the key is made
+# all the same.
 mv "$key" "$TMP/key.saved"; bad=""
 for k in fifo dir short upper unreadable; do
   case "$k" in
@@ -302,8 +315,9 @@ for k in fifo dir short upper unreadable; do
     unreadable) printf '%064d\n' 0 > "$key"; chmod 000 "$key" ;;
   esac
   [[ "$k" == unreadable && "$(id -u)" == 0 ]] && { rm -f "$key"; continue; }
-  out="$(bounded "$key" bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_project_id "$2"; echo "rc=$?"' _ "$ENGINE" "$ME")"
-  [[ "$out" == rc=1 ]] || bad+=" $k:[$out]"
+  out="$(bounded "$key" bash -c 'source "$1/sandbox-common.sh" >/dev/null 2>&1; ai_containers_project_id "$2"; echo "rc=$?"
+    ai_containers_owner_id; echo "owner rc=$?"' _ "$ENGINE" "$ME")"
+  [[ "$out" == $'rc=1\nowner rc=1' ]] || bad+=" $k:[$out]"
   chmod 644 "$key" 2>/dev/null; rm -rf "$key"
 done
 mv "$TMP/key.saved" "$key"

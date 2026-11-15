@@ -41,6 +41,8 @@ allowlist-cidrs.d/custom.txt
 # Project registry — populated by project-init.sh. Gitignored to avoid
 # committing personal paths. See projects.conf.example for the format.
 /projects.conf
+# project.sh rewrites it through a temp file beside it; an interrupt can leave one.
+/.projects.conf.*
 
 # The synced working copy project-init.sh puts beside a project — including this
 # repo, when it is registered against itself. project-init.sh writes exactly this

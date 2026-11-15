@@ -5940,9 +5940,12 @@ _git_walk_keys() {
 # Seed a per-workspace writable working-copy volume from a repo's shared base
 # volume using a fast local copy inside the VM (no network, no re-clone). The
 # working copy is labeled with its parent repo and originating launch dir so
-# `repo.sh list --copies` / `repo.sh gc` can identify and prune it later.
+# `repo.sh list --copies` / `repo.sh gc` can identify and prune it later, and
+# with this HOME's id (ai_containers_owner_id()), which tells project.sh this
+# home's copies from another's on a daemon several homes share. A launch never
+# fails over the id: without one the copy is made unlabelled, as before.
 seed_workcopy_volume() {
-  local base_vol="$1" wc_vol="$2" repo_name="${3:-}" launch="${4:-}"
+  local base_vol="$1" wc_vol="$2" repo_name="${3:-}" launch="${4:-}" owner
   if docker volume inspect "$wc_vol" >/dev/null 2>&1; then
     return 0
   fi
@@ -5950,6 +5953,7 @@ seed_workcopy_volume() {
   local labels=(--label "ai-containers.workcopy=1")
   [[ -n "$repo_name" ]] && labels+=(--label "ai-containers.repo=${repo_name}")
   [[ -n "$launch" ]] && labels+=(--label "ai-containers.launch-dir=${launch}")
+  if owner="$(ai_containers_owner_id 2>/dev/null)"; then labels+=(--label "ai-containers.owner=${owner}"); fi
   docker volume create "${labels[@]}" "$wc_vol" >/dev/null
   # --entrypoint bash bypasses entrypoint.sh (which ignores args and would run the
   # firewall/restricted flow). cp -a preserves the ownership set on the base volume.
@@ -6645,7 +6649,7 @@ run_container() {
     fi
   fi
   if [[ ${#repos_list[@]} -gt 0 ]]; then
-    local ws_tag; ws_tag="$(sanitize_volume_token "$(basename "$launch_dir")")_$(printf '%s' "$launch_dir" | cksum | tr -cd '0-9' | cut -c1-8)"
+    local ws_tag; ws_tag="$(workcopy_tag "$launch_dir")"
     # Every entry's volumes are checked before ANY is seeded or mounted: a repo
     # volume is found by name, and under a nested REPO_VOLUME_PREFIX two repos'
     # names collide, a working copy's (`<base>--wc-<tag>`) as much as a base

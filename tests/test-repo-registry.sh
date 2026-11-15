@@ -233,6 +233,21 @@ check "repo_workcopy_volume_name appends --wc-<tag>" \
 check "repo_workcopy_volume_name sanitizes both name and tag" \
   "ai-containers-repo-a_b--wc-c_d" "$(repo_workcopy_volume_name 'a/b' 'c d')"
 
+# workcopy_tag is the one formula sandbox.sh and `project.sh mv` name a working
+# copy with: sanitised basename, `_`, first 8 digits of the full path's cksum.
+# The expected value is derived here by hand, not by calling the function.
+_wt_dir="/home/u/my proj"
+_wt_sum="$(printf '%s' "$_wt_dir" | cksum | awk '{print substr($1,1,8)}')"
+check "workcopy_tag gives the tag sandbox.sh names working copies with" \
+  "my_proj_${_wt_sum}" "$(workcopy_tag "$_wt_dir")"
+# The edge: production takes the digits of cksum's WHOLE output (crc and size)
+# and keeps 8, so a sum under 8 digits keeps them all. `cksum` of "/x5356" prints
+# "156625 6"; the expected tag is spelled out, not derived.
+check "  … and keeps every digit when cksum prints fewer than 8" \
+  "x5356_1566256" "$(workcopy_tag /x5356)"
+check "  … so the volume name carries it" \
+  "ai-containers-repo-r--wc-my_proj_${_wt_sum}" "$(repo_workcopy_volume_name r "$(workcopy_tag "$_wt_dir")")"
+
 # ── REPO_VOLUME_PREFIX override (re-source with the override set) ──────────
 (
   export REPO_VOLUME_PREFIX="customscope"

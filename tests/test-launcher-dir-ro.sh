@@ -1859,6 +1859,20 @@ if [[ "$w1" == *"volume create --label ai-containers.workcopy=1 --label ai-conta
 else
   fail "T73 seed_workcopy_volume (got: $(tr '\n' ' ' <<< "$o73"))"
 fi
+# It carries this HOME's id (ai-containers.owner), which project.sh tells this
+# home's copies from another's by on a shared daemon; with no id to give it is
+# made and copied all the same, unlabelled, under the launcher's set -e.
+o73="$(T73L="$TMP/t73o.log" t73 'image_name=img; L="$T73L"; : > "$L"; docker() { printf "%s\n" "$*" >> "$L"; case "$1 $2" in "volume inspect") return 1 ;; esac; }
+  ai_containers_owner_id() { printf sha256:own73; }; seed_workcopy_volume base wc4 app /launch 2>/dev/null; echo == >> "$L"
+  ai_containers_owner_id() { return 1; }; seed_workcopy_volume base wc5 app /l 2>/dev/null; echo done >> "$L"; cat "$L"')"
+w4="${o73%%==*}"; w5="${o73#*==}"
+if [[ "$w4" == *"volume create --label ai-containers.workcopy=1 --label ai-containers.repo=app --label ai-containers.launch-dir=/launch --label ai-containers.owner=sha256:own73 wc4"* \
+      && "$w5" == *"volume create --label ai-containers.workcopy=1 --label ai-containers.repo=app --label ai-containers.launch-dir=/l wc5"* \
+      && "$w5" != *"ai-containers.owner"* && "$w5" == *"run --rm --pull=never"*"wc5:/dst"*done ]]; then
+  pass "T73 a working copy carries this HOME's owner id; with none to give it is made and copied, unlabelled"
+else
+  fail "T73 seed_workcopy_volume's owner label (got: $(tr '\n' ' ' <<< "$o73"))"
+fi
 # Colima: no colima, or no docker endpoint, is no profile, and nothing is
 # loaded (a load with no profile recorded every source 0:0, refusing every
 # launch); a record without numeric ids is dropped.

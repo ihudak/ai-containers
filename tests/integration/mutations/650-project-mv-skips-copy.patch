@@ -1,0 +1,16 @@
+# case: 650-project-mv-moves-workcopy
+# what: prj_copy_volume's copying rsync becomes a no-op, so the new volume stays empty; mv's check must catch that and keep the old one
+#
+diff --git a/project.sh b/project.sh
+index 56a04c9..09fba0e 100755
+--- a/project.sh
++++ b/project.sh
+@@ -1011,7 +1011,7 @@ prj_copy_volume() {
+     return 1
+   fi
+   if docker run --rm --entrypoint bash -v "$old":/src:ro -v "$new":/dst "$seed_image" \
+-       -c 'rsync -aH --numeric-ids /src/ /dst/' >&2 && prj_copy_check "$old" "$new"; then
++       -c ':' >&2 && prj_copy_check "$old" "$new"; then
+     return 0
+   fi
+   printf 'ERROR: the copy of %s to %s failed or does not check out the same as it; %s is kept.\n' \
