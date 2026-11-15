@@ -865,39 +865,115 @@ _prj_tree() (
   done | LC_ALL=C sort
 )
 
+# _prj_ino <path>: the inode of <path> itself, a link's own: `ls -di`, which both
+# userlands have, as project-files.sh: `_proj_fd_is()` reads one.
+_prj_ino() {
+  local i
+  read -r i _ < <(ls -di "$1" 2>/dev/null) || return 1
+  [[ "$i" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$i"
+}
+
+# _prj_mv_to <src dir> <dst>: rename it, with GNU mv's -T where mv takes it: a
+# directory put at <dst> then fails the move (ENOTEMPTY), and so does a link
+# (ENOTDIR), where a plain mv moves into either; the same hazard as in
+# project-files.sh: `_proj_replace()`. Probed once, on a directory of its own.
+# BSD mv has no -T; there _prj_landed, after the move, is what catches it.
+_prj_mv_T=""
+_prj_mv_to() {
+  local d
+  if [[ -z "$_prj_mv_T" ]]; then
+    _prj_mv_T=0
+    if d="$(mktemp -d)"; then
+      if mkdir "$d/a" && mv -T "$d/a" "$d/b" 2>/dev/null && [[ -d "$d/b" && ! -e "$d/a" ]]; then _prj_mv_T=1; fi
+      rm -rf "$d"
+    fi
+  fi
+  if (( _prj_mv_T )); then mv -T -- "$1" "$2"; else mv -- "$1" "$2"; fi
+}
+
+# _prj_landed <inode> <dst>: the directory with that inode is <dst> itself — a
+# directory, not a link — not inside something put at <dst> before the move.
+_prj_landed() { [[ -d "$2" && ! -L "$2" && "$(_prj_ino "$2")" == "$1" ]]; }
+
+# _prj_where <inode> <path>...: the physical path, of each <path> and the
+# .ai-containers in it (through a link), that is the directory with <inode>;
+# nothing when none is.
+_prj_where() {
+  local ino="$1" p c
+  shift
+  for p in "$@"; do
+    for c in "$p" "${p%/}/.ai-containers"; do
+      if [[ -e "$c" && "$(_prj_ino "$c")" == "$ino" ]]; then _prj_phys "$c"; return 0; fi
+    done
+  done
+  return 0
+}
+
 # _prj_move_dot <old .ai-containers> <new root>: move it to <new root>/.ai-containers,
 # the agent's output directories with it. On one filesystem, a rename. Across
-# filesystems, cp -a to a temp name in <new root>, the copy compared with the
-# original (_prj_tree), renamed into place, and only then the original removed.
-# rc 0 moved; 1 nothing moved (a copy that differs or failed is removed, the
-# original kept); 2 moved, but the original could not be removed entirely.
-# AI_CONTAINERS_MV_COPY=1 is a test knob: the copy path on one filesystem too,
-# which the hermetic suite has no other way to reach.
+# filesystems, cp -a to a temp name in <new root> (named in _prj_mv_tmp while it
+# is there, for cmd_mv's interrupt trap), the copy compared with the original
+# (_prj_tree), renamed into place, and only then the original removed. Either
+# rename must land the directory at <new root>/.ai-containers itself, by its
+# inode (_prj_landed): one that went into something put there meanwhile is
+# named, and nothing is recorded. rc 0 moved; 1 not moved there (what went
+# elsewhere is named; a copy that differs or failed is removed; the original is
+# kept unless it is what went elsewhere); 2 moved, but the original could not be
+# removed entirely. AI_CONTAINERS_MV_COPY=1 is a test knob: the copy path on one
+# filesystem too, which the hermetic suite has no other way to reach.
+_prj_mv_tmp=""
 _prj_move_dot() {
-  local old="$1" root="$2" new od nd tmpd a b
+  local old="$1" root="$2" new od nd tmpd a b ino cino where
   new="${root%/}/.ai-containers"
-  if [[ -e "$new" || -L "$new" || -L "$old" || ! -d "$old" ]]; then
+  if [[ -e "$new" || -L "$new" || -L "$old" || ! -d "$old" ]] || ! ino="$(_prj_ino "$old")"; then
     printf 'ERROR: %s is no longer a directory, or %s exists now; nothing was moved.\n' "$(_ac_term "$old")" "$(_ac_term "$new")" >&2
     return 1
   fi
+  # A rename on one device. Not covered: two mounts of one filesystem (a bind
+  # mount) share a device number, rename(2) then fails EXDEV, and GNU mv falls
+  # back to copying and deleting, unchecked.
   if [[ "${AI_CONTAINERS_MV_COPY:-}" != 1 ]] && od="$(_prj_dev "$old")" && nd="$(_prj_dev "$root")" && [[ "$od" == "$nd" ]]; then
-    if mv -- "$old" "$new"; then return 0; fi
-    printf 'ERROR: could not move %s to %s.\n' "$(_ac_term "$old")" "$(_ac_term "$new")" >&2
+    if _prj_mv_to "$old" "$new" && _prj_landed "$ino" "$new" && [[ ! -e "$old" && ! -L "$old" ]]; then return 0; fi
+    where="$(_prj_where "$ino" "$new" "$old")"
+    if [[ -n "$where" && "$where" == "$(_prj_phys "$old")" ]]; then
+      printf 'ERROR: could not move %s to %s; it is where it was.\n' "$(_ac_term "$old")" "$(_ac_term "$new")" >&2
+    else
+      printf 'ERROR: %s did not land at %s: something was put there meanwhile, and the setup is now at\n' "$(_ac_term "$old")" "$(_ac_term "$new")" >&2
+      printf '       %s. Move it back to %s, and remove what was put at %s.\n' \
+        "$(_ac_term "${where:-a place that could not be found}")" "$(_ac_term "$old")" "$(_ac_term "$new")" >&2
+    fi
     return 1
   fi
   if ! tmpd="$(mktemp -d "${root%/}/.ai-containers.XXXXXX")"; then
     printf 'ERROR: cannot write in %s.\n' "$(_ac_term "$root")" >&2
     return 1
   fi
-  if cp -a "$old" "$tmpd/.ai-containers" && a="$(_prj_tree "$old")" && b="$(_prj_tree "$tmpd/.ai-containers")" \
-     && [[ "$a" == "$b" ]] && [[ ! -e "$new" && ! -L "$new" ]] && mv -- "$tmpd/.ai-containers" "$new"; then
-    rmdir -- "$tmpd" 2>/dev/null || true
-  else
-    rm -rf -- "$tmpd"
+  _prj_mv_tmp="$tmpd"
+  if ! cp -a "$old" "$tmpd/.ai-containers" || ! a="$(_prj_tree "$old")" || ! b="$(_prj_tree "$tmpd/.ai-containers")" \
+     || [[ "$a" != "$b" ]] || [[ -e "$new" || -L "$new" ]] || ! cino="$(_prj_ino "$tmpd/.ai-containers")"; then
+    rm -rf -- "$tmpd"; _prj_mv_tmp=""
     printf 'ERROR: the copy of %s made in %s could not be made or is not the same; it is removed, and\n' "$(_ac_term "$old")" "$(_ac_term "$root")" >&2
     printf '       %s is kept.\n' "$(_ac_term "$old")" >&2
     return 1
   fi
+  if ! _prj_mv_to "$tmpd/.ai-containers" "$new" || ! _prj_landed "$cino" "$new"; then
+    if [[ -e "$tmpd/.ai-containers" || -L "$tmpd/.ai-containers" ]]; then
+      rm -rf -- "$tmpd"
+      printf 'ERROR: could not move the checked copy of %s to %s; it is removed, and %s is kept.\n' \
+        "$(_ac_term "$old")" "$(_ac_term "$new")" "$(_ac_term "$old")" >&2
+    else
+      where="$(_prj_where "$cino" "$new")"
+      rmdir -- "$tmpd" 2>/dev/null || true
+      printf 'ERROR: the checked copy of %s did not land at %s: something was put there meanwhile, and the\n' "$(_ac_term "$old")" "$(_ac_term "$new")" >&2
+      printf '       copy is now at %s. %s is kept; remove that copy, and what was put at %s.\n' \
+        "$(_ac_term "${where:-a place that could not be found}")" "$(_ac_term "$old")" "$(_ac_term "$new")" >&2
+    fi
+    _prj_mv_tmp=""
+    return 1
+  fi
+  rmdir -- "$tmpd" 2>/dev/null || true
+  _prj_mv_tmp=""
   # rm -rf removes a link it meets inside, never what it points to.
   if [[ -L "$old" ]] || ! rm -rf -- "$old" || [[ -e "$old" || -L "$old" ]]; then return 2; fi
   return 0
@@ -975,6 +1051,8 @@ _prj_load_init() {
 # _prj_mount_dir <entry>: an EXTRA_MOUNTS entry without its mode, as sandbox.sh
 # reads one (sandbox.sh: `_bind_opts_ok()`): a trailing `:<options>` is a mode
 # only when each option is one `-v` takes; any other ':' belongs to the path.
+# The options below are the list in sandbox.sh's `_bind_opts_ok()`, and must stay
+# that list: an option one has and the other lacks splits an entry differently.
 _prj_mount_opt='(ro|rw|z|Z|cached|delegated|consistent|nocopy|shared|slave|private|rshared|rslave|rprivate)'
 _prj_mount_dir() {
   local ent="$1"
@@ -990,15 +1068,16 @@ _prj_env_get() {
 
 # _prj_env_dump <file> <key>: every key but <key> load_env_defaults sets from
 # <file>, read as a sandbox.local.env, as `KEY=<%q value>` lines in C order. With
-# every exported variable unset first, so that none this shell exported is taken
-# for one the file set.
+# every exported variable but PATH unset first, so that none this shell exported
+# is taken for one the file set; PATH, which the loader refuses from a file
+# (env_key_denied), stays for the commands it runs, and is not in the dump.
 _prj_env_dump() (
-  _pd_path="$PATH"
-  while IFS= read -r _pd_k; do unset "$_pd_k" 2>/dev/null || true; done < <(compgen -e)
-  load_env_defaults "$1" local 2>/dev/null || true
-  PATH="$_pd_path"
   while IFS= read -r _pd_k; do
-    if [[ "$_pd_k" != "$2" ]]; then printf '%s=%q\n' "$_pd_k" "${!_pd_k}"; fi
+    if [[ "$_pd_k" != PATH ]]; then unset "$_pd_k" 2>/dev/null || true; fi
+  done < <(compgen -e)
+  load_env_defaults "$1" local 2>/dev/null || true
+  while IFS= read -r _pd_k; do
+    if [[ "$_pd_k" != "$2" && "$_pd_k" != PATH ]]; then printf '%s=%q\n' "$_pd_k" "${!_pd_k}"; fi
   done < <(compgen -e | LC_ALL=C sort)
 )
 
@@ -1042,16 +1121,13 @@ _prj_mounts_rewrite() {
 # old one plus <path>, and every other key as it was, or the file is not written
 # (rc 1). Read by _proj_read and written by _proj_write: the project directory is
 # the agent's to write, and a link planted there is refused, never followed. With
-# check, all of it but the write. A path holding whitespace cannot be an entry.
+# check, all of it but the write. A path holding whitespace, unless an entry
+# covers it, is rc 1: it cannot be an entry, since they are separated by it.
 PRJ_MOUNT_COVER=""
 prj_add_mount() {
   local dot="$1" path file mode="${3:-}" tmpd perms e d df pf entry list bad=0
   local -a ents=() got=()
   path="$(_prj_strip "$2")"; file="$dot/sandbox.local.env"; PRJ_MOUNT_COVER=""
-  if [[ "$path" == *[[:space:]]* ]]; then
-    printf 'ERROR: %s holds whitespace, which separates EXTRA_MOUNTS entries; it cannot be one.\n' "$(_ac_term "$path")" >&2
-    return 1
-  fi
   if ! _prj_load_init; then
     printf 'ERROR: emit_env_list could not be loaded from %s.\n' "$(_ac_term "${_here}/project-init.sh")" >&2
     return 1
@@ -1077,6 +1153,11 @@ prj_add_mount() {
       done
     done
   done
+  if [[ "$path" == *[[:space:]]* ]]; then
+    rm -rf "$tmpd"
+    printf 'ERROR: %s holds whitespace, which separates EXTRA_MOUNTS entries; it cannot be one.\n' "$(_ac_term "$path")" >&2
+    return 1
+  fi
   # A path holding ':' takes its mode: sandbox.sh would read a last part such as
   # `ro` as one.
   entry="$path"; if [[ "$path" == *:* ]]; then entry="$path:rw"; fi
@@ -1118,8 +1199,10 @@ _prj_tracks_dot() {
 # <new-dir>/.ai-containers, with what is tied to where it lived: its working
 # copies (named after the launch directory), its projects.conf line, its image
 # (whose label is the old place's id) and image-projects.conf line. The directory
-# it leaves is added to EXTRA_MOUNTS, so the container still sees it — or removed,
-# when .ai-containers was all it held. A project already moved by hand (<project>
+# it leaves is added to EXTRA_MOUNTS, so the container still sees it — unless an
+# entry covers it or it lies inside <new-dir> — or removed, when .ai-containers was
+# all it held; one that cannot be an entry is refused, and so is what the launcher
+# would resolve against the moved launch directory. A project already moved by hand (<project>
 # holds no .ai-containers, <new-dir> does) gets all of that but the move, its old
 # path registered or not (gc may have dropped its line). Everything is listed
 # first. Nothing old goes before what replaces it is checked: the working copies
@@ -1164,6 +1247,13 @@ cmd_mv() {
   if (( reg )); then _prj_guard "$PRJ_ROOT" "the registered root" move registered
   else _prj_guard "$PRJ_ROOT" "the project root" move; fi
   _prj_guard "$new_root" "the new directory" move
+  # A link there could be repointed between the checks and the move.
+  if [[ -L "$new_root" ]]; then
+    printf 'ERROR: %s is a link; give the directory itself (%s), or another, as <new-dir>.\n' \
+      "$t_new" "$(_ac_term "$(_prj_phys "$new_root")")" >&2
+    printf '       Nothing was changed.\n' >&2
+    exit 1
+  fi
   if [[ "$(_prj_phys "$old_root")" == "$(_prj_phys "$new_root")" ]]; then
     printf 'ERROR: %s is the project'"'"'s own directory (%s); its setup is already there.\n' "$t_new" "$t_old" >&2
     exit 1
@@ -1188,6 +1278,38 @@ cmd_mv() {
     exit 1
   fi
   local src_dot="$old_dot"; if (( moved )); then src_dot="$new_dot"; fi
+  # What the launcher resolves against the launch directory ($PWD, the
+  # .ai-containers that moves) would name another directory after the move, or
+  # none: a relative EXTRA_MOUNTS entry or pointer. And a working directory other
+  # than the project itself leaves the project's mounts unknown here.
+  local e d v k lf="$src_dot/sandbox.local.env"
+  local -a em=()
+  read -r -d '' -a em < <(prj_env "$src_dot" EXTRA_MOUNTS) || true
+  for e in ${em[@]+"${em[@]}"}; do
+    d="$(_prj_mount_dir "$e")"
+    if [[ "$d" != /* && "$d" != '~'* ]]; then
+      printf 'ERROR: the EXTRA_MOUNTS entry %s in %s is relative: the launcher resolves it against\n' "$(_ac_term "$e")" "$(_ac_term "$lf")" >&2
+      printf '       the launch directory, which moves, so it would name another directory. Make it absolute,\n' >&2
+      printf '       then run this again. Nothing was changed.\n' >&2
+      exit 1
+    fi
+  done
+  for k in VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH; do
+    v="$(_prj_env_get "$lf" "$k")"; v="${v%:ro}"; v="${v%:rw}"
+    if [[ -n "$v" && "$v" != /* && "$v" != '~'* && "$v" != @* ]]; then
+      printf 'ERROR: %s=%s in %s is relative: the launcher resolves it against the launch directory,\n' "$k" "$(_ac_term "$v")" "$(_ac_term "$lf")" >&2
+      printf '       which moves, so it would name another directory. Make it absolute, then run this again.\n' >&2
+      printf '       Nothing was changed.\n' >&2
+      exit 1
+    fi
+  done
+  v="$(_prj_env_get "$lf" SANDBOX_WORKDIR)"
+  if [[ -n "$v" && "$v" != .. && "$v" != ../ ]]; then
+    printf 'ERROR: SANDBOX_WORKDIR=%s in %s: mv handles only a project whose working directory is\n' "$(_ac_term "$v")" "$(_ac_term "$lf")" >&2
+    printf '       the project itself (..), which it checks the names mounted beside against. Set it to .. or\n' >&2
+    printf '       remove it, move, then set it again. Nothing was changed.\n' >&2
+    exit 1
+  fi
   if ! docker volume ls --quiet >/dev/null 2>&1; then
     printf 'ERROR: docker cannot be reached, so neither the project'"'"'s running containers nor its working\n' >&2
     printf '       copies can be checked; refusing. Start docker and run this again.\n' >&2
@@ -1253,14 +1375,22 @@ cmd_mv() {
     exit 1
   done
 
-  # The directory left behind: gone, left empty (removed), or added to
-  # EXTRA_MOUNTS — unless an entry covers it, or it cannot be an entry.
-  local rm_old_root=0 add_mount=0 cover="" spaced=0
+  # The directory left behind: gone, left empty (removed once the rest is done),
+  # inside <new-dir> (the container mounts it there), or added to EXTRA_MOUNTS —
+  # unless an entry covers it. One that cannot be an entry (whitespace) is
+  # refused: it is usually the project's code, and no edit could mount it.
+  local rm_old_root=0 add_mount=0 cover="" inside=0
   if [[ -d "$old_root" ]]; then
     if [[ ! -L "$old_root" ]] && _prj_only_dot "$old_root"; then rm_old_root=1
-    elif [[ "$old_root" == *[[:space:]]* ]]; then spaced=1
+    elif _prj_within "$old_root" "$new_root" || _prj_within "$(_prj_phys "$old_root")" "$(_prj_phys "$new_root")"; then inside=1
+    elif ! prj_add_mount "$src_dot" "$old_root" check; then
+      if [[ "$old_root" == *[[:space:]]* ]]; then
+        printf '       It would have to be one for the container to still see it once its setup moves; rename\n' >&2
+        printf '       that directory, or choose a <new-dir> that holds it.\n' >&2
+      fi
+      printf '       Nothing was changed.\n' >&2
+      exit 1
     else
-      if ! prj_add_mount "$src_dot" "$old_root" check; then printf '       Nothing was changed.\n' >&2; exit 1; fi
       cover="$PRJ_MOUNT_COVER"
       if [[ -z "$cover" ]]; then add_mount=1; fi
     fi
@@ -1268,10 +1398,9 @@ cmd_mv() {
   # One name the launcher would mount twice under /workspace makes every launch
   # fail: the new root (the working directory), the old root if added, each
   # EXTRA_MOUNTS entry, each REPOS repo.
-  local nb ob e n_set
-  local -a names=() whats=() em=() rp=()
+  local nb ob n_set
+  local -a names=() whats=() rp=()
   nb="$(_prj_base "$new_root")"; ob="$(_prj_base "$old_root")"
-  read -r -d '' -a em < <(prj_env "$src_dot" EXTRA_MOUNTS) || true
   read -r -d '' -a rp < <(prj_env "$src_dot" REPOS) || true
   for e in ${em[@]+"${em[@]}"}; do names+=("$(_prj_base "$(_prj_mount_dir "$e")")"); whats+=("the EXTRA_MOUNTS entry $e"); done
   for e in ${rp[@]+"${rp[@]}"}; do names+=("${e%%:*}"); whats+=("the REPOS repo ${e%%:*}"); done
@@ -1323,9 +1452,7 @@ cmd_mv() {
   for i in "${!stay[@]}"; do printf '  working copy %s %s\n' "$(_ac_term "${stay[i]}")" "${stay_why[i]}"; done
   if (( add_mount )); then printf '  EXTRA_MOUNTS + %s (in %s/sandbox.local.env)\n' "$t_old" "$t_ndot"
   elif [[ -n "$cover" ]]; then printf '  EXTRA_MOUNTS %s is already covered by %s\n' "$t_old" "$(_ac_term "$cover")"
-  elif (( spaced )); then
-    printf '  EXTRA_MOUNTS %s — not added: it holds whitespace, which separates EXTRA_MOUNTS entries;\n' "$t_old"
-    printf '               the container will not see it\n'
+  elif (( inside )); then printf '  EXTRA_MOUNTS %s lies inside %s, which the container mounts: nothing to add\n' "$t_old" "$t_new"
   fi
 
   if ! confirm "Move all of the above?"; then
@@ -1336,8 +1463,14 @@ cmd_mv() {
   _prj_refuse_running " (it started after the listing)" "$old_root"
   _prj_refuse_running " (it started after the listing)" "$new_root"
 
-  local fail=0 mrc=0 made_root=0
+  local fail=0 leftover=0 mrc=0 first_made="" up2 old_int old_term
   local -a made=()
+  # An interrupt removes the temp copy a move across filesystems makes in
+  # <new-dir> (it holds sandbox.local.env). Set here and put back before this
+  # returns: project.sh is sourced by tests, so never a global trap.
+  old_int="$(trap -p INT)"; old_term="$(trap -p TERM)"
+  trap '_prj_mv_interrupted 130' INT
+  trap '_prj_mv_interrupted 143' TERM
   # 1. Copy the working copies, each checked. A failure undoes the copies made.
   for i in "${!wc_old[@]}"; do
     [[ -z "${wc_done[i]}" ]] || continue
@@ -1349,26 +1482,29 @@ cmd_mv() {
     made+=("${wc_new[i]}")
     printf 'Copied the working copy %s to %s, and checked the copy.\n' "$(_ac_term "${wc_old[i]}")" "$(_ac_term "${wc_new[i]}")"
   done
-  # 2. Move the directory. A failure undoes the copies, and the directory made.
+  # 2. Move the directory. A failure undoes the copies, and the directories
+  #    mkdir -p made: the first of them is recorded, and all from <new-dir> up to
+  #    it go, each only while empty.
   if (( ! moved )); then
-    [[ -d "$new_root" ]] || made_root=1
+    up2="$new_root"
+    while [[ ! -e "$up2" && ! -L "$up2" && "$up2" != / ]]; do first_made="$up2"; up2="${up2%/*}"; up2="${up2:-/}"; done
     if ! mkdir -p -- "$new_root"; then
+      _prj_rmdirs "$new_root" "$first_made"
       _prj_unmake ${made[@]+"${made[@]}"}
       printf 'ERROR: could not make %s; nothing was changed.\n' "$t_new" >&2
       exit 1
     fi
     _prj_move_dot "$old_dot" "$new_root" || mrc=$?
     if (( mrc == 1 )); then
-      if (( made_root )); then rmdir -- "$new_root" 2>/dev/null || true; fi
+      _prj_rmdirs "$new_root" "$first_made"
       _prj_unmake ${made[@]+"${made[@]}"}
-      printf 'ERROR: %s was not moved (see above); nothing else was changed.\n' "$t_odot" >&2
+      printf 'ERROR: %s is not at %s (see above); the registry and the working copies are as they were.\n' "$t_odot" "$t_ndot" >&2
       exit 1
     fi
     printf 'Moved %s to %s.\n' "$t_odot" "$t_ndot"
     if (( mrc == 2 )); then
-      printf 'ERROR: %s is checked and in place, but the old %s could not be removed entirely;\n' "$t_ndot" "$t_odot" >&2
-      printf '       what is left of it is a copy: remove it by hand.\n' >&2
-      fail=1
+      printf 'ERROR: %s is checked and in place, but the old %s could not be removed entirely.\n' "$t_ndot" "$t_odot" >&2
+      leftover=1
     fi
   fi
   # 3. The old working copies, each now copied and checked.
@@ -1381,14 +1517,8 @@ cmd_mv() {
       fail=1
     fi
   done
-  # 4. The directory it left.
-  if (( rm_old_root )); then
-    if [[ -d "$old_root" && ! -L "$old_root" ]] && rmdir -- "$old_root" 2>/dev/null; then
-      printf 'Removed the empty directory %s.\n' "$t_old"
-    else
-      printf 'NOTE: %s was not removed: it is not empty now. Add it to EXTRA_MOUNTS if the container should see it.\n' "$t_old" >&2
-    fi
-  elif (( add_mount )); then
+  # 4. The directory it left, in EXTRA_MOUNTS.
+  if (( add_mount )); then
     if ! prj_add_mount "$new_dot" "$old_root"; then
       printf 'ERROR: %s is not in EXTRA_MOUNTS yet (see above), and the registry is not changed;\n' "$t_old" >&2
       printf '       fix that and run ./project.sh mv %s %s again.\n' "$t_old" "$t_new" >&2
@@ -1399,8 +1529,6 @@ cmd_mv() {
     else
       printf 'Added %s to EXTRA_MOUNTS in %s/sandbox.local.env.\n' "$t_old" "$t_ndot"
     fi
-  elif (( spaced )); then
-    printf 'NOTE: %s is not in EXTRA_MOUNTS (it holds whitespace): the container does not see it.\n' "$t_old"
   fi
   # 5. The registry.
   if (( reg && ! new_reg )); then
@@ -1428,16 +1556,64 @@ cmd_mv() {
   if (( rebuilt )); then
     printf 'NOTE: the next ./build.sh (runme.sh runs it) builds %s again, from the cache.\n' "$(_ac_term "$img")"
   fi
-  # 7. A repository the old root is, which recorded the files that moved.
+  # 7. The old root it left empty, after the image: removed even when the image
+  #    stays, since build.sh's check walks up from the old .ai-containers to the
+  #    nearest directory there is, and refuses where that is empty (a drive not
+  #    mounted looks so) — the old root kept empty would be that directory.
+  if (( rm_old_root && ! leftover )); then
+    if [[ -d "$old_root" && ! -L "$old_root" ]] && rmdir -- "$old_root" 2>/dev/null; then
+      printf 'Removed the empty directory %s.\n' "$t_old"
+    else
+      printf 'NOTE: %s was not removed: it is not empty now. Add it to EXTRA_MOUNTS if the container should see it.\n' "$t_old" >&2
+    fi
+  fi
+  # An image kept with the old place's id that build.sh would still refuse to
+  # replace — its walk ends on an empty directory — is said, with the way out:
+  # asked of build.sh's own check (ai_containers_retag_check).
+  if (( img_ok && ! rebuilt )) && ! ai_containers_retag_check "$img" "$(_prj_phys "$new_dot")" >/dev/null 2>&1; then
+    printf 'NOTE: the next ./build.sh will refuse to replace %s, which was built for the old place: remove\n' "$(_ac_term "$img")"
+    printf '      the container that keeps it (docker ps -a --filter ancestor=%s), then docker rmi %s.\n' \
+      "$(_ac_term "$img")" "$(_ac_term "$img")"
+  fi
+  # 8. A repository the old root is, which recorded the files that moved.
   if [[ -d "$old_root" ]] && _prj_tracks_dot "$old_root"; then
     printf 'NOTE: %s'"'"'s repository tracks .ai-containers/; those files now show as deleted there.\n' "$t_old"
   fi
-  if (( fail )); then
-    printf 'ERROR: moved, but not all that was old could be removed (see above); run ./project.sh mv %s %s\n' "$t_old" "$t_new" >&2
-    printf '       again once it can be, or remove it by hand.\n' >&2
-    exit 1
+  if (( leftover )); then
+    printf 'ERROR: what is left of %s is only a copy of %s now: remove it by hand.\n' "$t_odot" "$t_ndot" >&2
   fi
+  if (( fail )); then
+    if (( leftover )); then
+      printf 'ERROR: not every old working copy could be removed (see above); once that leftover is gone, run\n' >&2
+    else
+      printf 'ERROR: not every old working copy could be removed (see above); once they can be, run\n' >&2
+    fi
+    printf '       ./project.sh mv %s %s again to remove them.\n' "$t_old" "$t_new" >&2
+  fi
+  if (( fail || leftover )); then exit 1; fi
+  eval "${old_int:-trap - INT}"; eval "${old_term:-trap - TERM}"
   printf 'OK: moved project %s to %s.\n' "$t_old" "$t_new"
+}
+
+# _prj_mv_interrupted <status>: cmd_mv's INT and TERM trap — the temp copy a move
+# across filesystems was making in <new-dir> goes; what was done before is above.
+_prj_mv_interrupted() {
+  if [[ -n "$_prj_mv_tmp" ]]; then rm -rf -- "$_prj_mv_tmp"; _prj_mv_tmp=""; fi
+  printf '\nERROR: interrupted; what was done is listed above, and no temporary copy is left in <new-dir>.\n' >&2
+  exit "$1"
+}
+
+# _prj_rmdirs <dir> <top>: remove <dir> and each directory above it up to <top>,
+# each only while it is empty — what one mkdir -p made, <top> its first. Nothing
+# when <top> is empty (mkdir -p made nothing).
+_prj_rmdirs() {
+  local d="$1"
+  [[ -n "$2" ]] || return 0
+  while rmdir -- "$d" 2>/dev/null; do
+    [[ "$d" != "$2" ]] || break
+    d="${d%/*}"
+  done
+  return 0
 }
 
 cmd_gc() { printf 'ERROR: gc is not yet implemented.\n' >&2; exit 1; }

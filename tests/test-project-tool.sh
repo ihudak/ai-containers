@@ -352,7 +352,7 @@ world() {   # nothing registered, built, recorded, running or logged
   rm -rf "$VOLS" "$IMGS" "$W"; mkdir -p "$VOLS" "$IMGS" "$W"
   : > "$FAKE_RUNNING"; : > "$DOCKER_LOG"; rm -f "$ENG/projects.conf" "$IP" "$FAKE_RUNNING.count" "$FAKE_RUNNING.later"
   unset FAKE_FAIL_VOLUME_RM FAKE_FAIL_RMI FAKE_DOCKER_DOWN FAKE_PS_FAIL FAKE_RUNNING_AFTER FAKE_NO_SEED
-  unset FAKE_COPY_BAD FAKE_CP_CORRUPT AI_CONTAINERS_MV_COPY
+  unset FAKE_COPY_BAD FAKE_CP_CORRUPT AI_CONTAINERS_MV_COPY FAKE_MV_PLANT FAKE_MV_PLANT_TO FAKE_CP_TERM
 }
 # mkproj <root> [<sandbox.env text>] [<sandbox.local.env text>]: a registered project
 mkproj() {
@@ -786,7 +786,7 @@ rm -rf "$HOME/.ai-containers-old" "$HOME/.ai-containers/default"
 cp -p "$REPO_DIR/project-init.sh" "$ENG/project-init.sh"
 # cp, which FAKE_CP_CORRUPT=<file> makes change that file of a copy it makes to
 # a directory named .ai-containers: the copy a move across filesystems makes is
-# then not the original, though it holds the same names.
+# then not the original, though it holds the same names. FAKE_CP_TERM: see below.
 REAL_CP="$(command -v cp)"; export REAL_CP
 cat > "$TMP/bin/cp" <<'FAKECP'
 #!/usr/bin/env bash
@@ -795,10 +795,30 @@ last="${!#}"
 if [[ -n "${FAKE_CP_CORRUPT:-}" && "${last##*/}" == .ai-containers && -f "$last/$FAKE_CP_CORRUPT" ]]; then
   printf 'x\n' >> "$last/$FAKE_CP_CORRUPT"
 fi
+# FAKE_CP_TERM: once that copy is made, the one who ran cp is sent TERM
+if [[ -n "${FAKE_CP_TERM:-}" && "${last##*/}" == .ai-containers ]]; then kill -TERM "$PPID"; fi
 exit 0
 FAKECP
 chmod +x "$TMP/bin/cp"
+# mv, which FAKE_MV_PLANT=<path> makes put something at <path> just before it
+# moves anything there — a directory holding a file, or with FAKE_MV_PLANT_TO=<dir>
+# a link to <dir> — as a process racing the move would.
+REAL_MV="$(command -v mv)"; export REAL_MV
+cat > "$TMP/bin/mv" <<'FAKEMV'
+#!/usr/bin/env bash
+last="${!#}"
+if [[ -n "${FAKE_MV_PLANT:-}" && "$last" == "$FAKE_MV_PLANT" && ! -e "$last" && ! -L "$last" ]]; then
+  if [[ -n "${FAKE_MV_PLANT_TO:-}" ]]; then ln -s "$FAKE_MV_PLANT_TO" "$last"
+  else mkdir "$last" && printf 'planted\n' > "$last/planted"; fi
+fi
+exec "$REAL_MV" "$@"
+FAKEMV
+chmod +x "$TMP/bin/mv"
 mvrun() { ( cd "$TMP" && bash "$P" mv "$@" ) > "$TMP/out" 2>&1 < /dev/null; }
+# mvbsd: mv as on a mv without -T (BSD's), where only the check after the move
+# stands between a planted directory and the setup moving into it. hash -r: this
+# shell found the real mv before the fake one existed.
+mvbsd() { ( hash -r && cd "$TMP" && source "$P" && _prj_mv_T=0 && cmd_mv "$@" ) > "$TMP/out" 2>&1 < /dev/null; }
 # wcname <repo> <launch dir>: the working copy a launch from there uses
 wcname() { ( source "$P" && repo_workcopy_volume_name "$1" "$(workcopy_tag "$2")" ); }
 wcdata() { mkdir -p "$VOLS/$1/data"; printf '%s\n' "$2" > "$VOLS/$1/data/work"; }
@@ -1035,10 +1055,16 @@ ok "mv refuses a linked sandbox.local.env it would add the old root to, and its 
   _ "$rc" "$TMP/out" "$TMP/real-local" "$W/beta"
 ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
 world
-A="$W/alpha"; mvproj "$A"; mkdir -p "$W/same"; ln -s "$A" "$W/same/alias"
-mvrun "$A" "$W/same/alias" --yes; rc=$?
+A="$W/alpha"; mvproj "$A"; mkdir -p "$W/same"; ln -s "$W" "$W/same/up"
+mvrun "$A" "$W/same/up/alpha" --yes; rc=$?
 ok "mv refuses a <new-dir> that is the project itself" \
   bash -c '[ "$1" = 1 ] && grep -q "ERROR.*already" "$2"' _ "$rc" "$TMP/out"
+ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+mkdir -p "$W/real-beta"; ln -s "$W/real-beta" "$W/beta-link"
+mvrun "$A" "$W/beta-link" --yes; rc=$?
+ok "mv refuses a <new-dir> that is a link" \
+  bash -c '[ "$1" = 1 ] && grep -q "ERROR.*is a link" "$2" && [ ! -e "$3/.ai-containers" ] && [ -L "$4" ]' \
+  _ "$rc" "$TMP/out" "$W/real-beta" "$W/beta-link"
 ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
 mvrun "$A" "$W/nope/../beta" --yes; rc=$?
 ok "mv refuses a <new-dir> with .. where it does not exist yet" \
@@ -1080,15 +1106,29 @@ ok "mv refuses a working copy whose new name another volume holds" \
 ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
 
 world
-S="$W/my proj"; mvproj "$S" $'IMAGE_NAME=img-space\n'; built "$S" img-space
+S="$W/my proj"; mkproj "$S" $'IMAGE_NAME=img-space\n'; built "$S" img-space; mkbase app
+mkwc app 1 "$S/.ai-containers"; wcdata "$OLDWC" unpushed
 N="$W/new place/proj two"; nv="$(wcname app "$N/.ai-containers")"
 mvrun "$S" "$N" --yes; rc=$?
 ok "mv works when <new-dir> and the old root have spaces" \
-  bash -c '[ "$1" = 0 ] && [ -f "$2/.ai-containers/sandbox.env" ] && [ ! -e "$3/.ai-containers" ] && grep -qxF "$2" "$4" \
+  bash -c '[ "$1" = 0 ] && [ -f "$2/.ai-containers/sandbox.env" ] && [ ! -e "$3" ] && grep -qxF "$2" "$4" \
            && ! grep -qxF "$3" "$4" && [ "$(cat "$5/$6/data/work")" = unpushed ] && [ ! -d "$5/$8" ] && [ ! -e "$7" ] \
            && [ ! -e "$2/.ai-containers/sandbox.local.env" ]' \
   _ "$rc" "$N" "$S" "$ENG/projects.conf" "$VOLS" "$nv" "$IMGS/img-space" "$OLDWC"
-ok "  … saying the old root, which holds a space, is not added to EXTRA_MOUNTS" has_line "not added: it holds whitespace"
+world
+S="$W/my proj"; mvproj "$S"
+mvrun "$S" "$W/beta" --yes; rc=$?
+ok "mv refuses an old root with whitespace that it would have to mount" \
+  bash -c '[ "$1" = 1 ] && grep -qF "ERROR: $3 holds whitespace" "$2" && grep -qF "rename" "$2" && [ ! -e "$4" ]' \
+  _ "$rc" "$TMP/out" "$S" "$W/beta"
+ok "  … changing nothing" moved_nothing "$S" "$TMP/conf.before"
+world
+O="$W/outer"; S="$O/my proj"; mvproj "$S"
+mvrun "$S" "$O" --yes; rc=$?
+ok "mv adds nothing for an old root inside <new-dir>, whitespace or not" \
+  bash -c '[ "$1" = 0 ] && [ -f "$2/.ai-containers/sandbox.env" ] && [ ! -e "$2/.ai-containers/sandbox.local.env" ] \
+           && [ -f "$3/README" ] && [ ! -e "$3/.ai-containers" ]' _ "$rc" "$O" "$S"
+ok "  … saying the container mounts it there" hasx "  EXTRA_MOUNTS $S lies inside $O, which the container mounts: nothing to add"
 
 # never into or out of ~/.ai-containers, nor into the old .ai-containers
 world
@@ -1123,14 +1163,128 @@ ok "mv across filesystems copies .ai-containers, checks the copy, then removes t
            && [ "$(ls -A "$3")" = .ai-containers ] && grep -qxF "$3" "$4"' _ "$rc" "$A" "$N" "$ENG/projects.conf"
 world
 A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
-N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"; export AI_CONTAINERS_MV_COPY=1 FAKE_CP_CORRUPT=sandbox.env
+N="$W/p1/p2/beta"; nv="$(wcname app "$N/.ai-containers")"; export AI_CONTAINERS_MV_COPY=1 FAKE_CP_CORRUPT=sandbox.env
 mvrun "$A" "$N" --yes; rc=$?
 unset AI_CONTAINERS_MV_COPY FAKE_CP_CORRUPT
 ok "mv across filesystems keeps the old .ai-containers and removes the temp copy when the copy differs" \
   bash -c '[ "$1" = 1 ] && grep -q ERROR "$2" && [ "$(cat "$3/.ai-containers/sandbox.env")" = IMAGE_NAME=img-alpha ] \
            && [ -z "$(ls -A "$4" 2>/dev/null)" ] && cmp -s "$5" "$6"' _ "$rc" "$TMP/out" "$A" "$N" "$ENG/projects.conf" "$TMP/conf.before"
+ok "  … and the directories it made for <new-dir>" bash -c '[ ! -e "$1" ] && [ -d "$2" ]' _ "$W/p1" "$W"
 ok "  … and the working copies as they were" \
   bash -c '[ "$(cat "$1/$3/data/work")" = unpushed ] && [ ! -e "$1/$2" ] && [ -e "$4" ]' _ "$VOLS" "$nv" "$OLDWC" "$IMGS/img-alpha"
+
+# the setup must land at <new-dir>/.ai-containers itself: something put there
+# just before the rename (a racing process) takes it in, on a mv without -T
+landed_not() {  # <assertion> <where the setup or its copy went> <old .ai-containers kept: 1|0>
+  ok "$1" bash -c '[ "$1" = 1 ] && [ -d "$3" ] && grep -qF -- "$(cd "$3" && pwd -P)" "$2" && cmp -s "$4" "$5" \
+                   && [ "$(cat "$6/$8/data/work")" = unpushed ] && [ ! -e "$6/$7" ] && [ -e "$9" ] \
+                   && { [ "${10}" = 0 ] || [ -f "${11}/.ai-containers/sandbox.env" ]; } && [ ! -e "$3/sandbox.local.env" ]' \
+    _ "$rc" "$TMP/out" "$2" "$ENG/projects.conf" "$TMP/conf.before" "$VOLS" "$nv" "$OLDWC" "$IMGS/img-alpha" "$3" "$A"
+}
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+export FAKE_MV_PLANT="$N/.ai-containers"
+mvbsd "$A" "$N" --yes; rc=$?
+unset FAKE_MV_PLANT
+landed_not "mv exits 1 when a directory appears where the setup goes, saying where it went, recording nothing" \
+  "$N/.ai-containers/.ai-containers" 0
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+mkdir -p "$W/elsewhere"; export FAKE_MV_PLANT="$N/.ai-containers" FAKE_MV_PLANT_TO="$W/elsewhere"
+mvbsd "$A" "$N" --yes; rc=$?
+unset FAKE_MV_PLANT FAKE_MV_PLANT_TO
+landed_not "mv exits 1 when a link appears where the setup goes, writing nothing through it" "$W/elsewhere/.ai-containers" 0
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+export AI_CONTAINERS_MV_COPY=1 FAKE_MV_PLANT="$N/.ai-containers"
+mvbsd "$A" "$N" --yes; rc=$?
+unset AI_CONTAINERS_MV_COPY FAKE_MV_PLANT
+landed_not "mv across filesystems exits 1 when a directory appears where the checked copy goes, keeping the old" \
+  "$N/.ai-containers/.ai-containers" 1
+ok "  … and leaves no temp directory" bash -c '[ "$(ls -A "$1")" = .ai-containers ]' _ "$N"
+pd="$(mktemp -d "$TMP/probe.XXXXXX")"; mkdir "$pd/a"
+if "$REAL_MV" -T "$pd/a" "$pd/b" 2>/dev/null; then
+  world
+  A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; N="$W/beta"
+  export FAKE_MV_PLANT="$N/.ai-containers"
+  mvrun "$A" "$N" --yes; rc=$?
+  unset FAKE_MV_PLANT
+  ok "with mv -T, a directory that appears where the setup goes stops the move" \
+    bash -c '[ "$1" = 1 ] && [ -f "$2/.ai-containers/sandbox.env" ] && [ ! -e "$3/.ai-containers/.ai-containers" ] && cmp -s "$4" "$5" \
+             && grep -qF "it is where it was" "$6"' _ "$rc" "$A" "$N" "$ENG/projects.conf" "$TMP/conf.before" "$TMP/out"
+else
+  printf 'SKIP: mv -T on this mv (it has none)\n'
+fi
+rm -rf "$pd"
+
+# what the launcher would resolve against the launch directory, which moves
+relative() {  # <sandbox.local.env text> <what the error names> <assertion>
+  world
+  A="$W/alpha"; mvproj "$A" '' "$1"
+  mvrun "$A" "$W/beta" --yes; rc=$?
+  ok "$3" bash -c '[ "$1" = 1 ] && grep -q "^ERROR: " "$2" && grep -qF -- "$3" "$2" && [ ! -e "$4" ]' _ "$rc" "$TMP/out" "$2" "$W/beta"
+  ok "  … changing nothing" moved_nothing "$A" "$TMP/conf.before"
+}
+relative $'EXTRA_MOUNTS="/x/one ../shared:ro"\n' "EXTRA_MOUNTS entry ../shared:ro" "mv refuses a relative EXTRA_MOUNTS entry, naming it"
+relative $'SANDBOX_WORKDIR=@app\n' "SANDBOX_WORKDIR=@app" "mv refuses a SANDBOX_WORKDIR other than .. in sandbox.local.env, naming it"
+relative $'VAULT_PATH=notes\n' "VAULT_PATH=notes" "mv refuses a relative pointer in sandbox.local.env, naming it"
+world
+A="$W/alpha"; mvproj "$A" '' $'SANDBOX_WORKDIR=..\nVAULT_PATH=~/notes\nDOCS_PATH=@docs:ro\nEXTRA_MOUNTS=~/x\n'
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv takes SANDBOX_WORKDIR=.., a ~ path and an @name as they are" bash -c '[ "$1" = 0 ]' _ "$rc"
+
+# an image a stopped container keeps, and the old root it leaves empty
+retag() { ( cd "$TMP" && source "$P" && ai_containers_image_portable=1 ai_containers_build_retag_guard img-alpha "$1/.ai-containers" ) > "$TMP/err" 2>&1; }
+world
+mkdir -p "$W/setup"; printf 'x\n' > "$W/setup/other"; A="$W/setup/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
+N="$W/dev/beta"; export FAKE_FAIL_RMI=1
+mvrun "$A" "$N" --yes; rc=$?
+unset FAKE_FAIL_RMI
+retag "$N"; rc2=$?
+ok "mv removes the old root it left empty though the image stays, so the next build replaces the image" \
+  bash -c '[ "$1" = 0 ] && [ ! -e "$2" ] && [ -e "$3" ] && [ "$4" = 0 ] && grep -q "^NOTE: img-alpha was built for" "$5"' \
+  _ "$rc" "$A" "$IMGS/img-alpha" "$rc2" "$TMP/err"
+ok "  … and says nothing of the next build refusing" lacks "will refuse to replace"
+world
+mkdir -p "$W/setup"; A="$W/setup/alpha"; mkproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha
+N="$W/dev/beta"; export FAKE_FAIL_RMI=1
+mvrun "$A" "$N" --yes; rc=$?
+unset FAKE_FAIL_RMI
+retag "$N"; rc2=$?
+ok "mv says when the next build will refuse the image it could not remove, and how to remove it" \
+  bash -c '[ "$1" = 0 ] && [ "$2" = 1 ] && grep -qF "NOTE: the next ./build.sh will refuse to replace img-alpha" "$3" \
+           && grep -qF "docker rmi img-alpha" "$3"' _ "$rc" "$rc2" "$TMP/out"
+
+# a move across filesystems: an old .ai-containers it cannot remove whole, and an interrupt
+if [[ "$(id -u)" == 0 ]]; then
+  printf 'SKIP: an old .ai-containers that cannot be removed whole (running as root)\n'
+else
+  world
+  A="$W/alpha"; mvproj "$A"; mkdir -p "$A/.ai-containers/stuck"; printf 'x\n' > "$A/.ai-containers/stuck/file"
+  chmod 555 "$A/.ai-containers/stuck"; N="$W/beta"; export AI_CONTAINERS_MV_COPY=1
+  mvrun "$A" "$N" --yes; rc=$?
+  unset AI_CONTAINERS_MV_COPY
+  ok "mv says to remove by hand what is left of an old .ai-containers it could not remove, not to run it again" \
+    bash -c '[ "$1" = 1 ] && grep -qF "what is left of $3/.ai-containers is only a copy" "$2" && grep -qF "remove it by hand" "$2" \
+             && ! grep -qF "project.sh mv" "$2" && [ -f "$4/.ai-containers/sandbox.env" ] && grep -qxF "$4" "$5"' \
+    _ "$rc" "$TMP/out" "$A" "$N" "$ENG/projects.conf"
+fi
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; export AI_CONTAINERS_MV_COPY=1 FAKE_CP_TERM=1
+mvrun "$A" "$N" --yes; rc=$?
+unset AI_CONTAINERS_MV_COPY FAKE_CP_TERM
+ok "mv interrupted while it copies .ai-containers leaves no temp copy in <new-dir>" \
+  bash -c '[ "$1" = 143 ] && [ -z "$(ls -A "$2" 2>/dev/null)" ] && [ -f "$3/.ai-containers/sandbox.env" ] && cmp -s "$4" "$5" \
+           && grep -q "ERROR: interrupted" "$6"' _ "$rc" "$N" "$A" "$ENG/projects.conf" "$TMP/conf.before" "$TMP/out"
+
+# a checkout whose .git is a file naming its git directory
+world
+A="$W/alpha"; mvproj "$A"
+git init -q --separate-git-dir "$W/gitdir" "$A" 2>/dev/null && git -C "$A" add .ai-containers
+mvrun "$A" "$W/beta" --yes; rc=$?
+ok "mv notes that the old repository tracks .ai-containers when its .git is a file" \
+  bash -c '[ "$1" = 0 ] && [ -f "$2/.git" ] && grep -qxF "NOTE: $2'"'"'s repository tracks .ai-containers/; those files now show as deleted there." "$3"' \
+  _ "$rc" "$A" "$TMP/out"
 
 echo
 [[ "$fails" == 0 ]] && { echo "ALL PASSED"; exit 0; } || { echo "$fails FAILED"; exit 1; }
