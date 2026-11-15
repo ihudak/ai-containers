@@ -4216,6 +4216,22 @@ _path_gone() {
   return 1
 }
 
+# _path_parts <array name> <path>: the path's components, split at every / in
+# one pass, in time linear in its length. A leading or a doubled / gives an
+# empty component, which the caller passes over. Split by the shell's own word
+# splitting on / alone, with pathname expansion off for the moment (as
+# split_env_list does), so a * in a name stays a name; no process is started.
+_path_parts() {
+  local -n _pp_o="$1"
+  local IFS=/ _pp_f=0
+  case "$-" in *f*) _pp_f=1 ;; esac
+  set -f
+  # shellcheck disable=SC2206  # intentional unquoted split on / alone; set -f above blocks pathname expansion
+  _pp_o=($2)
+  (( _pp_f )) || set +f
+  return 0
+}
+
 # _gdi_blocked <path> <this mount>: a path a pointer names (a worktree's
 # gitdir, an index's gitlink, a submodule's core.worktree) that cannot be
 # reached because a directory on the way cannot be searched, by you: that
@@ -4240,29 +4256,44 @@ _path_gone() {
 # nothing, before it is read; so do a name that is not there and more links
 # than Linux follows (40). The walk starts no process but one readlink for each
 # link outside the writable mounts. The path's own length is the only other bound: a
-# `.` or an empty component is no step, and a very long way is walked slowly
-# (bugs review GIT-97).
+# `.` or an empty component is no step. So the way is split into its components
+# once (_path_parts) and each is taken in turn. A link's target is split the
+# same way and its components wait, the first on top, to be taken before the
+# way goes on, so a link costs what its target is long, never what is left of
+# the way. Taken off the front of a string one at a time, each step copied all
+# that was left, and a core.worktree of 16 KB, which nothing bounds, cost a
+# launch a minute (bugs review GIT-97; G291). The cost still grows with the
+# way's length, and nothing bounds that yet (GIT-101).
 _gdi_blocked() {
-  local _gb_p="" _gb_rest _gb_c _gb_t _gb_n=0 _gb_b="" _gb_j _gb_did=""
+  local _gb_p="" _gb_c _gb_t _gb_n=0 _gb_b="" _gb_j _gb_did="" _gb_k _gb_sn=0
+  local -a _gb_w=() _gb_tw=() _gb_s=()
   [[ "$1" == /* ]] || return 1
-  _gb_rest="${1#/}"
-  while [[ -n "$_gb_rest" ]]; do
-    _gb_c="${_gb_rest%%/*}"
-    if [[ "$_gb_rest" == */* ]]; then _gb_rest="${_gb_rest#*/}"; else _gb_rest=""; fi
-    case "$_gb_c" in
-      ''|.) continue ;;
-      ..) _gb_p="${_gb_p%/*}"; continue ;;
-    esac
-    if [[ -L "$_gb_p/$_gb_c" ]]; then
-      if _in_writable "$_gb_p/$_gb_c"; then return 1; fi
-      (( ++_gb_n <= 40 )) || return 1
-      _readlink_exact _gb_t "$_gb_p/$_gb_c" || return 1
-      if [[ "$_gb_t" == /* ]]; then _gb_p=""; _gb_rest="${_gb_t#/}${_gb_rest:+/$_gb_rest}"; else _gb_rest="$_gb_t${_gb_rest:+/$_gb_rest}"; fi
-      continue
-    fi
-    _gb_p="$_gb_p/$_gb_c"
-    [[ -d "$_gb_p" ]] || return 1
-    if [[ ! -x "$_gb_p" ]]; then _gb_b="$_gb_p"; break; fi
+  _path_parts _gb_w "$1"
+  for _gb_c in ${_gb_w[@]+"${_gb_w[@]}"}; do
+    # This component of the way, then every one a link's target left waiting.
+    while :; do
+      case "$_gb_c" in
+        ''|.) ;;
+        ..) _gb_p="${_gb_p%/*}" ;;
+        *)
+          if [[ -L "$_gb_p/$_gb_c" ]]; then
+            if _in_writable "$_gb_p/$_gb_c"; then return 1; fi
+            (( ++_gb_n <= 40 )) || return 1
+            _readlink_exact _gb_t "$_gb_p/$_gb_c" || return 1
+            if [[ "$_gb_t" == /* ]]; then _gb_p=""; fi
+            _path_parts _gb_tw "$_gb_t"
+            for (( _gb_k = ${#_gb_tw[@]} - 1; _gb_k >= 0; _gb_k-- )); do
+              _gb_s[_gb_sn]="${_gb_tw[_gb_k]}"; _gb_sn=$((_gb_sn + 1))
+            done
+          else
+            _gb_p="$_gb_p/$_gb_c"
+            [[ -d "$_gb_p" ]] || return 1
+            if [[ ! -x "$_gb_p" ]]; then _gb_b="$_gb_p"; break 2; fi
+          fi ;;
+      esac
+      (( _gb_sn > 0 )) || break
+      _gb_sn=$((_gb_sn - 1)); _gb_c="${_gb_s[_gb_sn]}"
+    done
   done
   [[ -n "$_gb_b" ]] || return 1
   # Only one the agent could reach into, by launcher_dirs_in's rule: one it owns,

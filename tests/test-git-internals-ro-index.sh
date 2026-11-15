@@ -2292,6 +2292,34 @@ else
   printf 'NOTE: run as root, which searches any directory; G290 is not applicable\n'
 fi
 
+# ── G291: a very long pointer is walked in time linear in its length ─────────
+# _gdi_blocked() took a pointer's way apart one component at a time off the
+# front of what was left, copying the rest at every step, so the cost grew with
+# the square of the way's length: a core.worktree of 16 KB, which nothing
+# bounds, cost a launch a minute, and the check after the session ran out of
+# its time (bugs review GIT-97). The way is now split once. Here 64 KB of `./`,
+# half before a link outside the mounts and half after it. The link's target is
+# two components, walked in their order, and the first is itself a link, to an
+# absolute path: the second waits while that one is followed, and the way then
+# goes on. And a directory named `*` on the way, which the split must leave a
+# name. As root a mode stops nothing.
+if [[ "$(id -u)" != 0 ]]; then
+  R291="$TMP/r291"; "${G[@]}" init -q "$R291" && "${G[@]}" -C "$R291" commit -q --allow-empty -m i \
+    && mkdir -p "$R291/node_modules/*/cw291" && ln -s lkb291/node_modules "$TMP/lk291" && ln -s "$R291" "$TMP/lkb291" \
+    || { printf 'SCAFFOLD-FAILED: G291\n'; exit 1; }
+  printf -v pad291 '%*s' 16000 ''; pad291="${pad291// /./}"
+  "${G[@]}" -C "$R291" config core.worktree "$TMP/${pad291}lk291/${pad291}*/cw291/x" && chmod 000 "$R291/node_modules/*/cw291" \
+    || { printf 'SCAFFOLD-FAILED: G291 pointer\n'; exit 1; }
+  launch_timed 120 "$R291"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$R291/node_modules/*/cw291:/workspace/r291/node_modules/*/cw291:ro" \
+    && ! grep -qF "could not all be searched" "$ERR" \
+    && pass "G291 a core.worktree of 64 KB through a link is walked in time, and the directory that blocks it is read-only whole" \
+    || fail "G291 long pointer (rc=$LAUNCH_RC after ${LAUNCH_S}s; $(mounts | grep -F '/cw291:' | tr '\n' ' '); $(grep -F 'could not all' "$ERR" | head -1))"
+  chmod 755 "$R291/node_modules/*/cw291"; rm -rf "$R291" "$TMP/lk291" "$TMP/lkb291"
+else
+  printf 'NOTE: run as root, which searches any directory; G291 is not applicable\n'
+fi
+
 # ── G241 to G251: GAP-2's whole-file run, batch 4 ────────────────────────────
 # Each check below kills survivors of the Linux machine's measurement of
 # sandbox.sh, by the brief's layouts (feature-gaps review, GAP-2, batch 4).

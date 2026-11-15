@@ -191,6 +191,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   named. The path is now followed as the kernel follows it (bugs review
   GIT-96).
 
+- **A very long `core.worktree` or `gitdir` no longer costs every launch minutes.**
+  The search for the directory that blocks such a path took the path apart a
+  component at a time, copying what was left at each step, so its cost grew
+  with the square of the path's length. A `core.worktree` of 16 KB, which an
+  agent can write into the config of a repository it makes, cost every later
+  launch a minute, and one of 64 KB did not finish in two minutes. The path
+  is now split once, and that launch takes three seconds. The cost still grows
+  with the path's length, and nothing bounds it yet (bugs review GIT-97,
+  GIT-101).
+
 - **The check after a session no longer names a directory the agent cannot
   reach**, such as a submodule of yours at mode 000 when the agent runs under
   another id, as a repository the session made (bugs review GIT-99). **A `.git`
