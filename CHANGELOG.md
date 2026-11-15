@@ -20,6 +20,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the old names still work. Groups and repo volumes are only named, never
   removed. See `docs/multiple-projects.md`.
 
+- **A `:rwcopy` working copy records the home that made it.** Docker Desktop
+  shares one daemon between WSL distros, and one user name gives each the same
+  paths, so a working copy's launch directory did not say whose it was:
+  `project.sh gc` offered another distro's copies as gone, unpushed work and
+  all, and `rm` and `mv` could take another home's copies of a project at the
+  same path. A launch now labels each copy it makes `ai-containers.owner`, a
+  keyed hash of this `HOME`'s project-id key that names neither the home nor
+  the user (no label, as before, where it cannot be computed; a launch never
+  fails over it). `project.sh rm`, `mv` and `gc` leave another home's copies
+  alone, and `gc` offers a copy with no label, made before it, only under a
+  path this home's registries know; `./project.sh gc --all` offers the rest,
+  for copies from before the label or from a distro that no longer exists.
+  `repo.sh gc` and `repo.sh list --copies` do not read the label yet.
+
 - **`repo-git-reset.sh inspect` reports `WORKTREE|clean|changed|?`**, so a caller
   can tell whether a volume's checkout has uncommitted changes. `repo.sh` can
   now be sourced, and a working copy's git helper borrows its base volume's URL

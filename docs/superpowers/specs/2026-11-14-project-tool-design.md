@@ -2,7 +2,9 @@
 
 **Status:** IMPLEMENTED 2026-11-15 on branch feat/project-tool; approved 2026-11-14; amended while planning (the image after `mv`,
 the `WORKTREE` record), see the plan
-`docs/superpowers/plans/2026-11-14-project-tool.md`.
+`docs/superpowers/plans/2026-11-14-project-tool.md`; amended in the final review
+(what `gc` before `mv` loses; working copies labelled by owner, the user's
+choice; `gc --all`).
 
 Date: 2026-11-14.
 
@@ -125,7 +127,16 @@ My calls:
   `ai-containers.launch-dir` lies under it, and the `image-projects.conf` line
   that names it (an id is a keyed hash of the path string,
   `ai_containers_project_id()`, so it is computable for a path that is gone).
-  So running `gc` first loses nothing a later `mv` needs.
+  *(Corrected in the final review: this said running `gc` first loses nothing
+  a later `mv` needs, which was false.)* What survives `gc`: the moved
+  `.ai-containers` and its settings, and nothing else `mv` needs — `gc` drops
+  the old `projects.conf` line, which `mv` does not need. What does not: the
+  working copies, whose launch directory is gone, which `gc` removes, unpushed
+  work and all; and the old image with its `image-projects.conf` line, which
+  `mv` would have removed anyway (the next build rebuilds it from cache). So
+  after `gc`, `mv` only registers the new place, and says no copy is left to
+  carry; `gc` says, on the vanished project's line and on each of its copies'
+  lines, to answer no and run `mv` first.
 - **The image** is tied to where the project lived (its
   `ai-containers.project` label). *(Settled while planning, replacing an
   earlier call that changed `build.sh`.)* `mv` removes that image — only when
@@ -191,8 +202,24 @@ My calls:
 - For every vanished project it lists, the listing says that a project that
   was **moved** rather than deleted should be repaired with
   `project.sh mv <old> <new>` instead: answering "no" keeps everything, and
-  `mv` also works after `gc` (above). Removing the old image of a project moved
-  by hand costs only a rebuild.
+  after `gc` `mv` only registers the new place, the working copies gone (above);
+  each copy launched from the vanished project says so on its own line.
+  Removing the old image of a project moved by hand costs only a rebuild.
+- *(Added in the final review; labelling by owner is the user's choice.)* One
+  Docker daemon can serve several homes — Docker Desktop shares one between WSL
+  distros, where one user name gives the same paths — so a launch directory
+  that is gone here may exist in another home. A launch labels each working
+  copy it makes `ai-containers.owner=<id>`, the keyed hash of
+  `ai_containers_project_id()` over a fixed string (per `HOME`, revealing
+  nothing). `gc` offers this home's copies; keeps another home's; and offers
+  one with no owner label (made before the label) only under a path this home's
+  registries know — a `projects.conf` root, gone or not, or a project
+  `image-projects.conf` maps. `rm` and `mv` never take another home's copy, and
+  take an unlabelled one by its launch directory, as before. `gc --all` offers
+  every copy whose launch directory is gone, whoever made it — for copies from
+  before the label, or from a distro or user that no longer exists — with the
+  same listing, question and keeps (an unmounted drive, a container using it).
+  `repo.sh gc` and `list --copies` do not read the label yet.
 - Prints what it would do first, every run.
 
 ## Constraints
