@@ -471,20 +471,29 @@ fi
 chmod 0755 "$LOCK/inner"
 
 # ── T25b/c: a directory the agent does NOT own (agent identity overridden). It
-# hides a launcher only if the agent can still search it (T25b, o+x); one the
-# agent cannot enter at all — a database's data directory, say — hides nothing
-# it could touch, so it is not reported (T25c). Root lists everything: n/a.
+# hides a launcher only if the agent can still search it (T25b, o+x). One of
+# yours counts whatever its mode (T25c): on a share that remaps ownership
+# (Docker Desktop, Colima) what the agent made shows up as yours, and from a
+# later container it could restore the mode (LNCH-25, measured on Colima).
+# Another user's the agent cannot enter is left alone: T25j, by _agent_reaches.
+# Root lists everything: n/a.
 if [[ "$(id -u)" -ne 0 ]]; then
-  OWN="$TMP/own"; mk_launcher "$OWN/srch/p"; mk_launcher "$OWN/shut/p"; chmod 0311 "$OWN/srch"; chmod 0310 "$OWN/shut"
+  OWN="$TMP/own"; mk_launcher "$OWN/srch/p"; mk_launcher "$OWN/shut/p"; chmod 0311 "$OWN/srch"
   SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$OWN" launch "$LAUNCHER" "$TMP/app"
-  chmod 0755 "$OWN/srch" "$OWN/shut"
+  chmod 0755 "$OWN/srch"
   # Yours, though the agent's identity is another: on a file share that remaps
   # ownership (Docker Desktop, Colima) what the agent makes shows up as yours, so
   # it is refused, and you can always fix your own (LNCH-5). Another user's the
   # agent cannot write keeps the overlay and the WARNING (review of 7b41327).
-  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $OWN/srch can be searched but not listed" "$ERR" && ! grep -qF "$OWN/shut" "$ERR" \
-    && pass "T25b one you own that the agent can search refuses the launch; T25c one it cannot enter is left alone" \
-    || fail "T25b/c agent-reach (got: $(mounts_under /workspace/own/ | tr '\n' ' '); stderr: $(grep -F "$OWN" "$ERR" | tr '\n' ' '))"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $OWN/srch can be searched but not listed" "$ERR" \
+    && pass "T25b one you own that the agent can search refuses the launch" \
+    || fail "T25b agent-reach (got: $(mounts_under /workspace/own/ | tr '\n' ' '); stderr: $(grep -F "$OWN" "$ERR" | tr '\n' ' '))"
+  rm -rf "$OWN/srch"; chmod 0310 "$OWN/shut"
+  SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$OWN" launch "$LAUNCHER" "$TMP/app"
+  chmod 0755 "$OWN/shut"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $OWN/shut can be searched but not listed" "$ERR" \
+    && pass "T25c one of yours that only you may enter refuses the launch too (LNCH-25)" \
+    || fail "T25c yours, another agent uid (rc=$LAUNCH_RC; stderr: $(grep -F "$OWN" "$ERR" | tr '\n' ' '))"
   # Not the agent's, but writable and searchable by it through its group or the
   # other bits: it could have planted a FIFO there, so refused (automated
   # security review of cd83cb7).
@@ -586,6 +595,34 @@ if [[ "$(id -u)" -ne 0 ]]; then
 else
   printf 'SKIP: T25b/c — as root every directory can be listed\n'
 fi
+
+# ── T25j: _agent_reaches, the rule the read-only mount's root (GIT-93) and a
+# blocked pointer (_gdi_blocked) are judged by, read with stat: BSD find refused
+# a start point it could not read and evaluated nothing, so on macOS a mode-000
+# directory matched no rule (LNCH-28). A stat stub answers for another user's
+# directory, which no unprivileged test can make. Agent 4242:4343, you 501.
+fns25j="$TMP/fns25j.sh"
+awk 'index($0, "_agent_reaches() {") == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh" > "$fns25j"
+r25j=""
+# "<stat: gnu|bsd|fail> <owner> <group> <mode>:<expected>"
+for c25j in "bsd 9 9 750:no" "bsd 9 9 711:yes" "bsd 9 4343 710:yes" "bsd 9 4343 701:no" "bsd 9 9 000:no" \
+            "bsd 4242 9 000:yes" "bsd 501 9 000:yes" "gnu 9 9 711:yes" "gnu 9 9 000:no" "bsd x 9 000:yes" "fail 9 9 000:yes"; do
+  read -r k25j o25j g25j m25j <<< "${c25j%:*}"
+  got25j="$(K="$k25j" O="$o25j" G="$g25j" M="$m25j" bash -c 'source "$1"
+    if [[ "$K" == gnu ]]; then _launcher_stat_gnu=1; else _launcher_stat_gnu=0; fi
+    stat() {
+      [[ "$K" != fail && "$3" == -- && "$4" == /d ]] || return 1
+      if [[ "$K" == gnu ]]; then [[ "$1 $2" == "-c %u %g %a" ]] || return 1
+      else [[ "$1 $2" == "-f %u %g %Lp" ]] || return 1; fi
+      printf "%s %s %s\n" "$O" "$G" "$M"
+    }
+    if _agent_reaches /d 4242 4343 501; then echo yes; else echo no; fi' _ "$fns25j" 2>&1)"
+  [[ "$got25j" == "${c25j#*:}" ]] || r25j+=" [$c25j got $got25j]"
+done
+[[ -z "$r25j" ]] \
+  && pass "T25j another user's directory the agent cannot enter is left alone; its own, yours, or one its group or other bits let it search count, under GNU and BSD stat" \
+  || fail "T25j _agent_reaches:$r25j"
+rm -f "$fns25j"
 
 # ── T26: an unreadable writable mount ROOT cannot be overlaid (it is the mount)
 # or looked inside, so the launch is refused, naming it — never started blind.
@@ -1986,41 +2023,17 @@ else
     && pass "T78 one you can search but not list refuses the launch" \
     || fail "T78 mode 100 (rc=$LAUNCH_RC; docker run reached: $([[ -s "$CAPTURE" ]] && echo yes || echo no); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
   chmod 755 "$O78/node_modules/x"; rm -rf "$O78"
-  # Only one the agent could reach into, by the scan's rule: with another
-  # identity for the agent, a directory of yours nobody else can enter hides
-  # nothing it can touch, and one its other bits let it search does.
+  # With another identity for the agent, a directory of yours counts whatever
+  # its mode: on a share that remaps ownership what the agent made shows up as
+  # yours (LNCH-25). Which modes of another user's let the agent in is T25j's.
   for md78 in 000 001; do
     mk_launcher "$O78/node_modules/x"; chmod "$md78" "$O78/node_modules/x"
     SANDBOX_UID=4242 SANDBOX_GID=4343 EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/node_modules/x" launch "$LAUNCHER" ..
     m78="$(mounts)"
-    if [[ "$md78" == 000 ]]; then
-      [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF ":/workspace/o78/node_modules" <<<"$m78" && ! grep -qF "$O78/node_modules/x cannot be listed" "$ERR" \
-        && pass "T78 one the agent cannot reach into is left alone" \
-        || fail "T78 another identity, mode 000 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
-    else
-      [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O78/node_modules/x:/workspace/o78/node_modules/x:ro" <<<"$m78" \
-        && grep -qF "WARNING: $O78/node_modules/x cannot be listed by you" "$ERR" \
-        && pass "T78 one the agent's other bits let it search is read-only whole, and named" \
-        || fail "T78 another identity, mode 001 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
-    fi
-    chmod 755 "$O78/node_modules/x"; rm -rf "$O78"
-  done
-  # The agent's group: its search bit lets it in, and then the other bits are
-  # not its class.
-  for md78 in 010 001; do
-    mk_launcher "$O78/node_modules/x"; chgrp "$(id -g)" "$O78/node_modules/x"; chmod "$md78" "$O78/node_modules/x"
-    SANDBOX_UID=4242 SANDBOX_GID="$(id -g)" EXTRA_MOUNTS="$O78" DOCS_PATH="$O78/node_modules/x" launch "$LAUNCHER" ..
-    m78="$(mounts)"
-    if [[ "$md78" == 010 ]]; then
-      [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O78/node_modules/x:/workspace/o78/node_modules/x:ro" <<<"$m78" \
-        && grep -qF "WARNING: $O78/node_modules/x cannot be listed by you" "$ERR" \
-        && pass "T78 one the agent's group bit lets it search is read-only whole, and named" \
-        || fail "T78 the agent's group, mode 010 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
-    else
-      [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF ":/workspace/o78/node_modules" <<<"$m78" && ! grep -qF "$O78/node_modules/x cannot be listed" "$ERR" \
-        && pass "T78 one of the agent's group that only others may search is left alone" \
-        || fail "T78 the agent's group, mode 001 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
-    fi
+    [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$O78/node_modules/x:/workspace/o78/node_modules/x:ro" <<<"$m78" \
+      && grep -qF "WARNING: $O78/node_modules/x cannot be listed by you" "$ERR" \
+      && pass "T78 one of yours (mode $md78) under another agent uid is read-only whole, and named (LNCH-25)" \
+      || fail "T78 another identity, mode $md78 (rc=$LAUNCH_RC; got: $(grep -F /o78/ <<<"$m78" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
     chmod 755 "$O78/node_modules/x"; rm -rf "$O78"
   done
   # The same one directory up: a pointer you are not permitted to reach, behind

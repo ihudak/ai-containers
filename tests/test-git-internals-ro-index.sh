@@ -1353,12 +1353,14 @@ if [[ "$(id -u)" != 0 ]]; then
   [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/node_modules/aw153:/workspace/proj/node_modules/aw153:ro" \
     && pass "G153 a worktree's checkout made unsearchable is read-only whole" \
     || fail "G153 unsearchable checkout (rc=$LAUNCH_RC; $(mounts | grep -F aw153 | tr '\n' ' '); $(grep -F aw153 "$ERR" | head -2 | tr '\n' ' '))"
-  # A directory the agent could not enter either hides nothing it can touch, and
-  # is left alone, as the scan leaves one: here an agent of another uid and gid,
-  # and a directory of yours with no bits for anyone.
+  # With an agent of another uid and gid, a directory of yours with no bits for
+  # anyone still counts: on a share that remaps ownership (Docker Desktop,
+  # Colima) what the agent made shows up as yours (LNCH-25). Another user's
+  # directory the agent cannot enter is left alone: T25j in
+  # tests/test-launcher-dir-ro.sh, since no unprivileged test can make one.
   chmod 000 "$PROJ/node_modules"; SANDBOX_UID=4242 SANDBOX_GID=4242 launch ..; chmod 755 "$PROJ/node_modules"
-  [[ "$LAUNCH_RC" == 0 ]] && ! has_mount "$PROJ/node_modules:/workspace/proj/node_modules:ro" \
-    && pass "G153 a directory the agent could not enter either is not bound" \
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$PROJ/node_modules:/workspace/proj/node_modules:ro" \
+    && pass "G153 a directory of yours is read-only whole under another agent uid too (LNCH-25)" \
     || fail "G153 a directory out of the agent's reach (rc=$LAUNCH_RC; $(mounts | grep -F node_modules | tr '\n' ' '))"
   "${G[@]}" -C "$PROJ" worktree remove --force "$PROJ/node_modules/aw153" 2>/dev/null
   rm -rf "$PROJ/node_modules/aw153" "$PROJ/.git/worktrees/aw153"; "${G[@]}" -C "$PROJ" branch -q -D aw153 2>/dev/null
@@ -2277,11 +2279,12 @@ if [[ "$(id -u)" != 0 ]]; then
   ! grep -qF -- "$nm290/k4:" <<<"$m290" \
     && pass "G290 a link inside the mount on the way still ends the walk: nothing is bound for it" \
     || fail "G290 k4 bound through a link the agent could have planted ($(grep -F '/k4:' <<<"$m290" | tr '\n' ' '))"
-  # An agent of another id cannot reach into a directory of yours, mode 000:
-  # asked of the directory, never of a link to it, whose own mode says nothing.
+  # With an agent of another id, a directory of yours, mode 000, still counts
+  # (LNCH-25): bound whether a link names it or not. Another user's is T25j's.
   SANDBOX_UID=4242 SANDBOX_GID=4242 launch_timed 120 ..
-  [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF -- "$nm290/k2:" <<<"$(mounts)" && ! grep -qF -- "$nm290/k1:" <<<"$(mounts)" \
-    && pass "G290 one the agent could not enter either is not bound, a link to it or not" \
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$nm290/k2:/workspace/proj/node_modules/k2:ro" <<<"$(mounts)" \
+    && grep -qxF -- "$nm290/k1:/workspace/proj/node_modules/k1:ro" <<<"$(mounts)" \
+    && pass "G290 one of yours under another agent uid is read-only whole, a link to it or not (LNCH-25)" \
     || fail "G290 agent of another id (rc=$LAUNCH_RC; $(mounts | grep -F -e '/k1:' -e '/k2:' | tr '\n' ' '))"
   chmod 755 "$nm290/k1" "$nm290/k2" "$nm290/k3" "$nm290/k4" "$nm290/k6" "$PROJ/.venv"
   rm -rf "$nm290/k1" "$nm290/k2" "$nm290/k3" "$nm290/k4" "$nm290/k6" "$PROJ/.venv" "$PROJ/sub290" "$o290" \
@@ -2457,15 +2460,16 @@ chmod -R u+rwx "$M292" 2>/dev/null; rm -rf "$M292"
 # As root a mode stops nothing, so G241, G244 and G249 are skipped there.
 skip_root() { pass "$1 skipped: as root a mode stops nothing"; }
 
-# G241 (item 1): a gitlink at a directory of yours, mode 000, that an agent of
-# another id cannot reach: _gdi_blocked() finds it unreachable, protects
-# nothing, and the gitlink is named as not where its index says.
+# G241 (item 1): a gitlink at a directory of yours, mode 000, with an agent of
+# another id: _gdi_blocked() counts it as the agent's to reach, since a share
+# that remaps ownership shows what the agent made as yours (LNCH-25), and it is
+# read-only whole and named. Another user's it cannot enter is T25j's.
 if [[ "$(id -u)" != 0 ]]; then
   "${G[@]}" init -q "$PROJ/sm241" && "${G[@]}" -C "$PROJ/sm241" commit -q --allow-empty -m s \
     && "${G[@]}" -C "$PROJ" add sm241 2>/dev/null && chmod 000 "$PROJ/sm241" || { printf 'SCAFFOLD-FAILED: G241\n'; exit 1; }
   SANDBOX_UID=4242 SANDBOX_GID=4242 launch ..
-  grep -qF "WARNING: submodule $PROJ/sm241 of $PROJ/.git is not where its index says" "$ERR" \
-    && pass "G241 a gitlink at a directory an agent of another id cannot reach is named" \
+  grep -qF "WARNING: $PROJ/sm241 cannot be listed by you" "$ERR" \
+    && pass "G241 a gitlink at a directory of yours, under another agent uid, is read-only whole and named (LNCH-25)" \
     || fail "G241 unreachable gitlink (rc=$LAUNCH_RC; $(grep -F sm241 "$ERR" | head -2 | tr '\n' ' '))"
   chmod 755 "$PROJ/sm241"; "${G[@]}" -C "$PROJ" update-index --force-remove sm241; rm -rf "$PROJ/sm241"
   [[ -z "$("${G[@]}" -C "$PROJ" ls-files -s sm241)" ]] || fail "G241 SCAFFOLD: the gitlink sm241 is still in the project's index"
@@ -2610,18 +2614,18 @@ EXTRA_MOUNTS="$R251/b/w $R251/b/w/node_modules/p/sub" launch "$TMP/app"
 rm -rf "$R251"
 
 # ── G252: the check after a session knows the agent's identity ───────────────
-# A directory of yours, mode 000, that an agent of another id cannot reach was
-# not reported at launch, rightly; the check after the session, which had no
-# agent identity, took it for one the agent could reach and named it among the
-# repositories the session made, though no session made anything (bugs review
-# GIT-99, found with batch 4's item 1).
+# A directory of yours, mode 000, under an agent of another id: the check after
+# the session, which had no agent identity, named it among the repositories the
+# session made, though no session made anything (bugs review GIT-99, found with
+# batch 4's item 1). Since LNCH-25 the launch names it and binds it read-only
+# whole, and the check after the session still does not.
 if [[ "$(id -u)" != 0 ]]; then
   "${G[@]}" init -q "$PROJ/sm252" && "${G[@]}" -C "$PROJ/sm252" commit -q --allow-empty -m s \
     && "${G[@]}" -C "$PROJ" add sm252 2>/dev/null && chmod 000 "$PROJ/sm252" || { printf 'SCAFFOLD-FAILED: G252\n'; exit 1; }
   SANDBOX_UID=4242 SANDBOX_GID=4242 launch ..
-  [[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: submodule $PROJ/sm252 of $PROJ/.git is not where its index says" "$ERR" \
+  [[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: $PROJ/sm252 cannot be listed by you" "$ERR" \
     && ! grep -qF "$PROJ/sm252 (cannot be listed" "$ERR" \
-    && pass "G252 a directory the agent cannot reach is not reported after the session" \
+    && pass "G252 a directory of yours the launch named is not reported after the session" \
     || fail "G252 false report after the session (rc=$LAUNCH_RC; $(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
   chmod 755 "$PROJ/sm252"; "${G[@]}" -C "$PROJ" update-index --force-remove sm252; rm -rf "$PROJ/sm252"
   [[ -z "$("${G[@]}" -C "$PROJ" ls-files -s sm252)" ]] || fail "G252 SCAFFOLD: the gitlink sm252 is still in the project's index"

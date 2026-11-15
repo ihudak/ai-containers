@@ -601,8 +601,7 @@ launcher_ro_overlay() {
     # it: an unlistable directory the agent could reach into, by
     # launcher_dirs_in's rule (GIT-93; T78). What it holds, a git directory
     # too, is then read-only whole in the writable mounts' views.
-    elif [[ -n "$(cd / && find "$rl" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0010 \) \
-         -o \( ! -group "$gid" -perm -0001 \) \) -print 2>/dev/null)" ]]; then
+    elif _agent_reaches "$rl" "$uid" "$gid" "$you"; then
       unreadable=("$rl")
     fi
     cand=(${found[@]+"${found[@]}"} ${unreadable[@]+"${unreadable[@]}"})
@@ -3058,15 +3057,36 @@ container_env_filter() {
   done < "$file"
 }
 
+# _agent_reaches <dir> <agent-uid> <agent-gid> <your-uid>: whether the agent
+# could reach into <dir>, by launcher_dirs_in's rule: the agent owns it, so can
+# chmod it back; you own it, which on a share that remaps ownership (Docker
+# Desktop, Colima) is what the agent made, whatever its uid (LNCH-25); or its
+# mode lets the agent's single group, or others, search it. Read with stat, not
+# `find <dir> -maxdepth 0`: BSD find refuses a start point it cannot read and
+# evaluates nothing, so on macOS a directory at mode 000 matched no rule
+# (LNCH-28). A stat that fails counts as reachable.
+_agent_reaches() {
+  local x o g m
+  if (( _launcher_stat_gnu )); then x="$(stat -c '%u %g %a' -- "$1" 2>/dev/null)" || return 0
+  else x="$(stat -f '%u %g %Lp' -- "$1" 2>/dev/null)" || return 0
+  fi
+  read -r o g m <<< "$x"
+  [[ "$o" =~ ^[0-9]+$ && "$g" =~ ^[0-9]+$ && "$m" =~ ^[0-7]+$ ]] || return 0
+  [[ "$o" != "$2" && "$o" != "$4" ]] || return 0
+  if [[ "$g" == "$3" ]]; then (( 8#$m & 8 )); else (( 8#$m & 1 )); fi
+}
+
 # launcher_dirs_in <launchers-out> <unreadable-out> <dir> <agent-uid> <agent-gid> <your-uid>: appends every
 # launcher directory below <dir> — matched by CONTENT, a directory holding both
 # sandbox.sh and sandbox-common.sh, which is what the host runs `./sandbox.sh`
 # from (a project's .ai-containers/ copy, or an ai-containers checkout itself;
 # sandbox.sh may be a symlink) — and every directory the search cannot see into
 # although the agent (<uid>/<gid>) could reach inside it: one it owns, so can
-# chmod back, or one whose mode lets it search. A directory nobody but its owner
-# can enter (a database's data directory, say) hides nothing the agent can
-# touch, so it is not reported. Mode bits decide the agent's side; the kernel
+# chmod back, one of yours, which on a share that remaps ownership (Docker
+# Desktop, Colima) is what the agent made, whatever its uid, as
+# _agent_could_write() counts it (LNCH-25), or one whose mode lets it search.
+# A directory nobody but its owner can enter (a database's data directory,
+# say) hides nothing the agent can touch, so it is not reported. Mode bits decide the agent's side; the kernel
 # (-r/-x) decides yours. To six levels down, pruning dependency and VCS trees:
 # it runs on every launch over every writable mount, measured at a few
 # hundredths of a second over a ~/dev full of repos (far slower on a WSL drvfs
@@ -3092,7 +3112,7 @@ launcher_dirs_in() {
       \( -name node_modules -o -name .git -o -name vendor -o -name .venv -o -name target \) -prune \
       -o -type d \
          \( \( -user "$6" ! -perm -0500 \) -o ! -user "$6" \) \
-         \( -user "$4" -o \( -group "$5" -perm -0010 \) -o \( ! -group "$5" -perm -0001 \) \) \
+         \( -user "$4" -o -user "$6" -o \( -group "$5" -perm -0010 \) -o \( ! -group "$5" -perm -0001 \) \) \
          -print0 2>/dev/null)
   for f in ${hits[@]+"${hits[@]}"}; do
     if [[ ! -r "$f" || ! -x "$f" ]]; then _ldi_unr+=("$f"); fi
@@ -4331,12 +4351,12 @@ _gdi_blocked() {
   done
   [[ -n "$_gb_b" ]] || return 1
   # Only one the agent could reach into, by launcher_dirs_in's rule: one it owns,
-  # which it can chmod back, or one whose mode lets it search. A directory nobody
-  # but its owner can enter (a database's data directory) hides nothing the agent
-  # can touch. The rescan after the session gets the launch's identity too
-  # (_git_uid, _git_gid; GIT-99); with none at hand, every one counts.
-  if [[ -n "${uid:-}" && -n "${gid:-}" ]] && [[ -z "$(find "$_gb_b" -maxdepth 0 \( -user "$uid" -o \( -group "$gid" -perm -0010 \) \
-       -o \( ! -group "$gid" -perm -0001 \) \) -print 2>/dev/null)" ]]; then
+  # which it can chmod back, one of yours (LNCH-25), or one whose mode lets it
+  # search. A directory nobody but its owner can enter (a database's data
+  # directory) hides nothing the agent can touch. The rescan after the session
+  # gets the launch's identity too (_git_uid, _git_gid; GIT-99); with none at
+  # hand, every one counts.
+  if [[ -n "${uid:-}" && -n "${gid:-}" ]] && ! _agent_reaches "$_gb_b" "$uid" "$gid" "$(id -u)"; then
     return 1
   fi
   for _gb_j in ${bsrc[@]+"${!bsrc[@]}"}; do
