@@ -353,7 +353,9 @@ run_repo rm docs --yes
 setup_world
 : > "$VOLS/ai-containers-repo-docs--wc-ui"
 printf 'ai-containers.repo=docs--wc-ui\nai-containers.type=git\n' > "$VOLS/ai-containers-repo-docs--wc-ui.labels"
-run_repo gc --yes
+# --all here and below: without it gc keeps every volume with no owner label
+# whatever it takes it for, and these ask what it takes a volume for.
+run_repo gc --all --yes
 [[ -f "$VOLS/ai-containers-repo-docs--wc-ui" ]] && pass "gc does not take a base volume for a working copy" \
   || fail "gc removed the base volume of repo docs--wc-ui ($(removed))"
 # …nor an UNLABELLED one, from before labels, when the registry has that repo
@@ -369,7 +371,7 @@ run_repo gc --all --yes   # --all: unlabelled copies are kept without it, and th
   || fail "gc and unlabelled volumes (removed: $(removed))"
 # …and so does every command that collects ONE repo's working copies: rm, reset
 # and gc --repo of docs deleted docs--wc-ui's base (review of REPO-12).
-for cmd in "rm docs --yes" "reset docs --yes" "gc --repo docs --yes"; do
+for cmd in "rm docs --yes" "reset docs --yes" "gc --repo docs --all --yes"; do
   setup_world
   : > "$VOLS/ai-containers-repo-docs--wc-ui"
   printf 'docs--wc-ui|git|git@x:docs--wc-ui.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
@@ -383,7 +385,7 @@ done
 setup_world
 : > "$VOLS/ai-containers-repo-docs--wc-ui"; : > "$VOLS/ai-containers-repo-docs--wc-ui--wc-x_12345678"
 printf 'docs--wc-ui|git|git@x:docs--wc-ui.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
-run_repo gc --repo docs --yes
+run_repo gc --repo docs --all --yes
 docs_kept="$([[ -f "$VOLS/ai-containers-repo-docs--wc-ui--wc-x_12345678" ]] && echo yes || echo no)"
 run_repo gc --repo docs--wc-ui --all --yes   # its copy is unlabelled
 [[ "$docs_kept" == yes && ! -f "$VOLS/ai-containers-repo-docs--wc-ui--wc-x_12345678" && -f "$VOLS/ai-containers-repo-docs--wc-ui" ]] \
@@ -401,7 +403,7 @@ REPO_VOLUME_PREFIX=prj run_repo gc --all --yes   # both copies unlabelled: --all
 # taken for a working copy and deleted (review of batch 4, finding 1).
 setup_world
 : > "$VOLS/prjx-repo-team-repo-x"; printf 'ai-containers.repo=x\nai-containers.type=git\n' > "$VOLS/prjx-repo-team-repo-x.labels"
-REPO_VOLUME_PREFIX=prjx run_repo gc --yes
+REPO_VOLUME_PREFIX=prjx run_repo gc --all --yes
 [[ -f "$VOLS/prjx-repo-team-repo-x" ]] && pass "gc never takes a volume it cannot classify for a working copy" \
   || fail "gc removed a base volume under a nested prefix ($(removed))"
 # REPO-11: a base volume is found by name, and under a nested prefix two repos'
@@ -887,6 +889,34 @@ run_repo rm docs --yes
 [[ "$RC" == 1 ]] && ! grep -q $'\033' "$ERR" && grep -qF 'labelled for repo "ot?[2Jher"' "$ERR" \
   && pass "  … and rm's refusal of a volume labelled for another repo" \
   || fail "  … and rm's refusal of a volume labelled for another repo (rc=$RC; $(od -c "$ERR" | grep -m1 033 | tr -s ' '))"
+run_repo reset docs
+[[ "$(cat "$OUT" "$ERR")" != *$'\033'* ]] && grep -qF "labelled for repo 'ot?[2Jher' — will be left untouched" "$OUT" \
+  && pass "  … and reset's summary of it" \
+  || fail "  … and reset's summary of it (got: $(cat "$OUT" "$ERR" | od -c | grep -m1 033 | tr -s ' '))"
+# list's NAME column: a registry line written before reindex checked names, or
+# by hand. And reindex, which writes labels into that registry, one line per
+# repo split at '|': a volume docker can name (uppercase, '_', '.') that is no
+# repo name, or a source holding '|', is left out.
+setup_world
+printf 'ev\033[2Jil|git|git@x:e.git|1700000000|1700000000|volume\n' >> "$HOME/.ai-containers/repos.conf"
+run_repo list
+[[ "$(cat "$OUT")" != *$'\033'* ]] && grep -qE '^ev\?\[2Jil ' "$OUT" \
+  && pass "  … and list's NAME column, for a registry line holding one" \
+  || fail "  … and list's NAME column (got: $(od -c "$OUT" | grep -m1 033 | tr -s ' '))"
+setup_world
+: > "$VOLS/ai-containers-repo-Ev_il"
+printf 'ai-containers.repo=Ev_il\nai-containers.type=git\nai-containers.source=git@x:e.git\n' > "$VOLS/ai-containers-repo-Ev_il.labels"
+: > "$VOLS/ai-containers-repo-pipe"
+printf 'ai-containers.repo=pipe\nai-containers.type=git\nai-containers.source=git@x:a|b.git\n' > "$VOLS/ai-containers-repo-pipe.labels"
+reg_before="$(cat "$HOME/.ai-containers/repos.conf")"
+run_repo reindex
+reg_after="$(cat "$HOME/.ai-containers/repos.conf")"
+[[ "$RC" == 0 && "$reg_after" != *Ev_il* && "$reg_after" != *'a|b'* ]] \
+  && grep -qF 'skip Ev_il: volume "ai-containers-repo-Ev_il" is labelled with a repo name, type or source the registry cannot hold' "$ERR" \
+  && grep -qF 'skip pipe: volume "ai-containers-repo-pipe" is labelled with a repo name, type or source the registry cannot hold' "$ERR" \
+  && grep -q '^docs|git|git@x:docs.git|' "$HOME/.ai-containers/repos.conf" \
+  && pass "reindex leaves out a volume whose labels the registry cannot hold, saying so, and indexes the rest" \
+  || fail "reindex and labels the registry cannot hold (rc=$RC; err: $(tr '\n' '|' < "$ERR"); registry changed: $([[ "$reg_before" == "$reg_after" ]] && echo no || echo yes))"
 
 # ── 17. gc refuses what it cannot scope ──────────────────────────────────────
 setup_world

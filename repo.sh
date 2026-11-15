@@ -636,7 +636,7 @@ cmd_list() {
         state="MISSING"
       fi
     fi
-    printf '%-16s %-5s %-8s %-19s %-3s %s%s\n' "$name" "$(_ac_term "${type:-?}")" "$state" "$synced_h" "$wc_count" "$(_ac_term "$source")" "$size_str"
+    printf '%-16s %-5s %-8s %-19s %-3s %s%s\n' "$(_ac_term "$name")" "$(_ac_term "${type:-?}")" "$state" "$synced_h" "$wc_count" "$(_ac_term "$source")" "$size_str"
   done <<< "$names"
 }
 
@@ -804,7 +804,7 @@ collect_inspections() {   # $@ = repo names
     # announced as re-mirrored (a missing volume names no owner).
     local owner; owner="$(foreign_base_owner "$name" "$vol")"
     if [[ -n "$owner" ]]; then
-      RESET_SUMMARY+=("  - ${name}: ${vol} is labelled for repo '${owner}' — will be left untouched")
+      RESET_SUMMARY+=("  - ${name}: ${vol} is labelled for repo '$(_ac_term "$owner")' — will be left untouched")
       continue
     fi
     if [[ "$type" != "git" ]]; then
@@ -1116,7 +1116,17 @@ cmd_reindex() {
     type="$(docker_volume_label "$vol" 'ai-containers.type')"
     source="$(docker_volume_label "$vol" 'ai-containers.source')"
     if [[ -z "$type" || -z "$source" ]]; then
-      printf 'skip %s: volume "%s" has no ai-containers labels (seeded by an older version?). Re-seed with: ./repo.sh sync %s\n' "$name" "$vol" "$name" >&2
+      printf 'skip %s: volume "%s" has no ai-containers labels (seeded by an older version?). Re-seed with: ./repo.sh sync %s\n' \
+        "$(_ac_term "$name")" "$(_ac_term "$vol")" "$(_ac_term "$name")" >&2
+      continue
+    fi
+    # The registry is one line per repo, fields split at '|': a label it cannot
+    # hold as written would corrupt it, so that volume is left out, said.
+    if ! validate_repo_name "$name" >/dev/null 2>&1 || [[ "$type" != git && "$type" != path ]] \
+       || [[ "$source" == *[$'|\n\r']* ]]; then
+      printf 'skip %s: volume "%s" is labelled with a repo name, type or source the registry cannot hold\n' "$(_ac_term "$name")" "$(_ac_term "$vol")" >&2
+      printf '     (a name of lowercase letters, digits and dashes, a type of git or path, a source with no | or\n' >&2
+      printf '     line break); it is not indexed.\n' >&2
       continue
     fi
     record="$(repo_registry_lookup "$name" || true)"
@@ -1126,7 +1136,7 @@ cmd_reindex() {
       synced="$(repo_record_field "$record" 5)"
     fi
     repo_registry_upsert "$name" "$type" "$source" "$added" "$synced" "volume"
-    printf 'indexed %s (%s) -> %s\n' "$name" "$(_ac_term "$type")" "$(_ac_term "$source")"
+    printf 'indexed %s (%s) -> %s\n' "$name" "$type" "$(_ac_term "$source")"
     count=$((count + 1))
   done < <(repo_base_volumes)
   printf 'OK: reindex complete (%d volume-backed repo(s)). Bind-backend entries left as-is.\n' "$count"

@@ -611,6 +611,23 @@ if [[ "$rc" == 0 && "$(floor_binds)" == "$r3:/w:ro" ]]; then
 else
   fail "phase 5: a relative .git link inside the checkout (rc=$rc, binds: $(floor_binds | tr '\n' ' '); $(tail -3 "$TMP/out.log" | tr '\n' ' '))"
 fi
+# A relative link whose way runs through a link with an absolute target into
+# the checkout: in the container that target is a host path it does not have.
+r4="$TMP/rel4"; rm -rf "$r4"; mv "$(mk_repo 0)" "$r4" \
+  && mv "$r4/.git" "$r4/.realgit" && ln -s "$r4" "$r4/self" && ln -s self/.realgit "$r4/.git" \
+  && mkdir -p "$r4/${r4#/}/.realgit" \
+  || { printf 'SCAFFOLD-FAILED: relative .git link through an absolute one\n'; exit 1; }
+# (That last directory is the absolute target's path again, under the checkout:
+# a walk that read the target as relative would find it, so only the refusal
+# of an absolute target stops it.)
+: > "$WITNESS_LOG"
+rc="$(run_verify "$r4" 5)"
+if [[ "$rc" == 1 ]] && grep -q 'whose way runs through a link with an absolute target' "$TMP/out.log" \
+   && ! grep -q '^STUB:docker-run ' "$WITNESS_LOG"; then
+  pass "phase 5: a relative .git through a link with an absolute target is refused before docker, naming why"
+else
+  fail "phase 5: a relative .git through a link with an absolute target (rc=$rc; $(grep -i 'git directory' "$TMP/out.log" | tail -1))"
+fi
 # A submodule checkout: its git directory's core.worktree leads back from where
 # that directory lies, which the container cannot follow; refused, saying so.
 rsrc="$TMP/subsrc"; rsup="$TMP/super"; rm -rf "$rsrc" "$rsup"
@@ -620,7 +637,7 @@ git -C "$rsup" -c protocol.file.allow=always submodule add -q "$rsrc" mod >/dev/
   || { printf 'SCAFFOLD-FAILED: git submodule add\n'; exit 1; }
 : > "$WITNESS_LOG"
 rc="$(run_verify "$rsup/mod" 5)"
-if [[ "$rc" == 1 ]] && grep -q 'this is a submodule checkout: .*run Phase 5 from the superproject' "$TMP/out.log" \
+if [[ "$rc" == 1 ]] && grep -q 'sets core.worktree, as a submodule checkout.s does: .*run Phase 5 from the superproject or a clone' "$TMP/out.log" \
    && ! grep -q '^STUB:docker-run ' "$WITNESS_LOG"; then
   pass "phase 5: a submodule checkout is refused before docker, naming why"
 else

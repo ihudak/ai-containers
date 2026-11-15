@@ -169,6 +169,32 @@ REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
 # here: sourcing it loads sandbox.env into the shell and exports it.
 vh_term() { ( source "$REPO/sandbox-common.sh" >/dev/null 2>&1 && _ac_term "$1" ) || printf '%s' "${1//[[:cntrl:]]/?}"; }
 
+# _floor_rel_ok <physical root> <relative path>: rc 0 when <path>, taken from
+# <root> one component at a time as the kernel takes it, reaches a directory
+# without leaving <root> and without following a link whose target is absolute:
+# in the container <root> is /w, so an absolute target there names a host path
+# it does not have. At most 40 links, as the kernel allows.
+_floor_rel_ok() {
+  local root="$1" rest="$2" cur="$1" c t hops=0
+  while [[ -n "$rest" ]]; do
+    c="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    case "$c" in
+      ''|.) continue ;;
+      ..) [[ "$cur" != "$root" ]] || return 1; cur="${cur%/*}"; continue ;;
+    esac
+    if [[ -L "$cur/$c" ]]; then
+      (( ++hops <= 40 )) || return 1
+      t="$(readlink "$cur/$c")" || return 1
+      [[ "$t" != /* ]] || return 1
+      rest="$t${rest:+/$rest}"
+    else
+      cur="$cur/$c"
+    fi
+  done
+  [[ -d "$cur" ]]
+}
+
 floor_git_dir() {
   local dot="$REPO_ROOT/.git" ptr="" gd pphys cphys rphys suffix dst
   FLOOR_GIT_SRC="" FLOOR_GIT_DST="" FLOOR_GIT_WHY=""
@@ -192,7 +218,7 @@ floor_git_dir() {
     return 1
   fi
   if [[ -f "$pphys/config" ]] && git config --file "$pphys/config" --get core.worktree >/dev/null 2>&1; then
-    FLOOR_GIT_WHY="this is a submodule checkout: its git directory $pphys sets core.worktree, a way back to the checkout the container cannot follow; run Phase 5 from the superproject"
+    FLOOR_GIT_WHY="its git directory $pphys sets core.worktree, as a submodule checkout's does: a way back to the checkout that the container, which has it at /w, cannot follow; run Phase 5 from the superproject or a clone"
     return 1
   fi
   if ! cphys="$(cd "$REPO_ROOT" && c="$(git rev-parse --git-common-dir 2>/dev/null)" && cd "$c" && pwd -P)"; then
@@ -202,6 +228,10 @@ floor_git_dir() {
   if [[ "$ptr" != /* ]]; then
     rphys="$(cd "$REPO_ROOT" && pwd -P)"
     if [[ "$pphys" == "$rphys"/* ]]; then
+      if ! _floor_rel_ok "$rphys" "$ptr"; then
+        FLOOR_GIT_WHY="$dot points at $ptr, whose way runs through a link with an absolute target or out of the checkout: the container has the checkout at /w, not at that path"
+        return 1
+      fi
       if [[ "$cphys" == "$rphys"/* ]]; then return 0; fi
       FLOOR_GIT_WHY="$dot points at $ptr, inside the checkout, but the git directory git uses for it, $cphys, lies outside"
       return 1
@@ -400,8 +430,8 @@ else
   elif ! mapfile -d '' -t floor_bind < <(source "$REPO/sandbox-common.sh" && b=() \
          && docker_bind b "$REPO_ROOT" /w ro "The checkout" && printf '%s\0' "${b[@]}") || (( ${#floor_bind[@]} != 2 )); then
     phase_fail 5 "the checkout cannot be bound into the floor container (see the ERROR above) — the floor suite did not run"
-  # A worktree's, submodule checkout's or linked .git names a git directory
-  # outside /w, which the container is given too, read-only (floor_git_dir()).
+  # A worktree's .git, or a linked one, can name a git directory outside /w,
+  # which the container is given too, read-only (floor_git_dir()).
   elif floor_gbind=() && ! floor_git_dir; then
     phase_fail 5 "the floor container cannot be given this checkout's git directory: $(vh_term "$FLOOR_GIT_WHY") — the floor suite did not run; run it from the main checkout or a clone"
   elif [[ -n "$FLOOR_GIT_SRC" ]] && { ! mapfile -d '' -t floor_gbind < <(source "$REPO/sandbox-common.sh" && b=() \

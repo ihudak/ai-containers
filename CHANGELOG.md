@@ -192,6 +192,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--all`. `repo.sh list --copies` shows each copy's owner. Asking makes no
   `project-id.key`.
 
+- **`repo.sh` prints what a volume label holds with its control bytes
+  replaced**: `list`, `list --copies`, `gc`, `reindex`, and the summaries and
+  refusals that name another repo's label. And `reindex` leaves out, saying
+  so, a volume whose labels `repos.conf` cannot hold as written (a name that
+  is no repo name, a type other than git or path, a source holding `|` or a
+  line break): the registry is one line per repo, split at `|`.
+
 - **`project.sh mv` reads `EXTRA_MOUNTS` and `REPOS` from your shell too.**
   The launcher reads an exported `EXTRA_MOUNTS` or `REPOS` over the project's
   `sandbox.local.env`, and `mv` checked only the file: a `<new-dir>` whose
@@ -210,10 +217,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directory too, read-only like the checkout, at the path the `.git` names, and
   so for a `.git` link; a relative one that stays inside the checkout needs
   nothing more. What it cannot give fails the phase before docker, naming why:
-  a submodule checkout (its git directory's `core.worktree` leads back to a
-  checkout the container has at `/w` instead; run it from the superproject),
-  a relative pointer out of the checkout, one with `.` or `..` in it, and one
-  outside the git directory git uses. What a `.git` holds is printed with its
+  a submodule checkout, or any git directory that sets `core.worktree` (it
+  leads back to a checkout the container has at `/w` instead; run it from the
+  superproject or a clone), a relative pointer out of the checkout or through
+  a link with an absolute target, one with `.` or `..` in it, and one outside
+  the git directory git uses. What a `.git` holds is printed with its
   control bytes replaced.
 
 - **A checkout named through a link outside the mounts is protected when it
