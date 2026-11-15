@@ -4630,7 +4630,17 @@ git_dirs_in() {
     # (bugs review GIT-52; G155). _is_git_dir takes more than git does, so it
     # never passes over one git would use (an objects or refs that is a file
     # included, GIT-69). A link the agent could repoint is still named.
-    if [[ -d "$up/.git" ]] && ! { _cd_phys tgt "$up/.git" && _is_git_dir "$tgt"; }; then
+    # A .git that is neither a directory nor a regular file is passed over too:
+    # a link that leads nowhere, one that loops or that you may not follow, a
+    # FIFO, a device, a link to either. git 2.45 takes each for no .git and asks
+    # the directory itself; git 2.56 still does for a dangling link, and dies at
+    # the others (both measured; git's source has the change in 2.54). With one
+    # in a bare repository's directory, which the agent can make in a writable
+    # mount, that repository was not asked about: nothing of it was bound, and
+    # outside every mount the next repository up was judged in its place (bugs
+    # review GIT-95; G240). The .git is tested here, never opened (G64).
+    if { [[ -d "$up/.git" ]] && ! { _cd_phys tgt "$up/.git" && _is_git_dir "$tgt"; }; } \
+       || [[ ( -e "$up/.git" || -L "$up/.git" ) && ! -d "$up/.git" && ! -f "$up/.git" ]]; then
       if [[ -L "$up/.git" ]] && _in_writable "$up/.git"; then _gdi_name_link "$up/.git"; fi
       if _gdi_bare_up "$up" "$5"; then _in_writable "$up" || break; fi
       up="${up%/*}"; continue

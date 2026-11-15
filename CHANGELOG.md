@@ -150,6 +150,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A dangling `.git` link no longer hides the bare repository a mount lies
+  in.** git cannot follow such a link, takes it for no `.git`, and uses the
+  directory itself where that is a bare repository; a git before 2.54 does the
+  same for a link that loops and for a FIFO. The launch asked the directory
+  only where there was no `.git`, or one that is a directory and no
+  repository: with such a `.git` there, which an agent can make in a writable
+  mount, the bare repository's `config` and `hooks/` were left writable in the
+  outer mount, and one outside every mount was not checked (bugs review
+  GIT-95).
+
 - **A concurrent container can no longer swap a mounted directory under a
   launch.** Docker resolves each bind's source again, seconds after the
   launcher checked it. A second container running at that moment with the

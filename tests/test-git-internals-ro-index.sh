@@ -2070,5 +2070,67 @@ EXTRA_MOUNTS="$B217" launch "$TMP/app"
   || fail "G217 dangling sharedindex (rc=$LAUNCH_RC; $(grep -E 'index|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$B217"
 
+# ── G240: a .git that is no directory and no file is passed over, as git passes over it
+# git's discovery cannot stat a dangling .git link, takes it for no .git, and
+# asks the directory itself: in a bare repository's directory it still uses
+# that repository. The walk up asked the directory only where there was no
+# .git, or a directory that is no repository. With a dangling link there,
+# which the agent can make in a writable mount, G176's bare repository lost
+# its read-only config and hooks in the outer mount's view; and one outside
+# every mount was not judged, the next repository up being judged in its
+# place (bugs review GIT-95).
+M240="$TMP/m240"; A240="$M240/node_modules/a"
+mkdir -p "$M240" && "${G[@]}" init -q --bare "$A240" && mkdir -p "$A240/b" \
+  && "${G[@]}" --git-dir="$A240" config core.worktree "$A240/b" && ln -s nowhere "$A240/.git" \
+  && [[ "$("${G[@]}" -C "$A240/b" rev-parse --absolute-git-dir 2>/dev/null)" == "$A240" ]] \
+  || { printf 'SCAFFOLD-FAILED: G240 git does not pass over a dangling .git link\n'; exit 1; }
+EXTRA_MOUNTS="$M240 $A240/b" launch "$TMP/app"
+m240="$(mounts)"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$A240/config:/workspace/m240/node_modules/a/config:ro" <<<"$m240" \
+  && grep -qxF -- "$A240/hooks:/workspace/m240/node_modules/a/hooks:ro" <<<"$m240" \
+  && pass "G240 a bare repository with a dangling .git link in it is protected in the outer mount, as git uses it" \
+  || fail "G240 dangling .git link in a bare repository (rc=$LAUNCH_RC; $(grep -F 'node_modules/a/' <<<"$m240" | tr '\n' ' '); $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+# The link is still named: the agent can repoint it at a git directory of its own.
+grep -qF "WARNING: $A240/.git is a symlink inside a writable mount (/workspace/m240)" "$ERR" \
+  && pass "G240 …and the link is still named" \
+  || fail "G240 dangling link not named ($(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+# A link that loops cannot be followed either. git 2.45 passes over it as over a
+# dangling one, and uses the bare repository; git 2.56 dies there ("error
+# reading"). No premise, then: protected whichever git the host has.
+rm -f "$A240/.git" && ln -s .git "$A240/.git" || { printf 'SCAFFOLD-FAILED: G240 loop\n'; exit 1; }
+EXTRA_MOUNTS="$M240 $A240/b" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$A240/config:/workspace/m240/node_modules/a/config:ro" \
+  && has_mount "$A240/hooks:/workspace/m240/node_modules/a/hooks:ro" \
+  && pass "G240 so is one with a .git link that loops" \
+  || fail "G240 .git link that loops (rc=$LAUNCH_RC; $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+# A FIFO for a .git, which no warning names: git 2.45 passes over that too, and
+# git 2.56 dies ("not a regular file"). Nothing here may open it (G64).
+rm -f "$A240/.git" && mkfifo "$A240/.git" || { printf 'SCAFFOLD-FAILED: G240 FIFO\n'; exit 1; }
+EXTRA_MOUNTS="$M240 $A240/b" launch_timed 120 "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$A240/config:/workspace/m240/node_modules/a/config:ro" \
+  && has_mount "$A240/hooks:/workspace/m240/node_modules/a/hooks:ro" \
+  && pass "G240 so is one with a FIFO for a .git, which is not opened" \
+  || fail "G240 FIFO for a .git (rc=$LAUNCH_RC; $(grep -E 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
+# Opened read-write first, as G64 does: a reader a damaged launcher left blocked
+# on it, where no timeout bounds a read, is let go.
+( exec 3<>"$A240/.git" ) 2>/dev/null; rm -f "$A240/.git"
+# Outside every mount: the bare repository is the one judged, and the walk stops
+# there, as it does at one with no .git in it (G176).
+R240="$TMP/r240"; O240="$R240/o.git"
+"${G[@]}" init -q "$R240" && "${G[@]}" -C "$R240" commit -q --allow-empty -m i \
+  && "${G[@]}" init -q --bare "$O240" && mkdir -p "$O240/w/h" \
+  && "${G[@]}" --git-dir="$O240" config core.hooksPath "$O240/w/h" \
+  && "${G[@]}" --git-dir="$R240/.git" config core.hooksPath "$O240/w/h" && ln -s nowhere "$O240/.git" \
+  && [[ "$("${G[@]}" -C "$O240/w" rev-parse --absolute-git-dir 2>/dev/null)" == "$O240" ]] \
+  || { printf 'SCAFFOLD-FAILED: G240 outside\n'; exit 1; }
+EXTRA_MOUNTS="$O240/w" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "NOTE: $O240 runs its git hooks from /workspace/w/h (core.hooksPath)" "$ERR" \
+  && pass "G240 a bare repository outside every mount, a dangling .git link in it, is judged" \
+  || fail "G240 outside bare repository not judged (rc=$LAUNCH_RC; $(grep -E 'NOTE|WARNING|ERROR' "$ERR" | head -3 | tr '\n' ' '))"
+! grep -qF "$R240/.git runs its git hooks" "$ERR" \
+  && pass "G240 …and the repository above it, which git does not reach, is not" \
+  || fail "G240 the walk went on past the bare repository ($(grep -F 'runs its git hooks' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$M240" "$R240"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
