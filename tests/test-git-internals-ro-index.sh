@@ -2295,6 +2295,47 @@ else
   printf 'NOTE: run as root, which searches any directory; G290 is not applicable\n'
 fi
 
+# ── G293: the directory that blocks a pointer's way, spelled as on disk ───────
+# _gdi_blocked() compared the directory that blocks the way with the mounts'
+# sources as the way spelled it. Where names ignore case (APFS by default), a
+# pointer written $TMP/PROJ/… for a mount of $TMP/proj, or through macOS's
+# /System/Volumes/Data firmlink, reached the same directory under no source, and
+# nothing was bound or said (bugs review GIT-98). Each way where this host has it.
+if [[ "$(id -u)" != 0 ]]; then
+  nm293="$PROJ/node_modules"; wt293="$PROJ/.git/worktrees"; k293s=()
+  [[ "$TMP/PROJ" -ef "$PROJ" ]] && k293s+=(k8)
+  [[ -d "/System/Volumes/Data$PROJ" && "/System/Volumes/Data$PROJ" -ef "$PROJ" ]] && k293s+=(k9)
+  if (( ${#k293s[@]} )); then
+    mkdir -p "$nm293" || { printf 'SCAFFOLD-FAILED: G293 dirs\n'; exit 1; }
+    for k293 in "${k293s[@]}"; do
+      "${G[@]}" -C "$PROJ" worktree add -q "$nm293/$k293" -b "b293$k293" 2>/dev/null || { printf 'SCAFFOLD-FAILED: G293 %s\n' "$k293"; exit 1; }
+    done
+    # k8: the mount's own directory in another case. k9: through the firmlink.
+    [[ " ${k293s[*]} " != *" k8 "* ]] || printf '%s\n' "$TMP/PROJ/node_modules/k8/.git" > "$wt293/k8/gitdir"
+    [[ " ${k293s[*]} " != *" k9 "* ]] || printf '%s\n' "/System/Volumes/Data$PROJ/node_modules/k9/.git" > "$wt293/k9/gitdir"
+    for k293 in "${k293s[@]}"; do chmod 000 "$nm293/$k293"; done
+    launch_timed 120 ..
+    m293="$(mounts)"
+    for k293 in "${k293s[@]}"; do
+      case "$k293" in
+        k8) w293="a checkout named with the mount's directory in another case" ;;
+        k9) w293="a checkout named through the /System/Volumes/Data firmlink" ;;
+      esac
+      [[ "$LAUNCH_RC" == 0 ]] && grep -qxF -- "$nm293/$k293:/workspace/proj/node_modules/$k293:ro" <<<"$m293" \
+        && grep -qF "WARNING: $nm293/$k293 cannot be listed by you" "$ERR" \
+        && pass "G293 $w293, made unsearchable, is read-only whole and named" \
+        || fail "G293 $k293: $w293 (rc=$LAUNCH_RC; $(grep -F "/$k293" <<<"$m293" | grep -vF /worktrees/ | tr '\n' ' '); $(grep -F "/$k293 cannot" "$ERR" | head -1))"
+    done
+    for k293 in "${k293s[@]}"; do chmod 755 "$nm293/$k293"; rm -rf "${nm293:?}/$k293"; done
+    "${G[@]}" -C "$PROJ" worktree prune 2>/dev/null
+    for k293 in "${k293s[@]}"; do "${G[@]}" -C "$PROJ" branch -q -D "b293$k293" 2>/dev/null; done
+  else
+    printf 'NOTE: names here are case-sensitive and there is no firmlink; G293 is not applicable\n'
+  fi
+else
+  printf 'NOTE: run as root, which searches any directory; G293 is not applicable\n'
+fi
+
 # ── G291: a very long pointer is walked in time linear in its length ─────────
 # _gdi_blocked() took a pointer's way apart one component at a time off the
 # front of what was left, copying the rest at every step, so the cost grew with
@@ -2313,11 +2354,12 @@ if [[ "$(id -u)" != 0 ]]; then
     && chmod 000 "$R291/node_modules/*/cw291" || { printf 'SCAFFOLD-FAILED: G291\n'; exit 1; }
   printf -v pad291 '%*s' 16000 ''; pad291="${pad291// /./}"
   fns291="$TMP/fns291.sh"
-  for f291 in _path_parts _gdi_blocked _readlink_exact _in_writable; do
+  for f291 in _path_parts _gdi_blocked _readlink_exact _in_writable _cd_bash; do
     awk -v f="$f291() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
   done > "$fns291"
   # The agent's identity unset: every directory counts, as in the check after a session.
-  o291="$(p_timeout 30 bash -c 'set -euo pipefail; source "$1"; bsrc=("$2"); declare -A had=(); _gdi_unr=(); unset uid gid
+  # Spelling as on disk (GIT-98) is G293's; here the directory is spelled as bash does.
+  o291="$(p_timeout 30 bash -c 'set -euo pipefail; source "$1"; _cd_phys() { _cd_bash "$@"; }; bsrc=("$2"); declare -A had=(); _gdi_unr=(); unset uid gid
     _gdi_blocked "$3" "$2" && printf "%s\n" "${_gdi_unr[@]}"' _ "$fns291" "$R291" "$TMP/${pad291}lk291/${pad291}*/cw291/x" 2>&1)"
   rc291=$?
   [[ "$rc291" == 0 && "$o291" == "$R291/node_modules/*/cw291" ]] \
