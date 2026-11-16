@@ -2295,30 +2295,161 @@ fi
 # ── G291: a very long pointer is walked in time linear in its length ─────────
 # _gdi_blocked() took a pointer's way apart one component at a time off the
 # front of what was left, copying the rest at every step, so the cost grew with
-# the square of the way's length: a core.worktree of 16 KB, which nothing
-# bounds, cost a launch a minute, and the check after the session ran out of
-# its time (bugs review GIT-97). The way is now split once. Here 64 KB of `./`,
-# half before a link outside the mounts and half after it. The link's target is
-# two components, walked in their order, and the first is itself a link, to an
+# the square of the way's length: a core.worktree of 16 KB cost a launch a
+# minute, and the check after the session ran out of its time (bugs review
+# GIT-97). The way is now split once. The function alone, since a core.worktree
+# that long now refuses the launch (GIT-101; G292): 64 KB of `./`, half before
+# a link outside the mounts and half after it. The link's target is two
+# components, walked in their order, and the first is itself a link, to an
 # absolute path: the second waits while that one is followed, and the way then
 # goes on. And a directory named `*` on the way, which the split must leave a
-# name. As root a mode stops nothing.
+# name. G290 and G292 check the walk through a launch. As root a mode stops
+# nothing.
 if [[ "$(id -u)" != 0 ]]; then
-  R291="$TMP/r291"; "${G[@]}" init -q "$R291" && "${G[@]}" -C "$R291" commit -q --allow-empty -m i \
-    && mkdir -p "$R291/node_modules/*/cw291" && ln -s lkb291/node_modules "$TMP/lk291" && ln -s "$R291" "$TMP/lkb291" \
-    || { printf 'SCAFFOLD-FAILED: G291\n'; exit 1; }
+  R291="$TMP/r291"; mkdir -p "$R291/node_modules/*/cw291" && ln -s lkb291/node_modules "$TMP/lk291" && ln -s "$R291" "$TMP/lkb291" \
+    && chmod 000 "$R291/node_modules/*/cw291" || { printf 'SCAFFOLD-FAILED: G291\n'; exit 1; }
   printf -v pad291 '%*s' 16000 ''; pad291="${pad291// /./}"
-  "${G[@]}" -C "$R291" config core.worktree "$TMP/${pad291}lk291/${pad291}*/cw291/x" && chmod 000 "$R291/node_modules/*/cw291" \
-    || { printf 'SCAFFOLD-FAILED: G291 pointer\n'; exit 1; }
-  launch_timed 120 "$R291"
-  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$R291/node_modules/*/cw291:/workspace/r291/node_modules/*/cw291:ro" \
-    && ! grep -qF "could not all be searched" "$ERR" \
-    && pass "G291 a core.worktree of 64 KB through a link is walked in time, and the directory that blocks it is read-only whole" \
-    || fail "G291 long pointer (rc=$LAUNCH_RC after ${LAUNCH_S}s; $(mounts | grep -F '/cw291:' | tr '\n' ' '); $(grep -F 'could not all' "$ERR" | head -1))"
-  chmod 755 "$R291/node_modules/*/cw291"; rm -rf "$R291" "$TMP/lk291" "$TMP/lkb291"
+  fns291="$TMP/fns291.sh"
+  for f291 in _path_parts _gdi_blocked _readlink_exact _in_writable; do
+    awk -v f="$f291() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
+  done > "$fns291"
+  # The agent's identity unset: every directory counts, as in the check after a session.
+  o291="$(p_timeout 30 bash -c 'set -euo pipefail; source "$1"; bsrc=("$2"); declare -A had=(); _gdi_unr=(); unset uid gid
+    _gdi_blocked "$3" "$2" && printf "%s\n" "${_gdi_unr[@]}"' _ "$fns291" "$R291" "$TMP/${pad291}lk291/${pad291}*/cw291/x" 2>&1)"
+  rc291=$?
+  [[ "$rc291" == 0 && "$o291" == "$R291/node_modules/*/cw291" ]] \
+    && pass "G291 a way of 64 KB through a link is walked in time, and the directory that blocks it is found" \
+    || fail "G291 long pointer (rc=$rc291, 124 is the 30 s clock; got: $(head -c 300 <<<"$o291" | tr '\n' ' '))"
+  chmod 755 "$R291/node_modules/*/cw291"; rm -rf "$R291" "$TMP/lk291" "$TMP/lkb291" "$fns291"
 else
   printf 'NOTE: run as root, which searches any directory; G291 is not applicable\n'
 fi
+
+# ── G292: a core.worktree too long for this launcher to enter ────────────────
+# git reads core.worktree from a git directory's config and config.worktree,
+# and follows an absolute one a component at a time, whatever its length. The
+# launcher enters it with one cd, which the kernel refuses at PATH_MAX: the
+# checkout git uses was then no worktree here, the submodules its index
+# records were not followed, and one under a pruned node_modules went
+# unprotected behind "no worktree is known" (bugs review GIT-101). One of more
+# than 1000 bytes that cannot be entered now refuses the launch, naming the
+# file and the length, never the value.
+mk292() {  # a git directory whose index records the gitlink sm; its work tree, holding sm/.git, under node_modules
+  M292="$TMP/m292"; W292="$M292/node_modules/w"; G292="$M292/g.git"
+  if [[ -d "$M292" ]]; then chmod -R u+rwx "$M292" 2>/dev/null; rm -rf "$M292"; fi
+  mkdir -p "$W292" && "${G[@]}" init -q --bare "$G292" && "${G[@]}" init -q "$W292/sm" \
+    && "${G[@]}" -C "$W292/sm" commit -q --allow-empty -m s && "${G[@]}" --git-dir="$G292" config core.bare false \
+    && "${G[@]}" --git-dir="$G292" --work-tree="$W292" add sm 2>/dev/null || { printf 'SCAFFOLD-FAILED: G292 layout\n'; exit 1; }
+}
+pad292() { local s; printf -v s '%*s' "$1" ''; printf '%s' "${s// /./}"; }   # $1 times ./
+bytes292() { local LC_ALL=C; printf '%s' "${#1}"; }
+fit292() {  # $1 = bytes wanted, $2 = the last component: an absolute path under $M292 of exactly that length
+  local v="$M292/" n; n=$(( ($1 - ${#v} - ${#2}) / 2 )); v+="$(pad292 "$n")"
+  if (( ${#v} + ${#2} < $1 )); then v+="/"; fi
+  printf '%s' "$v$2"
+}
+set292() { "${G[@]}" config --file "$1" core.worktree "$2" || { printf 'SCAFFOLD-FAILED: G292 config\n'; exit 1; }; }
+refused292() {  # $1 = the config file named, $2 = the value
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "ERROR: $1 sets a core.worktree of $(bytes292 "$2") bytes that this launcher cannot enter; refusing the launch." "$ERR"
+}
+prot292() { [[ "$LAUNCH_RC" == 0 ]] && grep -qF -- "$W292/sm/.git/config:" <<<"$(mounts)"; }
+why292() { printf 'rc=%s; %s; sm binds: %s' "$LAUNCH_RC" "$(grep -E '^(ERROR|WARNING)' "$ERR" | head -2 | cut -c1-160 | tr '\n' ' ')" "$(mounts | grep -cF -- "$W292/sm/.git/")"; }
+# An absolute one, 6 KB of ./ in it: git uses the directory it names.
+mk292; v292="$M292/$(pad292 3000)node_modules/w"; set292 "$G292/config" "$v292"
+EXTRA_MOUNTS="$M292" launch "$TMP/app"
+refused292 "$G292/config" "$v292" \
+  && pass "G292 an absolute core.worktree too long to enter refuses the launch, naming the config and the length" \
+  || fail "G292 long absolute core.worktree in config ($(why292))"
+grep -qF "absolute path of any length, a component at a time" "$ERR" && grep -qF "if it is not, remove the core.worktree from it." "$ERR" \
+  && ! grep -qF "$(pad292 20)" "$ERR" \
+  && pass "G292 the refusal says why, and never prints the value" \
+  || fail "G292 the refusal's words ($(grep -A3 -F 'sets a core.worktree' "$ERR" | cut -c1-200 | tr '\n' ' '))"
+# The same in config.worktree, which git reads once the extension is on.
+mk292; "${G[@]}" --git-dir="$G292" config extensions.worktreeConfig true; set292 "$G292/config.worktree" "$v292"
+EXTRA_MOUNTS="$M292" launch "$TMP/app"
+refused292 "$G292/config.worktree" "$v292" \
+  && pass "G292 one in config.worktree refuses the launch too, naming that file" \
+  || fail "G292 long core.worktree in config.worktree ($(why292))"
+# A relative one of 4094 bytes: git enters it (chdir of the value), and this
+# launcher, which writes ./ before it, cannot.
+mk292; v292="$(pad292 2038)..//node_modules/w"; set292 "$G292/config" "$v292"
+EXTRA_MOUNTS="$M292" launch "$TMP/app"
+[[ "$(bytes292 "$v292")" == 4094 ]] && refused292 "$G292/config" "$v292" \
+  && pass "G292 a relative one of 4094 bytes, which git can still enter, refuses the launch" \
+  || fail "G292 relative core.worktree of $(bytes292 "$v292") bytes ($(why292))"
+# One of about 1.4 KB that can be entered is followed as before; where it cannot
+# (a Mac, whose paths end at 1024 bytes) it is refused.
+mk292; v292="$M292/$(pad292 700)node_modules/w"; set292 "$G292/config" "$v292"
+EXTRA_MOUNTS="$M292" launch "$TMP/app"
+if (cd -P -- "$v292") 2>/dev/null; then
+  prot292 && pass "G292 a long core.worktree that can be entered is followed, the checkout behind it protected" \
+    || fail "G292 long and enterable ($(why292))"
+else
+  refused292 "$G292/config" "$v292" && pass "G292 a long core.worktree this host cannot enter is refused" \
+    || fail "G292 long and not enterable here ($(why292))"
+fi
+# The bound, on a path that is not there: 1000 bytes is said as before, 1001 refuses.
+mk292; v292="$(fit292 1000 gone292)"; set292 "$G292/config" "$v292"
+EXTRA_MOUNTS="$M292" launch "$TMP/app"
+[[ "$(bytes292 "$v292")" == 1000 && "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: no worktree is known for $G292" "$ERR" \
+  && pass "G292 one of 1000 bytes that cannot be entered is not refused: no worktree is known, as before" \
+  || fail "G292 1000 bytes ($(bytes292 "$v292") bytes; $(why292))"
+mk292; v292="$(fit292 1001 gone292)"; set292 "$G292/config" "$v292"
+EXTRA_MOUNTS="$M292" launch "$TMP/app"
+[[ "$(bytes292 "$v292")" == 1001 ]] && refused292 "$G292/config" "$v292" \
+  && pass "G292 one of 1001 bytes that cannot be entered refuses the launch" \
+  || fail "G292 1001 bytes ($(bytes292 "$v292") bytes; $(why292))"
+# Bytes, not characters: 400 characters of three bytes each are 1200 bytes.
+# Launched in a UTF-8 locale, where the two counts differ; in the C locale a
+# count of characters is one of bytes, and the check would say nothing.
+u292=""
+while IFS= read -r l292; do
+  case "${l292,,}" in c.utf-8|c.utf8|en_us.utf-8|en_us.utf8) u292="$l292" ;; esac
+done < <(locale -a 2>/dev/null)
+if [[ -n "$u292" ]]; then
+  mk292; printf -v v292 '%*s' 400 ''; v292="$M292/${v292// /€}"; set292 "$G292/config" "$v292"
+  LC_ALL="$u292" EXTRA_MOUNTS="$M292" launch "$TMP/app"
+  (( $(bytes292 "$v292") > 1200 )) && refused292 "$G292/config" "$v292" \
+    && pass "G292 the length is counted in bytes: 400 characters of three bytes refuse the launch" \
+    || fail "G292 multibyte ($(bytes292 "$v292") bytes, in $u292; $(why292))"
+else
+  printf 'NOTE: no UTF-8 locale on this host; G292 does not check that the length is counted in bytes\n'
+fi
+# A short one behind a directory you cannot search: that directory is protected
+# whole, as before (GIT-60). As root a mode stops nothing.
+if [[ "$(id -u)" != 0 ]]; then
+  mk292; set292 "$G292/config" "$W292/sm"; chmod 000 "$W292"
+  EXTRA_MOUNTS="$M292" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$W292:/workspace/m292/node_modules/w:ro" && grep -qF "WARNING: $W292 cannot be listed by you" "$ERR" \
+    && pass "G292 a short core.worktree behind a directory you cannot search has that directory read-only whole and named" \
+    || fail "G292 short and blocked (rc=$LAUNCH_RC; $(mounts | grep -F '/node_modules/w:' | tr '\n' ' '); $(grep -F 'cannot be listed' "$ERR" | head -1))"
+  chmod 755 "$W292"
+else
+  pass "G292 skipped: as root a mode stops nothing"
+fi
+# With extensions.worktreeConfig on, a linked worktree takes the common
+# config's core.worktree from its own git directory: one the repository's .git
+# can enter and the worktree's cannot.
+mk292; R292="$M292/r"; "${G[@]}" init -q "$R292" && "${G[@]}" -C "$R292" commit -q --allow-empty -m i && mkdir "$R292/sub292" \
+  && "${G[@]}" -C "$R292" worktree add -q "$M292/co292" -b b292 2>/dev/null \
+  && "${G[@]}" -C "$R292" config extensions.worktreeConfig true || { printf 'SCAFFOLD-FAILED: G292 worktree\n'; exit 1; }
+v292="$(pad292 600)../sub292"; set292 "$R292/.git/config" "$v292"
+EXTRA_MOUNTS="$M292" launch "$TMP/app"
+refused292 "$R292/.git/config" "$v292" \
+  && pass "G292 a common core.worktree the linked worktree's directory cannot enter refuses the launch" \
+  || fail "G292 the linked worktree's place ($(why292))"
+# A repository the session makes with one: the check after it is cut short and
+# says so; the next launch refuses.
+mk292; v292="$M292/$(pad292 3000)gone292"
+FAKE_SESSION="git init -q '$M292/new292' && git -C '$M292/new292' config core.worktree '$v292'" EXTRA_MOUNTS="$M292" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: the writable mounts could not all be searched for git repositories the session" "$ERR" \
+  && pass "G292 one in a repository the session made: the check after it says the search was cut short" \
+  || fail "G292 after the session (rc=$LAUNCH_RC; $(grep -E '^(ERROR|WARNING)' "$ERR" | head -2 | cut -c1-160 | tr '\n' ' '))"
+EXTRA_MOUNTS="$M292" launch "$TMP/app"
+refused292 "$M292/new292/.git/config" "$v292" \
+  && pass "G292 … and the next launch refuses it" \
+  || fail "G292 the launch after the session ($(why292))"
+chmod -R u+rwx "$M292" 2>/dev/null; rm -rf "$M292"
 
 # ── G241 to G251: GAP-2's whole-file run, batch 4 ────────────────────────────
 # Each check below kills survivors of the Linux machine's measurement of
