@@ -1538,8 +1538,9 @@ FAKE_COLIMA_SWAP="$T66/$odd66" FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$T
 # review of PLAT-11's fix). With no share listed at all, so too.
 cat > "$TMP/bin66/sh" <<'SH66'
 #!/usr/bin/env bash
-# The VM without the share that holds $T66's parent: its directory cannot be entered.
-if [[ -n "${FAKE_COLIMA_OUT:-}" ]]; then chmod 000 "$FAKE_COLIMA_OUT"; trap 'chmod 755 "$FAKE_COLIMA_OUT"' EXIT; fi
+# The VM without the share that holds $T66's parent: its directory cannot be
+# entered. Moved aside, not chmod 000, which root (the floor run) enters anyway.
+if [[ -n "${FAKE_COLIMA_OUT:-}" ]]; then mv "$FAKE_COLIMA_OUT" "$FAKE_COLIMA_OUT.away"; trap 'mv "$FAKE_COLIMA_OUT.away" "$FAKE_COLIMA_OUT"' EXIT; fi
 /bin/sh "$@"
 SH66
 chmod +x "$TMP/bin66/sh"
