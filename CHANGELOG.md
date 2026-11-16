@@ -224,6 +224,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the git directory git uses. What a `.git` holds is printed with its
   control bytes replaced.
 
+- **On macOS, a directory the agent made unreadable is caught again.** A
+  read-only mount inside a writable one whose root you cannot list, and a
+  directory that blocks a pointer's way, are judged by who owns them and
+  their mode, read with `stat`: BSD `find` said nothing about a directory
+  at mode 000, so on a Mac they were passed over (bugs review LNCH-28). And
+  with `SANDBOX_UID` set to another uid, a directory of yours you cannot
+  list counts as the agent's too: on Colima's file share what the agent
+  makes shows up as yours, and it can restore the mode later (LNCH-25).
+
 - **A checkout named through a link outside the mounts is protected when it
   cannot be searched.** A checkout the agent has made `chmod 000` is mounted
   read-only whole and named, with the `chmod` that restores it, so that it
