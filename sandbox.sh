@@ -6318,20 +6318,41 @@ _colima_profile() {
 }
 # _vm_dev_ino_load <map> <path>...: fills the associative array <map> with
 # path → "dev ino" as Colima's VM sees each path, in one `colima ssh` (~0.3 s).
-# The paths go to a fixed command on stdin, NUL-separated, never through the VM's
-# shell: the agent names the directories. stat prints each name back, so a path
-# the VM cannot stat is simply absent. Returns non-zero off Colima.
+# The paths go to a fixed program on stdin, NUL-separated, never through the VM's
+# shell: the agent names the directories. As on a Linux host (LNCH-27), each id
+# is taken from the directory that holds the path, while the VM holds it: the
+# program enters it (`cd -P`), prints where it is (`pwd -P`) and asks about the
+# name there, a link or anything but a directory or a regular file being no
+# entry. An id is kept only where the VM's directory is the one judged, byte for
+# byte (the VM prints a share's path as it was given, so the host's spelling as
+# on disk is what it compares with); read by path, a parent a concurrent
+# container had just swapped for a link gave whatever the link led to (PLAT-11).
+# A path whose directory the VM cannot enter is "N": it lies outside the VM's
+# shares. Any other path is absent. Returns non-zero off Colima.
+# shellcheck disable=SC2016  # the VM's sh expands it, from the paths on its stdin
+_vm_hold_prog='for p do
+d=${p%/*}; n=${p##*/}
+printf "%s\0" "$p"
+( if cd -P -- "${d:-/}" 2>/dev/null; then
+  pwd -P; printf "\0"
+  if [ -L "./$n" ]; then r=L
+  elif [ ! -d "./${n:-.}" ] && [ ! -f "./$n" ]; then r=X
+  else r=$(stat -c "%d %i" -- "./${n:-.}" 2>/dev/null) || r=X; fi
+  printf "%s\0" "$r"
+else printf "\0N\0"; fi )
+done'
 _vm_dev_ino_load() {
   # shellcheck disable=SC2178  # a nameref to the caller's associative array
   local -n _vl_map="$1"; shift
-  local prof rec rest dev ino tp=()
+  local prof p w r d tp=()
   prof="$(_colima_profile)" || return 1
   read -r -a tp <<<"$(_timeout_prefix 20)"
-  while IFS= read -r -d '' rec; do
-    dev="${rec%%:*}"; rest="${rec#*:}"; ino="${rest%%:*}"
-    [[ "$dev" =~ ^[0-9]+$ && "$ino" =~ ^[0-9]+$ ]] || continue
-    _vl_map["${rest#*:}"]="$dev $ino"
-  done < <(printf '%s\0' "$@" | ${tp[@]+"${tp[@]}"} colima ssh -p "$prof" -- xargs -0 stat '--printf=%d:%i:%n\0' -- 2>/dev/null)
+  while IFS= read -r -d '' p && IFS= read -r -d '' w && IFS= read -r -d '' r; do
+    if [[ "$r" == N ]]; then _vl_map["$p"]=N; continue; fi
+    d="${p%/*}"
+    [[ "$w" == "${d:-/}"$'\n' && "$r" =~ ^[0-9]+\ [0-9]+$ ]] || continue
+    _vl_map["$p"]="$r"
+  done < <(printf '%s\0' "$@" | ${tp[@]+"${tp[@]}"} colima ssh -p "$prof" -- xargs -0 sh -c "$_vm_hold_prog" sh 2>/dev/null)
   return 0
 }
 
@@ -7374,14 +7395,24 @@ run_container() {
       local -A _vrof=()
       for _vsrc in ${launcher_ro_files[@]+"${launcher_ro_files[@]}"}; do _vrof[$_vsrc]=1; done
       : > "$_vdir/manifest"
+      # The output directories by the physical launch directory, as every
+      # other entry is spelled: a launch through a link keeps the link in $PWD,
+      # and the entries are read from the directory that holds them, which must
+      # be the one judged (below, and in Colima's VM).
+      local _ldp
+      _cd_phys _ldp "$launch_dir" || _ldp="$launch_dir"
+      for (( _i = _vod0; _i < ${#launcher_verify[@]}; _i += 2 )); do
+        launcher_verify[_i]="$_ldp/${launcher_verify[_i]#"$launch_dir"/}"
+      done
       # On Colima, every device:inode comes from its VM, the verify directory's
       # included, or none does: the entrypoint then checks there as on Linux. A
-      # source the VM cannot stat is recorded as 0:0, which refuses the launch, as
-      # a host stat that fails does (PLAT-3).
+      # source the VM cannot stat, or not in the directory judged, is recorded as
+      # 0:0, which refuses the launch, as a host stat that fails does (PLAT-3,
+      # PLAT-11).
       local -A _vm_di=()
       local _vm_on=0 _vpaths=("$_vdir")
       for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do _vpaths+=("${launcher_verify[_i]}"); done
-      if _vm_dev_ino_load _vm_di "${_vpaths[@]}" && [[ -n "${_vm_di[$_vdir]:-}" ]]; then _vm_on=1; fi
+      if _vm_dev_ino_load _vm_di "${_vpaths[@]}" && [[ "${_vm_di[$_vdir]:-}" =~ ^[0-9]+\ [0-9]+$ ]]; then _vm_on=1; fi
       # Each entry's device:inode is taken from the directory that holds it, while
       # that directory is held, and its true path must be the one judged: read by
       # path, an entry whose parent a concurrent container had just swapped for a
@@ -7395,7 +7426,7 @@ run_container() {
       # ids, where a hold on the host proves nothing.
       local -A _vpar=() _vhid=()
       local -a _vhl=()
-      local _vhold=0 _vp _vk _vn _vgot _vj _ldp
+      local _vhold=0 _vp _vk _vn _vgot _vj
       if (( ! _vm_on )) && [[ "$OSTYPE" == linux* ]]; then
         if [[ -z "${_cd_phys_pwd:-}" ]]; then
           _cd_phys_pwd="$(type -P pwd 2>/dev/null)" || _cd_phys_pwd=""
@@ -7405,12 +7436,6 @@ run_container() {
           printf 'NOTE: no pwd program on PATH: the verify manifest is read by path, which a concurrent container swapping a directory for a link at that moment can get past.\n' >&2
         else
           _vhold=1
-          # The output directories by the physical launch directory, as every
-          # other entry is spelled: a launch through a link keeps the link in $PWD.
-          _cd_phys _ldp "$launch_dir" || _ldp="$launch_dir"
-          for (( _i = _vod0; _i < ${#launcher_verify[@]}; _i += 2 )); do
-            launcher_verify[_i]="$_ldp/${launcher_verify[_i]#"$launch_dir"/}"
-          done
           for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do
             _vp="${launcher_verify[_i]%/*}"; _vpar[${_vp:-/}]+="$_i "
           done
@@ -7441,9 +7466,11 @@ run_container() {
       fi
       for (( _i = 0; _i < ${#launcher_verify[@]}; _i += 2 )); do
         _vsrc="${launcher_verify[_i]}"; _vdst="${launcher_verify[_i+1]}"
-        # A mounted host path is not recorded on Colima, whose flow stays as it was.
+        # A mounted host path the VM cannot enter the directory of lies outside
+        # its shares: not recorded, since docker mounts what the VM has there
+        # (an empty directory it makes), as before PLAT-11.
         _vk="$_vsrc|$_vdst"
-        if (( _vm_on )) && [[ -n "${_host_verified[$_vk]:-}" ]]; then continue; fi
+        if (( _vm_on )) && [[ -n "${_host_verified[$_vk]:-}" && "${_vm_di[$_vsrc]:-}" == N ]]; then continue; fi
         # Checked again where the inode is recorded: a concurrent container could
         # swap a protected config for a FIFO after the overlay pass, and the
         # entrypoint only compares inodes with these (review of 455fa85).
@@ -7452,7 +7479,7 @@ run_container() {
           exit 1
         fi
         if (( _vm_on )); then
-          if [[ -n "${_vm_di[$_vsrc]:-}" ]]; then read -r _vdev _vino <<<"${_vm_di[$_vsrc]}"; else _vdev=0; _vino=0; fi
+          if [[ "${_vm_di[$_vsrc]:-}" =~ ^[0-9]+\ [0-9]+$ ]]; then read -r _vdev _vino <<<"${_vm_di[$_vsrc]}"; else _vdev=0; _vino=0; fi
         elif (( _vhold )); then
           if [[ ! "${_vhid[$_i]:-}" =~ ^[0-9]+\ [0-9]+$ ]]; then
             printf 'ERROR: %s is no longer what was checked; refusing the launch.\n' "$(_term "$_vsrc")" >&2

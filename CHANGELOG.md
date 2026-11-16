@@ -181,6 +181,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **On Colima, the launch checks are read through held directories too.** The
+  ids recorded for the container's own check are read in Colima's VM from the
+  directory that holds each path, while it is held, as on a Linux host, so a
+  directory a concurrent container swaps for a link at that moment is refused;
+  the host paths a launch mounts are recorded there as well (platform issues
+  PLAT-11).
+
 - **`repo.sh gc` keeps another home's working copies.** It removed every
   `:rwcopy` working copy by default, and on a docker daemon several homes
   share (Docker Desktop's, by every WSL distro, or several users') that took
