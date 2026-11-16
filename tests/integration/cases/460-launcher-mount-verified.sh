@@ -9,6 +9,8 @@
 # host path. sandbox.sh records each launcher mount's source device:inode and
 # destination in /run/ai-launcher/manifest (mounted read-only, the anchor), and
 # the entrypoint re-checks every mount as root before the agent shell exists.
+# The host paths a launch mounts are recorded there too, for the same swap
+# (LNCH-27).
 #
 # The check rests on the launcher knowing the device:inode a container sees.
 # Linux engines keep the host's across a bind mount; file-sharing layers (macOS
@@ -16,11 +18,16 @@
 # reports what the containers see (PLAT-3); where nothing does, the guard is
 # designed to step aside with a one-line NOTE rather than refuse every launch. So
 # the case first PROBES which kind of host this is and asserts the behaviour that
-# host must have — every branch is a real assertion, none a skip:
+# host must have — every branch is a real assertion, none a skip, but for the
+# one check of the recorded host paths, which only a host of the first kind
+# below makes and the others say they did not:
 #
 #   verifiable:  the host's ids survive the bind, or Colima's VM reports them.
 #                A real launch verifies (no NOTE); a crafted mismatch REFUSES;
-#                a wrong anchor notes and proceeds.
+#                a wrong anchor notes and proceeds. Where the host's own ids
+#                survive (not on Colima, where it has not been run): the
+#                working directory and the EXTRA_MOUNTS entry are in the
+#                manifest, with the ids the container sees.
 #   not:         a real launch comes up and NOTEs; a crafted mismatch is NOT
 #                refused (nothing here can be verified, and a launch must not be
 #                blocked for it).
@@ -63,11 +70,41 @@ printf '     (this daemon %s device:inode across a bind mount%s)\n' \
 grp="$(it_scratch)/grp"
 launcher_engine_in "$grp/proj" || it_finish
 export EXTRA_MOUNTS="$grp"
+# The launcher removes its verify directory when it exits, so the harness's
+# docker keeps a copy of the manifest for the assertion below
+# (tests/integration/docker-shim.sh: `IT_KEEP_MANIFEST`).
+kept="$(it_scratch)/manifest.kept"
+export IT_KEEP_MANIFEST="$kept"
 launcher_up open "$grp/proj" || it_finish
+unset IT_KEEP_MANIFEST
 if docker exec "$IT_CID" stat -c '%d:%i' /run/ai-launcher >/dev/null 2>&1; then
   pass "a launch with launcher mounts carries the read-only verify mount"
 else
   fail "a launch with launcher mounts carries the read-only verify mount"
+fi
+# The host paths the launch mounts are in the manifest too, by where each way
+# ends: docker resolves a source again seconds after the launch judged it, and
+# a concurrent container could swap it for a link in between (LNCH-27). Here
+# the EXTRA_MOUNTS entry and the working directory inside it, each with the
+# device:inode this container sees at its mount point. Only where the host's
+# own ids survive the bind (a Linux engine): on Colima the launcher records
+# them from its VM (PLAT-11), and this assertion has not been run there; where
+# no ids survive there is nothing to compare.
+if [[ "$preserving" == 1 && -z "$colima_prof" && ! -s "$kept" ]]; then
+  fail "the mounted host paths are in the manifest (no manifest was kept at $kept: the harness's docker copies it from a -v mount only)"
+elif [[ "$preserving" == 1 && -z "$colima_prof" ]]; then
+  man="$(tr '\0' '\n' < "$kept" \
+    | awk 'NR % 3 == 1 {d = $0} NR % 3 == 2 {i = $0} NR % 3 == 0 {print d ":" i " " $0}')"
+  miss=""
+  for mdst in /workspace/grp /workspace/proj; do
+    mid="$(docker exec "$IT_CID" stat -c '%d:%i' "$mdst" 2>/dev/null)"
+    [[ -n "$mid" ]] && grep -qxF -- "$mid $mdst" <<<"$man" || miss+=" $mdst($mid)"
+  done
+  [[ -z "$miss" ]] \
+    && pass "the mounted host paths are in the manifest, each as this container sees it" \
+    || fail "the mounted host paths are in the manifest (missing or other ids:$miss; manifest: $(tr '\n' ' ' <<<"$man"))"
+else
+  printf '     (the mounted host paths in the manifest are asserted only where the host'\''s own ids survive a bind; not here)\n'
 fi
 logs="$(docker logs "$IT_CID" 2>&1)"   # captured, not piped: see lib.sh
 noted=0; if grep -q 'does not preserve device/inode' <<<"$logs"; then noted=1; fi

@@ -29,6 +29,8 @@
 # A run that mounts a launcher verify directory (/run/ai-launcher) is also held
 # until the entrypoint has handed over, so sandbox.sh cannot remove that
 # directory while the entrypoint is reading it (see the wait below).
+# With IT_KEEP_MANIFEST set, that directory's manifest is first copied to the
+# file it names, for a case that asserts what the launcher recorded.
 #
 # And it labels every `docker volume create` / `docker network create` so the
 # runner's sweep can find volumes the launcher creates on its own (the rvm
@@ -99,8 +101,17 @@ case "${1:-}" in
         if [[ "$a" == "--name" ]]; then skip_next=1; continue; fi
         # `-v <dir>:/run/ai-launcher:ro`, or the `--mount` record sandbox.sh
         # hands docker when the directory's path holds a ':' (_bind_add; LNCH-22).
-        [[ "$a" == *:/run/ai-launcher || "$a" == *:/run/ai-launcher:* \
-           || "$a" == *'"destination=/run/ai-launcher"'* ]] && verify=1
+        if [[ "$a" == *:/run/ai-launcher || "$a" == *:/run/ai-launcher:* ]]; then
+          verify=1
+          # sandbox.sh removes that directory when it exits, which is as soon as
+          # this returns, so a case cannot read the manifest in the container.
+          # One that asserts what the launcher recorded names a file to keep it
+          # in (case 460, LNCH-27). From the `-v` form only: a case whose
+          # scratch path holds a ':' finds no copy, and fails saying so.
+          [[ -z "${IT_KEEP_MANIFEST:-}" ]] || cp -- "${a%:/run/ai-launcher*}/manifest" "$IT_KEEP_MANIFEST"
+        elif [[ "$a" == *'"destination=/run/ai-launcher"'* ]]; then
+          verify=1
+        fi
         if [[ "$a" == "-it" || "$a" == "-ti" ]]; then args+=(-d -i); else args+=("$a"); fi
       done
       # Nothing to wait for: exec, as before. With the self-reference guard

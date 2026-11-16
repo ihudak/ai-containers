@@ -1,0 +1,30 @@
+# case: 460-launcher-mount-verified
+# what: the launch no longer records the host paths it mounts (the working
+#       directory, an EXTRA_MOUNTS entry, a repo's bind source, the four
+#       pointers) in the verify manifest, so the entrypoint checks the launcher
+#       overlays, pins and output directories only: the state before LNCH-27,
+#       where a concurrent container could swap a mounted host path for a link
+#       after the launch had judged it, and docker mounted what the link led to.
+#
+#       Expected: "the mounted host paths are in the manifest, each as this
+#       container sees it" FAILs. Every other assertion still PASSes.
+#
+# NOTE: sandbox.sh runs from the tree, so --reuse-image works against an image
+# a --keep run left. With no image the launcher probe has nothing to start,
+# and case 460 SKIPs (requires: launcher). And it needs a host whose own
+# device:inode survive a bind mount, a Linux engine: on Colima and on macOS
+# Docker Desktop the case does not assert the host paths (on Colima it has not
+# been run), and this mutant cannot be told apart there.
+diff --git a/sandbox.sh b/sandbox.sh
+index 226d0d1..388b889 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -527,7 +527,7 @@ launcher_ro_overlay() {
+       for k in ${hsrc[@]+"${!hsrc[@]}"}; do
+         e="$fin|${hdst[k]}"
+         [[ "${hsrc[k]}" == "${_host_ways[i+3]}" && -z "${hvdone[$e]:-}" ]] || continue
+-        hvdone[$e]=1; _vrfy+=("$fin" "${hdst[k]}"); _host_verified[$e]=1
++        hvdone[$e]=1
+       done
+     fi
+   done
