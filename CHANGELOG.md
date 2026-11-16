@@ -278,6 +278,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keep the repository working, remove the empty `core.worktree` from its
   `config` instead (bugs review GIT-104).
 
+- **A linked worktree's checkout behind a directory you cannot search is
+  protected when the common config names it.** With
+  `extensions.worktreeConfig` on, a linked worktree takes the repository's
+  `core.worktree`, and a relative one from its own git directory. Where a
+  directory on that way could not be searched (the agent can `chmod 000` one
+  it owns) and lay where the scan does not look, under `node_modules` say, it
+  was neither mounted read-only nor named, though one blocking a git
+  directory's own `core.worktree` already was. It now is, with the `chmod`
+  that restores it (bugs review GIT-103).
+
 - **A very long `core.worktree` or `gitdir` no longer costs every launch minutes.**
   The search for the directory that blocks such a path took the path apart a
   component at a time, copying what was left at each step, so its cost grew
