@@ -290,6 +290,28 @@ shim_scaffold_ok || exit 1
   p_timeout 20 "$TMP/bin/docker" run -it --rm "${VMOUNT[@]}" ai-sandbox >/dev/null 2>&1 )
 check "verify mount without IT_LAUNCH_NAME: no wait" "" "$(tr '\n' ' ' < "$REC.polls")"
 
+# ── A case can keep the manifest the launcher recorded ─────────────────────────
+# sandbox.sh removes its verify directory when it exits, which here is as soon
+# as the shim returns: a case that asserts what the launcher RECORDED (the host
+# paths of a launch, LNCH-27) finds /run/ai-launcher empty in the container. So
+# the shim copies the manifest to the file IT_KEEP_MANIFEST names, from the
+# host side of the mount, before docker runs. Byte for byte: its fields end in
+# NULs.
+VD="$TMP/vd"
+mkdir -p "$VD" && printf '2049\0004242\000/workspace/a b\000' > "$VD/manifest" || { printf 'SCAFFOLD-FAILED: the verify directory\n'; exit 1; }
+shim_scaffold_ok || exit 1
+: > "$REC"; : > "$REC.polls"
+FAKE_ROOT_POLLS=0 IT_SETTLE=3 IT_KEEP_MANIFEST="$TMP/kept" p_timeout 20 "$TMP/bin/docker" run -it --rm -v "$VD:/run/ai-launcher:ro" ai-sandbox >/dev/null 2>&1
+if cmp -s "$VD/manifest" "$TMP/kept"; then pass "verify mount: the manifest is kept where IT_KEEP_MANIFEST names"
+else fail "verify mount: the manifest is kept where IT_KEEP_MANIFEST names ($(ls "$TMP" | tr '\n' ' '))"; fi
+check "verify mount, manifest kept: the run is rewritten as before" \
+  "run|--label|ai-containers.it-run=unit|--name|it-launch-unit|-d|-i|--rm|-v|$VD:/run/ai-launcher:ro|ai-sandbox|" \
+  "$(tr '\n' '|' < "$REC")"
+# Another mount's manifest is not the launcher's.
+shim_scaffold_ok || exit 1
+FAKE_ROOT_POLLS=0 IT_SETTLE=3 IT_KEEP_MANIFEST="$TMP/kept-other" p_timeout 20 "$TMP/bin/docker" run -it --rm -v "$VD:/run/ai-launcher-not:ro" ai-sandbox >/dev/null 2>&1
+[[ ! -e "$TMP/kept-other" ]] && pass "another mount's manifest is not kept" || fail "another mount's manifest is not kept"
+
 # ── Helper runs are labelled but NEVER renamed or detached ─────────────────────
 # seed_workcopy_volume's copy container and repo.sh's seeding containers are
 # synchronous and their output is parsed by the caller. Detaching one would
