@@ -2855,7 +2855,7 @@ GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7'
   - T85 in `tests/test-launcher-dir-ro.sh` (22 checks; 16 seen red before the fix, the launch going through, and six that must still launch).
 
 ### LNCH-27: a bound host path inside a writable tree can be swapped by a concurrent container after the launch judged it
-- **Status: FIXED on a Linux host** (2026-11-14), wider than filed, both the user's choices. Not covered: Colima (PLAT-11). Was: OPEN, older than LNCH-26's fix, whose final review found it.
+- **Status: FIXED on a Linux host** (2026-11-14), wider than filed, both the user's choices; on Colima too since PLAT-11 (2026-11-16). Was: OPEN, older than LNCH-26's fix, whose final review found it.
 - **Severity: MEDIUM.** It needs a second container running at that moment with the tree writable, and a path this launch binds whose resolved directory lies inside that tree (`SPECS_PATH=<project>/specs`, an `EXTRA_MOUNTS` entry inside another). Confidence: READ, not reproduced.
 - **Location:** `run_container()` resolves each host path and `launcher_ro_overlay()` judges the way to it (LNCH-26); docker resolves the bind source again, seconds later, after the overlay and git passes.
 - **What's wrong:** in between, the other container can move the directory aside and put a link in its place (`mv specs specs.r; ln -s <anywhere> specs`), and docker follows the link. LNCH-26's comparison of where the way ends with what the launch resolved covers only the time up to the walk, and moving the directory back keeps its inode. The verify manifest, which the entrypoint checks against what docker really mounted, records overlays, pins and the output directories, and no such bind.

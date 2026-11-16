@@ -1458,18 +1458,32 @@ grep -qF "it can change $TMP/app (at /workspace/app)" \
 # stat let the entrypoint skip the check on every launch (PLAT-3, GAP-11). Its VM
 # reports what the containers see; every recorded source and the anchor come from
 # there, through one `colima ssh` whose argv holds no path (the agent names the
-# directories). A fake `colima` stands in for the VM: device 77, the inode a
-# checksum of the path, so a record mapped to the wrong path shows.
+# directories). A fake `colima` stands in for the VM: it runs the command it is
+# given here, the program that holds each path's directory (PLAT-11), with a
+# `stat` that prints GNU's form, device 77 and the inode a checksum of the path
+# it is asked about as the directory it is in spells it, so a record mapped to the
+# wrong path, or read through a link, shows.
 T66="$TMP/t66"; odd66=$'a:b\nc'
-mkdir -p "$T66/$odd66" && cp -R "$LAUNCHER" "$T66/$odd66/"
+mkdir -p "$T66/$odd66" "$TMP/bin66" && cp -R "$LAUNCHER" "$T66/$odd66/"
+cat > "$TMP/bin66/stat" <<'STAT66'
+#!/usr/bin/env bash
+[[ "$1 $2 $3" == "-c %d %i --" ]] || exit 2
+n="${4#./}"; if [[ "$n" == . ]]; then f="$(pwd -P)"; else f="$(pwd -P)/$n"; fi
+[[ -n "${FAKE_COLIMA_MISS:-}" && "$f" == "$FAKE_COLIMA_MISS" ]] && exit 1
+printf '77 %s\n' "$(printf '%s' "$f" | cksum | cut -d' ' -f1)"
+STAT66
+chmod +x "$TMP/bin66/stat"
 cat > "$TMP/bin/colima" <<COLIMA
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$CAPTURE.colima"
 [[ -z "\${FAKE_COLIMA_FAIL:-}" ]] || exit 1
-while IFS= read -r -d '' p; do
-  [[ -n "\${FAKE_COLIMA_MISS:-}" && "\$p" == "\$FAKE_COLIMA_MISS" ]] && continue
-  printf '77:%s:%s\0' "\$(printf '%s' "\$p" | cksum | cut -d' ' -f1)" "\$p"
-done
+# A directory swapped for a link to its copy just before the VM is asked, as a
+# concurrent container can swap one; put back after.
+if [[ -n "\${FAKE_COLIMA_SWAP:-}" ]]; then mv "\$FAKE_COLIMA_SWAP" "\$FAKE_COLIMA_SWAP.real" && ln -s "\${FAKE_COLIMA_SWAP##*/}.real" "\$FAKE_COLIMA_SWAP"; fi
+while [[ \$# -gt 0 && "\$1" != -- ]]; do shift; done; shift
+PATH="$TMP/bin66:\$PATH" "\$@"; rc=\$?
+if [[ -n "\${FAKE_COLIMA_SWAP:-}" ]]; then rm -f "\$FAKE_COLIMA_SWAP" && mv "\$FAKE_COLIMA_SWAP.real" "\$FAKE_COLIMA_SWAP"; fi
+exit \$rc
 COLIMA
 chmod +x "$TMP/bin/colima"
 vm66() { printf '77 %s' "$(printf '%s' "$1" | cksum | cut -d' ' -f1)"; }
@@ -1487,15 +1501,41 @@ aenv66="$(awk 'prev=="-e"{print} {prev=$0}' "$CAPTURE" | sed -n 's/^AI_LAUNCHER_
 vdir66="$(cat "$CAPTURE.vdir" 2>/dev/null)"
 if [[ "$(man66 "$dst66")" == "$(vm66 "$src66")" && "$(man66 "/workspace/t66/$odd66")" == "$(vm66 "$T66/$odd66")" \
       && "$(man66 /workspace/.agent-blocked)" == "$(vm66 "$LAUNCHER/.agent-blocked")" \
+      && "$(man66 /workspace/t66)" == "$(vm66 "$T66")" \
       && -n "$vdir66" && "$aenv66" == "$(vm66 "$vdir66" | tr ' ' ':')" ]]; then
   pass "T66 on Colima the manifest and the anchor hold the VM's device:inode, each for its own path"
 else
   fail "T66 VM ids (rc=$LAUNCH_RC; $dst66 -> '$(man66 "$dst66")' want '$(vm66 "$src66")'; anchor '$aenv66'; stderr: $(tail -3 "$ERR" | tr '\n' ' '))"
 fi
 # Only fixed arguments reach the VM: the paths go on stdin.
-[[ "$(cat "$CAPTURE.colima" 2>/dev/null)" == "$(printf '%s\n' ssh -p default -- xargs -0 stat '--printf=%d:%i:%n\0' --)" ]] \
+[[ "$(head -n 9 "$CAPTURE.colima" 2>/dev/null)" == "$(printf '%s\n' ssh -p default -- xargs -0 sh -c 'for p do')" \
+   && "$(tail -n 1 "$CAPTURE.colima" 2>/dev/null)" == sh ]] && ! grep -qF "$TMP" "$CAPTURE.colima" \
   && pass "T66 colima ssh gets the profile and a fixed command, no path" \
   || fail "T66 colima argv: $(tr '\n' ' ' < "$CAPTURE.colima" 2>/dev/null)"
+# The VM reads each id from the directory that holds the path, while it holds
+# it: a directory swapped for a link just before gives no id for what lies in it,
+# nor for itself, and is recorded 0:0, which the entrypoint refuses. Read by
+# path, the ids of the link's target were recorded (PLAT-11).
+FAKE_COLIMA_SWAP="$T66/$odd66" FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$T66" launch "$LAUNCHER" "$TMP/app"
+[[ "$(man66 "$dst66")" == "0 0" && "$(man66 "/workspace/t66/$odd66")" == "0 0" \
+   && "$(man66 /workspace/.agent-blocked)" == "$(vm66 "$LAUNCHER/.agent-blocked")" ]] \
+  && pass "T66 a directory swapped for a link before the VM reads it is recorded as 0:0 (PLAT-11)" \
+  || fail "T66 VM swap: $dst66 -> '$(man66 "$dst66")', /workspace/t66/$odd66 -> '$(man66 "/workspace/t66/$odd66")'"
+# A mounted host path whose directory the VM cannot enter lies outside its
+# shares, where docker mounts what the VM has there: not recorded, as before.
+cat > "$TMP/bin66/sh" <<'SH66'
+#!/usr/bin/env bash
+# The VM without the share that holds $T66's parent: its directory cannot be entered.
+if [[ -n "${FAKE_COLIMA_OUT:-}" ]]; then chmod 000 "$FAKE_COLIMA_OUT"; trap 'chmod 755 "$FAKE_COLIMA_OUT"' EXIT; fi
+/bin/sh "$@"
+SH66
+chmod +x "$TMP/bin66/sh"
+mkdir -p "$TMP/out66/m" "$TMP/app"
+FAKE_COLIMA_OUT="$TMP/out66" FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$TMP/out66/m" launch "$LAUNCHER" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -z "$(man66 /workspace/m)" && "$(man66 /workspace/.agent-blocked)" == "$(vm66 "$LAUNCHER/.agent-blocked")" ]] \
+  && pass "T66 a mounted path outside the VM's shares is not recorded" \
+  || fail "T66 VM outside: rc=$LAUNCH_RC, /workspace/m -> '$(man66 /workspace/m)'"
+rm -f "$TMP/bin66/sh"; rm -rf "$TMP/out66"
 # A source the VM cannot stat is recorded 0:0, which the entrypoint refuses, not
 # the host's device:inode, which would pass for nothing there.
 FAKE_COLIMA_MISS="$src66" FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$T66" launch "$LAUNCHER" "$TMP/app"
@@ -1515,7 +1555,7 @@ for ep66 in unix:///var/run/docker.sock "unix://$HOME/.colima/../x/docker.sock";
     && pass "T66 docker at $ep66 is not Colima's: colima is not asked" \
     || fail "T66 $ep66: colima asked ($(tr '\n' ' ' < "$CAPTURE.colima" 2>/dev/null)), $dst66 -> '$(man66 "$dst66")'"
 done
-rm -f "$TMP/bin/colima"; rm -rf "$T66"
+rm -f "$TMP/bin/colima"; rm -rf "$T66" "$TMP/bin66"
 
 # ── T67: a host path holding ':', or bytes that are not UTF-8 ──────────────
 # docker splits a `-v` value at every ':', and refused the whole launch over a
@@ -1878,6 +1918,7 @@ rm -f "$fns72"
 # GAP-2 slice 5: a condition or a return of each, turned, survived every test.
 fns73="$TMP/fns73.sh"
 { awk -v f="resolve_path() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox-common.sh"
+  awk "index(\$0, \"_vm_hold_prog='\") == 1 {p = 1} p {print} p && /^done'\$/ {exit}" "$ENGINE/sandbox.sh"
   for f73 in _term _q _timeout_prefix seed_workcopy_volume _colima_profile _vm_dev_ino_load _bind_read repos_path_in_container launcher_dirs_in; do
     awk -v f="$f73() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
   done; } > "$fns73"
@@ -1912,14 +1953,15 @@ else
 fi
 # Colima: no colima, or no docker endpoint, is no profile, and nothing is
 # loaded (a load with no profile recorded every source 0:0, refusing every
-# launch); a record without numeric ids is dropped.
+# launch); a record without numeric ids is dropped, and so is one whose
+# directory the VM did not find where it was judged; one it could not enter is N.
 o73="$(t73 '( PATH=/nonexistent73; _colima_profile ) && printf "p0|" || printf "n0|"; declare -A m=(); ( PATH=/nonexistent73; _vm_dev_ino_load m /a ) && printf "l0|" || printf "nl0|"
-  _timeout_prefix() { :; }; colima() { if [[ "$1" == ssh ]]; then cat >/dev/null; printf "12:34:/a\0x:5:/b\0007:y:/c\0"; fi; }
+  _timeout_prefix() { :; }; colima() { if [[ "$1" == ssh ]]; then cat >/dev/null; printf "/a\0/\n\00012 34\0/b\0/\n\0x 5\0/c\0/\n\0007 y\0/d\0/elsewhere\n\0001 2\0/e\0\0N\0"; fi; }
   docker() { return 1; }; DOCKER_HOST=""; _colima_profile && printf "p1|" || printf "n1|"
   DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"; COLIMA_HOME="$HOME/.colima"; printf "%s|" "$(_colima_profile)"
-  declare -A m=(); _vm_dev_ino_load m /a /b /c; printf "%s=%s " "${!m[@]}" "${m[@]}"')"
-[[ "$o73" == "n0|nl0|n1|default|/a=12 34 " ]] \
-  && pass "T73 with no colima or no endpoint there is no profile and nothing loaded; records without numeric ids are dropped" \
+  declare -A m=(); _vm_dev_ino_load m /a /b /c /d /e; for k in /a /b /c /d /e; do printf "%s=%s " "$k" "${m[$k]:-}"; done')"
+[[ "$o73" == "n0|nl0|n1|default|/a=12 34 /b= /c= /d= /e=N " ]] \
+  && pass "T73 with no colima or no endpoint there is no profile and nothing loaded; records without numeric ids, or read elsewhere, are dropped" \
   || fail "T73 Colima (got: $o73)"
 # A pointer's host path, translated only through a host bind into /workspace.
 o73="$(t73 'repos_path_in_container /h/sub -v /h:/elsewhere; printf "|"; repos_path_in_container /h/sub -v /h:/workspace/h')"
@@ -2385,25 +2427,31 @@ swap90 "$O90/nothing" "$O90/dir" EXTRA_MOUNTS="$W90" SPECS_PATH="$W90/a/specs" D
   && [[ "$(man90 /workspace/app)" == "$(p_dev_ino "$TMP/app")" ]] \
   && pass "T90 with nothing swapped the launch goes on, the ids recorded as read by path, each destination once" \
   || fail "T90 nothing swapped ($(said90); specs: $(man90 /workspace/specs | tr '\n' ';') app: $(man90 /workspace/app | tr '\n' ';'))"
-# On Colima the ids come from its VM, by path, where a hold on the host proves
-# nothing: its flow is as it was, and the mounted host paths are not recorded
-# there (one outside the VM's shares would read 0:0 and refuse a launch that
-# mounted an empty directory before). PLAT-11 changes this knowingly.
-mkdir -p "$TMP/hook90c"
+# On Colima the ids come from its VM, where a hold on the host proves nothing:
+# the VM holds each directory itself (PLAT-11, T66), and the mounted host paths
+# are recorded there too. A fake VM runs the program it is handed, with a stat
+# that prints GNU's form.
+mkdir -p "$TMP/hook90c" "$TMP/hook90s"
+cat > "$TMP/hook90s/stat" <<'STAT90'
+#!/usr/bin/env bash
+n="${4#./}"; if [[ "$n" == . ]]; then f="$(pwd -P)"; else f="$(pwd -P)/$n"; fi
+printf '77 %s\n' "$(printf '%s' "$f" | cksum | cut -d' ' -f1)"
+STAT90
 cat > "$TMP/hook90c/colima" <<COLIMA90
 #!/usr/bin/env bash
-while IFS= read -r -d '' p; do printf '77:%s:%s\0' "\$(printf '%s' "\$p" | cksum | cut -d' ' -f1)" "\$p"; done
+while [[ \$# -gt 0 && "\$1" != -- ]]; do shift; done; shift
+PATH="$TMP/hook90s:\$PATH" "\$@"
 COLIMA90
-chmod +x "$TMP/hook90c/colima"
+chmod +x "$TMP/hook90c/colima" "$TMP/hook90s/stat"
 rm -f "$CAPTURE.manifest"
 PATH="$TMP/hook90c:$PATH" FAKE_DOCKER_ENDPOINT="unix://$HOME/.colima/default/docker.sock" EXTRA_MOUNTS="$W90" SPECS_PATH="$W90/specs" \
   launch "$LAUNCHER" "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && [[ "$(man90 /workspace/.agent-blocked)" == 77\ * ]] \
-  && [[ -z "$(man90 /workspace/app)$(man90 /workspace/w90)$(man90 /workspace/specs)" ]] \
+  && [[ "$(man90 /workspace/app)" == 77\ * && "$(man90 /workspace/w90)" == 77\ * && "$(man90 /workspace/specs)" == 77\ * ]] \
   && [[ "$(man90 /workspace/w90/p/.ai-containers)" == 77\ * ]] \
-  && pass "T90 on Colima the mounted host paths are not recorded, and the other entries hold the VM's ids as before" \
+  && pass "T90 on Colima the mounted host paths are recorded with the VM's ids, as every other entry (PLAT-11)" \
   || fail "T90 Colima's flow (rc=$LAUNCH_RC; blocked: $(man90 /workspace/.agent-blocked | tr '\n' ';') app: $(man90 /workspace/app | tr '\n' ';') overlay: $(man90 /workspace/w90/p/.ai-containers | tr '\n' ';'))"
-rm -rf "$W90" "$O90" "$TMP/ro90" "$TMP/v90" "$TMP/d90" "$TMP/a90" "$TMP/rb90" "$TMP/hook90" "$TMP/hook90c"
+rm -rf "$W90" "$O90" "$TMP/ro90" "$TMP/v90" "$TMP/d90" "$TMP/a90" "$TMP/rb90" "$TMP/hook90" "$TMP/hook90c" "$TMP/hook90s"
 
 # ── T76: this launcher itself, where a mount's scan cannot reach it ──────────
 # The scan finds a launcher to six levels and not under a pruned name; this
