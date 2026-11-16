@@ -4927,13 +4927,22 @@ git_dirs_in() {
     done
     # A linked worktree, with extensions.worktreeConfig on, takes the common
     # config's core.worktree too, resolved from its own git directory (review of
-    # the GIT-36/37 fix).
+    # the GIT-36/37 fix). Read whatever the extension says, as config.worktree
+    # is (GIT-81): anything of yours can turn it on.
     if [[ -f "$g/commondir" ]]; then
       tgt=""; _git_ptr_read "$g/commondir" tgt || true
       if [[ -n "$tgt" && "$tgt" != ./ && "$tgt" != . ]] && _cd_phys wcf "$g" "$tgt" \
          && _git_config_get wt "$wcf/config" core.worktree && [[ -n "$wt" ]]; then
+        if _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"
         # One too long to enter from here is refused, as above (GIT-101).
-        if _cd_phys wtp "$g" "$wt"; then _gdi_add_top "$wtp"; else _git_wt_long "$wcf/config" "$wt" || true; fi
+        elif ! _git_wt_long "$wcf/config" "$wt"; then
+          # Not reached from here for a directory on the way you cannot search:
+          # a relative one leads elsewhere from this directory than from the
+          # repository's, which is all the place above asks about (GIT-60,
+          # GIT-103; G295).
+          [[ "$wt" == /* ]] || wt="$g/$wt"
+          _gdi_blocked "$wt" "$5" || true
+        fi
       fi
     fi
     # Every git directory — a .git one too, a linked worktree's, a separate git

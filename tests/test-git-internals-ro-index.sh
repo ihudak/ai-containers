@@ -2500,6 +2500,52 @@ refused292 "$M292/new292/.git/config" "$v292" \
   || fail "G292 the launch after the session ($(why292))"
 chmod -R u+rwx "$M292" 2>/dev/null; rm -rf "$M292"
 
+# ── G295: a common core.worktree the linked worktree's place cannot enter ────
+# With extensions.worktreeConfig on, a linked worktree takes the common
+# config's core.worktree, and a relative one from its own git directory, which
+# leads elsewhere than from the repository's. Where a directory on that way
+# cannot be searched, nothing asked for it, as GIT-60's fallback does for a git
+# directory's own config: under a pruned node_modules it was neither bound nor
+# named, and the agent, which can chmod a directory it owns, could restore it
+# in the next session (bugs review GIT-103). Asked whatever the extension
+# says, as config.worktree is read (GIT-81): anything of yours can turn it on.
+# As root a mode stops nothing.
+M295="$TMP/m295"; R295="$M295/r"; W295="$R295/node_modules/w"
+mk295() {  # $1 = the value. A repository with a linked worktree, and a directory under node_modules that ../../../node_modules/w/co reaches from the worktree's git directory alone
+  if [[ -d "$M295" ]]; then chmod -R u+rwx "$M295" 2>/dev/null; rm -rf "$M295"; fi
+  "${G[@]}" init -q "$R295" && "${G[@]}" -C "$R295" commit -q --allow-empty -m i && mkdir -p "$W295/co" "$R295/src" \
+    && "${G[@]}" -C "$R295" worktree add -q "$M295/lw295" -b b295 2>/dev/null \
+    && "${G[@]}" config --file "$R295/.git/config" core.worktree "$1" \
+    && [[ -d "$R295/.git/worktrees/lw295/../../../node_modules/w/co" && ! -e "$R295/.git/../../../node_modules" ]] \
+    && [[ -d "$R295/.git/../src" && ! -e "$R295/.git/worktrees/lw295/../src" ]] \
+    || { printf 'SCAFFOLD-FAILED: G295 layout\n'; exit 1; }
+}
+why295() { printf 'rc=%s; %s; %s' "$LAUNCH_RC" "$(mounts | grep -F '/node_modules/w:' | tr '\n' ' ')" "$(grep -E '^(ERROR|WARNING)' "$ERR" | head -2 | cut -c1-160 | tr '\n' ' ')"; }
+if [[ "$(id -u)" != 0 ]]; then
+  mk295 ../../../node_modules/w/co; "${G[@]}" config --file "$R295/.git/config" extensions.worktreeConfig true; chmod 000 "$W295"
+  EXTRA_MOUNTS="$M295" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$W295:/workspace/m295/r/node_modules/w:ro" && grep -qF "WARNING: $W295 cannot be listed by you" "$ERR" \
+    && pass "G295 a directory that blocks a common core.worktree from the linked worktree's directory is read-only whole and named" \
+    || fail "G295 the linked worktree's place, blocked ($(why295))"
+  mk295 ../../../node_modules/w/co; chmod 000 "$W295"
+  EXTRA_MOUNTS="$M295" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$W295:/workspace/m295/r/node_modules/w:ro" && grep -qF "WARNING: $W295 cannot be listed by you" "$ERR" \
+    && pass "G295 … and with extensions.worktreeConfig off too, which anything of yours can turn on" \
+    || fail "G295 the linked worktree's place, the extension off ($(why295))"
+  chmod 755 "$W295"
+else
+  pass "G295 skipped: as root a mode stops nothing"
+fi
+# An ordinary repository: core.worktree = ../src, which the repository's .git
+# enters and a linked worktree's directory does not, with nothing on the way
+# that cannot be searched. The fallback finds nothing, and the launch goes on.
+mk295 ../src
+EXTRA_MOUNTS="$M295" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF -- "/node_modules/w:" <<<"$(mounts)" && ! grep -qF "cannot be listed" "$ERR" \
+  && pass "G295 a common core.worktree that only leads nowhere from the worktree's directory changes nothing" \
+  || fail "G295 the linked worktree's place, nothing blocked ($(why295))"
+if [[ -d "$M295" ]]; then chmod -R u+rwx "$M295" 2>/dev/null; rm -rf "$M295"; fi
+
 # ── G241 to G251: GAP-2's whole-file run, batch 4 ────────────────────────────
 # Each check below kills survivors of the Linux machine's measurement of
 # sandbox.sh, by the brief's layouts (feature-gaps review, GAP-2, batch 4).
