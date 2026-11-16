@@ -95,15 +95,16 @@ else
 fi
 # A registry line holding such a byte is read back whole, whether or not the
 # directory can exist here (bugs review REPO-18): GNU grep took it for binary,
-# so a rewrite of the registry for another repo dropped it.
+# so a rewrite of the registry for another repo dropped it. Checked in the C
+# locale: BSD grep refuses that byte in a UTF-8 pattern (illegal byte sequence).
 mkdir -p "$TMP/other"
 printf 'ghost|path|%s|2026-01-01|2026-01-01|volume\n' "$TMP/g"$'\xff' >> "$HOME/.ai-containers/repos.conf"
 LC_ALL=C.UTF-8 repo add other "$TMP/other"
-grep -aqF "ghost|path|$TMP/g"$'\xff'"|" "$HOME/.ai-containers/repos.conf" \
+LC_ALL=C grep -aqF "ghost|path|$TMP/g"$'\xff'"|" "$HOME/.ai-containers/repos.conf" \
   && pass "a registry line holding a byte that is not UTF-8 survives a rewrite for another repo" \
   || fail "registry rewrite dropped the non-UTF-8 line (rc=$RC; registry: $(grep -ac . "$HOME/.ai-containers/repos.conf") lines)"
 LC_ALL=C.UTF-8 repo rm other --yes
-grep -aqF "ghost|path|$TMP/g"$'\xff'"|" "$HOME/.ai-containers/repos.conf" \
+LC_ALL=C grep -aqF "ghost|path|$TMP/g"$'\xff'"|" "$HOME/.ai-containers/repos.conf" \
   && pass "… and one that removes another repo's entry" \
   || fail "registry removal dropped the non-UTF-8 line (rc=$RC; out: $(tr '\n' ' ' < "$TMP/out" | cut -c1-200))"
 # ── A git source under a HOME holding ':': ~/.ssh as a --mount ──────────────

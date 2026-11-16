@@ -1670,7 +1670,10 @@ rm -rf "$TMP/o164b" "$PROJ/xm164b"
 # uutils', so the check runs where timeout is GNU's.
 mkdir -p "$TMP/tp167"
 printf '#!/bin/bash\nfor a; do if ! iconv -f UTF-8 -t UTF-8 <<<"$a" >/dev/null 2>&1; then echo "error: invalid UTF-8 was detected in one or more arguments" >&2; exit 125; fi; done\nshift 3; exec "$@"\n' > "$TMP/tp167/timeout"
-printf '#!/bin/sh\nshift 3; exec "$@"\n' > "$TMP/tp167/gnutimeout"; chmod +x "$TMP/tp167/timeout" "$TMP/tp167/gnutimeout"
+printf '#!/bin/sh\nshift 3; exec "$@"\n' > "$TMP/tp167/gnutimeout"; cp "$TMP/tp167/timeout" "$TMP/tp167/gtimeout"
+# gtimeout too: _timeout_prefix asks for Homebrew's name first, and where it is
+# installed (a Mac with coreutils) the fake timeout was never reached.
+chmod +x "$TMP/tp167/timeout" "$TMP/tp167/gtimeout" "$TMP/tp167/gnutimeout"
 got167="$(PATH="$TMP/tp167:/usr/bin:/bin" _timeout_prefix 2>/dev/null)"
 [[ "$got167" == "gnutimeout -k 2 10" ]] && pass "G167 a timeout that refuses a non-UTF-8 argument gives way to gnutimeout" \
   || fail "G167 the refusing timeout was taken (got '$got167')"
@@ -1691,7 +1694,8 @@ else
 fi
 # A bound that exits 125 itself ran nothing: the read refuses the launch, never
 # reads as empty.
-printf '#!/bin/sh\ncase "$*" in *commondir*) exit 125 ;; esac\nshift 3; exec "$@"\n' > "$TMP/tp167/timeout"; chmod +x "$TMP/tp167/timeout"
+printf '#!/bin/sh\ncase "$*" in *commondir*) exit 125 ;; esac\nshift 3; exec "$@"\n' > "$TMP/tp167/timeout"; cp "$TMP/tp167/timeout" "$TMP/tp167/gtimeout"
+chmod +x "$TMP/tp167/timeout" "$TMP/tp167/gtimeout"
 mkdir -p "$PROJ/r167" && "${G[@]}" init -q "$PROJ/r167"
 PATH="$TMP/tp167:$PATH" launch ..
 [[ "$LAUNCH_RC" != 0 ]] && grep -aqF "the command that bounds the read ran nothing" "$ERR" \

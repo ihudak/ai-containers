@@ -60,6 +60,7 @@
 - **Updated 2026-11-15:** GIT-96 (LOW) is FIXED: the directory that blocks a pointer's way is found by walking the way as the kernel walks it, so one named through a link outside the mounts is bound and named like any other.
 - **Updated 2026-11-15:** GIT-96 (LOW, open), found by the review of a survivors' brief of GAP-2's whole-file run: a checkout that a pointer names through a link outside the mounts is neither protected nor named when it cannot be searched.
 - **Updated 2026-11-16:** GIT-104 (LOW, open), found by the review of batch 7's brief of GAP-2's whole-file run: an empty `core.worktree` is taken for none, and the `./` placeholder a launch then makes has git ignore it.
+- **Updated 2026-11-16:** section 32, found while running PLAT-10 on macOS: TST-36 (LOW, tests only), FIXED: six checks assumed GNU `grep`, GNU `/bin/pwd`, or a plain `timeout` where Homebrew's `gtimeout` comes first.
 - **Updated 2026-11-15:** GIT-95 (LOW), found while classifying the survivors of GAP-2's whole-file run, is FIXED: a `.git` that is neither a directory nor a regular file (a link that leads nowhere, a FIFO), in a bare repository's directory above a mount, no longer keeps the launch from taking that repository as the one the mount lies in.
 - **Updated 2026-11-14:** LNCH-27 (MEDIUM) is FIXED on a Linux host, and wider than filed, the user's two choices: every host path a launch mounts joins the verify manifest, and every entry of it is recorded through its held parent directory. Colima is not covered (PLAT-11).
 - **Updated 2026-11-14:** LNCH-27 (MEDIUM, open), found by the final review of LNCH-26's fix and older than it: a bound host path inside a writable tree can be swapped by a concurrent container after the launch has judged it.
@@ -3003,6 +3004,18 @@ GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7'
 - **Location:** `sandbox.sh: launcher_ro_overlay()`, the read-only mount's root you cannot list, and `sandbox.sh: _gdi_blocked()`, which asked `find <dir> -maxdepth 0` with the reach rule.
 - **What's wrong:** BSD `find` refuses a start point it cannot read (`find: …: Permission denied`, exit 1) and evaluates nothing about it, `-maxdepth 0` too, so the answer was "not reachable" for a directory at mode 000 or 400 whoever owned it. GNU `find` and `bfs` evaluate it. `launcher_dirs_in()` was not affected: it starts from the mount and tests what it lists.
 - **Fix:** `_agent_reaches()` reads owner, group and mode with `stat`, probed GNU or BSD once (`_launcher_stat_gnu`), and applies the rule in the shell; a `stat` that fails counts as reachable. Tests: T78 and G209 pass on macOS, and T25j runs the function under both `stat`s.
+
+## 32. Found while running PLAT-10 on macOS
+
+### TST-36: six checks of the hermetic suite assumed GNU tools, and failed on macOS
+- **Status: FIXED** (2026-11-16, Mac agent). Tests only. The four files pass on macOS with the fixes, on `8f45023`.
+- **Severity: LOW** (tests only). Confidence: CONFIRMED, by PLAT-10's Phase 5 on macOS at `2bed630`: these six checks, in four files, failed, and each failed again when its file ran alone. The product did what the checks asked: the registry line is kept, the runner's directory resolves, the subsection is named, and the read is bounded.
+- **Location and cause:**
+  - `tests/test-git-internals-ro-config.sh`: G132's check for the unrepresentable name, and G208's two checks for a filter whose subsection is not valid UTF-8, `grep` with a `\xff` byte in the pattern. Under a UTF-8 locale BSD grep refuses that pattern (`illegal byte sequence`, exit 2), so the check failed whatever the output held. Now `LC_ALL=C`.
+  - `tests/test-host-binds.sh`: the two REPO-18 checks that a registry line holding `\xff` survives a rewrite. Same cause, same fix. With macOS's own grep, `sandbox-common.sh`'s `grep -avE` rewrite keeps the line (checked by hand).
+  - `tests/test-git-internals-ro-index.sh`: G167's fake `timeout` was never run, because `_timeout_prefix()` takes Homebrew's `gtimeout` first. The fake is now copied as `gtimeout` too.
+  - `tests/test-run-all.sh`, section 10 (GAP-10): `/bin/pwd` was compared with `pwd -P`. GNU's `/bin/pwd` defaults to `-P`, macOS's to `-L`, so under `/var` (a link to `/private/var`) the two differ. Now `/bin/pwd -P`.
+- **Found by:** PLAT-10.
 
 ## LNCH
 
