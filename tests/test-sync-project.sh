@@ -405,15 +405,18 @@ c6="$TMP/6c.out"
     && pass "6c a FIFO index is not read, gets no line added, and is named" \
     || fail "6c FIFO index (gitignore: $(cat "$FI/.gitignore" 2>&1); out: $(tr '\n' ' ' <<<"$fi_out"))"
   # The read is bounded: an index git takes too long over is not known, and
-  # says so; nothing waits for it.
+  # says so; nothing waits for it. The bound covers every git call before the
+  # read too (the config, the throwaway init), so it is 5 s, not 1: on a loaded
+  # Mac those took over 1 s and the check failed on "config cannot be read"
+  # (TST-37). The fake sleeps far past it, so only the bound ends the read.
   rg6="$(command -v git)"; mkdir -p "$TMP/slowgit" \
-    && printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-files ] && exec sleep 8; done\nexec %q "$@"\n' "$rg6" > "$TMP/slowgit/git" \
+    && printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-files ] && exec sleep 60; done\nexec %q "$@"\n' "$rg6" > "$TMP/slowgit/git" \
     && chmod +x "$TMP/slowgit/git" && SG="$TMP/slow-proj" && mkdir -p "$SG" && "${G6[@]}" -C "$SG" init -q \
     && : > "$SG/f" && "${G6[@]}" -C "$SG" add f || { printf 'SCAFFOLD-FAILED: 6c slow git\n'; exit 1; }
   t6=$SECONDS
-  sg_out="$( _ver_secs=1; PATH="$TMP/slowgit:$PATH"; ensure_ai_containers_ignored "$SG" 2>&1 )" || true
+  sg_out="$( _ver_secs=5; PATH="$TMP/slowgit:$PATH"; ensure_ai_containers_ignored "$SG" 2>&1 )" || true
   t6=$(( SECONDS - t6 ))
-  [[ ! -e "$SG/.gitignore" ]] && grep -qF 'within 1 s' <<<"$sg_out" && (( t6 < 6 )) \
+  [[ ! -e "$SG/.gitignore" ]] && grep -qF 'within 5 s' <<<"$sg_out" && (( t6 < 30 )) \
     && pass "6c an index read that takes too long is cut off, adds nothing, and is named" \
     || fail "6c slow index read (${t6} s; gitignore: $(cat "$SG/.gitignore" 2>&1); out: $(tr '\n' ' ' <<<"$sg_out"))"
   # A sparse index whose copy lies outside the cone: git, with no objects, says

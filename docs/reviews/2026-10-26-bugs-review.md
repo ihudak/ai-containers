@@ -61,6 +61,7 @@
 - **Updated 2026-11-15:** GIT-96 (LOW, open), found by the review of a survivors' brief of GAP-2's whole-file run: a checkout that a pointer names through a link outside the mounts is neither protected nor named when it cannot be searched.
 - **Updated 2026-11-16:** GIT-104 (LOW, open), found by the review of batch 7's brief of GAP-2's whole-file run: an empty `core.worktree` is taken for none, and the `./` placeholder a launch then makes has git ignore it.
 - **Updated 2026-11-16:** section 32, found while running PLAT-10 on macOS: TST-36 (LOW, tests only), FIXED: six checks assumed GNU `grep`, GNU `/bin/pwd`, or a plain `timeout` where Homebrew's `gtimeout` comes first.
+- **Updated 2026-11-16:** section 32: TST-37 (LOW, tests only), FIXED: `tests/test-sync-project.sh` 6c bounded every git call at 1 s, not only the slow read, and failed under load on a Mac.
 - **Updated 2026-11-15:** GIT-95 (LOW), found while classifying the survivors of GAP-2's whole-file run, is FIXED: a `.git` that is neither a directory nor a regular file (a link that leads nowhere, a FIFO), in a bare repository's directory above a mount, no longer keeps the launch from taking that repository as the one the mount lies in.
 - **Updated 2026-11-14:** LNCH-27 (MEDIUM) is FIXED on a Linux host, and wider than filed, the user's two choices: every host path a launch mounts joins the verify manifest, and every entry of it is recorded through its held parent directory. Colima is not covered (PLAT-11).
 - **Updated 2026-11-14:** LNCH-27 (MEDIUM, open), found by the final review of LNCH-26's fix and older than it: a bound host path inside a writable tree can be swapped by a concurrent container after the launch has judged it.
@@ -3015,6 +3016,13 @@ GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7'
   - `tests/test-host-binds.sh`: the two REPO-18 checks that a registry line holding `\xff` survives a rewrite. Same cause, same fix. With macOS's own grep, `sandbox-common.sh`'s `grep -avE` rewrite keeps the line (checked by hand).
   - `tests/test-git-internals-ro-index.sh`: G167's fake `timeout` was never run, because `_timeout_prefix()` takes Homebrew's `gtimeout` first. The fake is now copied as `gtimeout` too.
   - `tests/test-run-all.sh`, section 10 (GAP-10): `/bin/pwd` was compared with `pwd -P`. GNU's `/bin/pwd` defaults to `-P`, macOS's to `-L`, so under `/var` (a link to `/private/var`) the two differ. Now `/bin/pwd -P`.
+- **Found by:** PLAT-10.
+
+### TST-37: 6c's 1 s bound covered the git calls before the read too, and failed under load
+- **Status: FIXED** (2026-11-16, Mac agent). Tests only.
+- **Severity: LOW** (tests only). Confidence: CONFIRMED. `tests/test-sync-project.sh` 6c failed in both of PLAT-10's macOS runs of the whole suite (at `2bed630` and at `49100d8`) and passed alone. With 54 `yes` processes on 18 CPUs it failed 3 runs of 3. The product did what the check asks: nothing was added and the reason was named, but the reason was that `its config cannot be read`, not that the index was not read `within 1 s`.
+- **Location and cause:** `tests/test-sync-project.sh`, 6c's slow index read. It set `_ver_secs=1` to make the bound on the fake `ls-files` short. But `project-files.sh: _proj_index_tracks()` bounds each of its git calls by `_ver_secs`: the `git config --file` of the object format and the throwaway `git init` run first, through the same `sh` wrapper. On a loaded Mac the config read alone took over 1 s.
+- **Fix:** the bound is 5 s and the fake `ls-files` sleeps 60, so only the bound ends the read, and the check allows 30 s. It passes 3 runs of 3 under the same load and idle. It still fails when the timeout branch is damaged (`rc == 124` changed to never match).
 - **Found by:** PLAT-10.
 
 ## LNCH
