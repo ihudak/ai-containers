@@ -1473,6 +1473,16 @@ n="${4#./}"; if [[ "$n" == . ]]; then f="$(pwd -P)"; else f="$(pwd -P)/$n"; fi
 printf '77 %s\n' "$(printf '%s' "$f" | cksum | cut -d' ' -f1)"
 STAT66
 chmod +x "$TMP/bin66/stat"
+# The VM's mount table: its file shares, $TMP's directory among them unless a
+# check says otherwise (FAKE_COLIMA_SHARES).
+cat > "$TMP/bin66/cat" <<'CAT66'
+#!/usr/bin/env bash
+if [[ "$1" == /proc/self/mounts ]]; then
+  printf 'proc /proc proc rw 0 0\nmount0 %s virtiofs rw 0 0\n' ${FAKE_COLIMA_SHARES-"${TMP66%/*}"}; exit 0
+fi
+exec /bin/cat "$@"
+CAT66
+chmod +x "$TMP/bin66/cat"
 cat > "$TMP/bin/colima" <<COLIMA
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$CAPTURE.colima"
@@ -1481,7 +1491,7 @@ printf '%s\n' "\$@" > "$CAPTURE.colima"
 # concurrent container can swap one; put back after.
 if [[ -n "\${FAKE_COLIMA_SWAP:-}" ]]; then mv "\$FAKE_COLIMA_SWAP" "\$FAKE_COLIMA_SWAP.real" && ln -s "\${FAKE_COLIMA_SWAP##*/}.real" "\$FAKE_COLIMA_SWAP"; fi
 while [[ \$# -gt 0 && "\$1" != -- ]]; do shift; done; shift
-PATH="$TMP/bin66:\$PATH" "\$@"; rc=\$?
+TMP66="$TMP" PATH="$TMP/bin66:\$PATH" "\$@"; rc=\$?
 if [[ -n "\${FAKE_COLIMA_SWAP:-}" ]]; then rm -f "\$FAKE_COLIMA_SWAP" && mv "\$FAKE_COLIMA_SWAP.real" "\$FAKE_COLIMA_SWAP"; fi
 exit \$rc
 COLIMA
@@ -1508,7 +1518,7 @@ else
   fail "T66 VM ids (rc=$LAUNCH_RC; $dst66 -> '$(man66 "$dst66")' want '$(vm66 "$src66")'; anchor '$aenv66'; stderr: $(tail -3 "$ERR" | tr '\n' ' '))"
 fi
 # Only fixed arguments reach the VM: the paths go on stdin.
-[[ "$(head -n 9 "$CAPTURE.colima" 2>/dev/null)" == "$(printf '%s\n' ssh -p default -- xargs -0 sh -c 'for p do')" \
+[[ "$(head -n 9 "$CAPTURE.colima" 2>/dev/null)" == "$(printf '%s\n' ssh -p default -- xargs -0 sh -c 'cat /proc/self/mounts 2>/dev/null | while read -r _ m t _; do')" \
    && "$(tail -n 1 "$CAPTURE.colima" 2>/dev/null)" == sh ]] && ! grep -qF "$TMP" "$CAPTURE.colima" \
   && pass "T66 colima ssh gets the profile and a fixed command, no path" \
   || fail "T66 colima argv: $(tr '\n' ' ' < "$CAPTURE.colima" 2>/dev/null)"
@@ -1521,8 +1531,11 @@ FAKE_COLIMA_SWAP="$T66/$odd66" FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$T
    && "$(man66 /workspace/.agent-blocked)" == "$(vm66 "$LAUNCHER/.agent-blocked")" ]] \
   && pass "T66 a directory swapped for a link before the VM reads it is recorded as 0:0 (PLAT-11)" \
   || fail "T66 VM swap: $dst66 -> '$(man66 "$dst66")', /workspace/t66/$odd66 -> '$(man66 "/workspace/t66/$odd66")'"
-# A mounted host path whose directory the VM cannot enter lies outside its
-# shares, where docker mounts what the VM has there: not recorded, as before.
+# A mounted host path whose directory the VM cannot enter, under none of its
+# shares, lies outside them, where docker mounts what the VM has there: not
+# recorded, as before. Under a share, the agent could have made that directory
+# unsearchable for the moment it is read: recorded 0:0, which refuses (security
+# review of PLAT-11's fix). With no share listed at all, so too.
 cat > "$TMP/bin66/sh" <<'SH66'
 #!/usr/bin/env bash
 # The VM without the share that holds $T66's parent: its directory cannot be entered.
@@ -1531,10 +1544,16 @@ if [[ -n "${FAKE_COLIMA_OUT:-}" ]]; then chmod 000 "$FAKE_COLIMA_OUT"; trap 'chm
 SH66
 chmod +x "$TMP/bin66/sh"
 mkdir -p "$TMP/out66/m" "$TMP/app"
-FAKE_COLIMA_OUT="$TMP/out66" FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$TMP/out66/m" launch "$LAUNCHER" "$TMP/app"
+FAKE_COLIMA_SHARES="/nowhere66 $HOME" FAKE_COLIMA_OUT="$TMP/out66" FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$TMP/out66/m" launch "$LAUNCHER" "$TMP/app"
 [[ "$LAUNCH_RC" == 0 && -z "$(man66 /workspace/m)" && "$(man66 /workspace/.agent-blocked)" == "$(vm66 "$LAUNCHER/.agent-blocked")" ]] \
   && pass "T66 a mounted path outside the VM's shares is not recorded" \
   || fail "T66 VM outside: rc=$LAUNCH_RC, /workspace/m -> '$(man66 /workspace/m)'"
+for sh66 in "$TMP" ""; do
+  FAKE_COLIMA_SHARES="$sh66" FAKE_COLIMA_OUT="$TMP/out66" FAKE_DOCKER_ENDPOINT="$colima66" EXTRA_MOUNTS="$TMP/out66/m" launch "$LAUNCHER" "$TMP/app"
+  [[ "$(man66 /workspace/m)" == "0 0" ]] \
+    && pass "T66 one in a share$([[ -n "$sh66" ]] || printf ', or with no share listed,') whose directory the VM cannot enter is recorded as 0:0" \
+    || fail "T66 VM unsearchable in a share ('$sh66'): /workspace/m -> '$(man66 /workspace/m)'"
+done
 rm -f "$TMP/bin66/sh"; rm -rf "$TMP/out66"
 # A source the VM cannot stat is recorded 0:0, which the entrypoint refuses, not
 # the host's device:inode, which would pass for nothing there.
@@ -1956,11 +1975,11 @@ fi
 # launch); a record without numeric ids is dropped, and so is one whose
 # directory the VM did not find where it was judged; one it could not enter is N.
 o73="$(t73 '( PATH=/nonexistent73; _colima_profile ) && printf "p0|" || printf "n0|"; declare -A m=(); ( PATH=/nonexistent73; _vm_dev_ino_load m /a ) && printf "l0|" || printf "nl0|"
-  _timeout_prefix() { :; }; colima() { if [[ "$1" == ssh ]]; then cat >/dev/null; printf "/a\0/\n\00012 34\0/b\0/\n\0x 5\0/c\0/\n\0007 y\0/d\0/elsewhere\n\0001 2\0/e\0\0N\0"; fi; }
+  _timeout_prefix() { :; }; colima() { if [[ "$1" == ssh ]]; then cat >/dev/null; printf "/s\\040h\n\0/s h/f\0\0N\0/a\0/\n\00012 34\0/b\0/\n\0x 5\0/c\0/\n\0007 y\0/d\0/elsewhere\n\0001 2\0/e\0\0N\0"; fi; }
   docker() { return 1; }; DOCKER_HOST=""; _colima_profile && printf "p1|" || printf "n1|"
   DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"; COLIMA_HOME="$HOME/.colima"; printf "%s|" "$(_colima_profile)"
-  declare -A m=(); _vm_dev_ino_load m /a /b /c /d /e; for k in /a /b /c /d /e; do printf "%s=%s " "$k" "${m[$k]:-}"; done')"
-[[ "$o73" == "n0|nl0|n1|default|/a=12 34 /b= /c= /d= /e=N " ]] \
+  declare -A m=(); _vm_dev_ino_load m /a /b /c /d /e; for k in /a /b /c /d /e "/s h/f"; do printf "%s=%s " "$k" "${m[$k]:-}"; done')"
+[[ "$o73" == "n0|nl0|n1|default|/a=12 34 /b= /c= /d= /e=N /s h/f= " ]] \
   && pass "T73 with no colima or no endpoint there is no profile and nothing loaded; records without numeric ids, or read elsewhere, are dropped" \
   || fail "T73 Colima (got: $o73)"
 # A pointer's host path, translated only through a host bind into /workspace.

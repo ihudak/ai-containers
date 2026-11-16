@@ -6332,10 +6332,16 @@ _colima_profile() {
 # byte (the VM prints a share's path as it was given, so the host's spelling as
 # on disk is what it compares with); read by path, a parent a concurrent
 # container had just swapped for a link gave whatever the link led to (PLAT-11).
-# A path whose directory the VM cannot enter is "N": it lies outside the VM's
-# shares. Any other path is absent. Returns non-zero off Colima.
+# A path whose directory the VM cannot enter is "N" when it lies under none of
+# the VM's file shares, which the program lists first from the VM's mount table:
+# docker mounts what the VM has there. Under a share, the agent could have made
+# that directory unsearchable for the moment it is read, so it is absent, as is
+# any other path (security review of PLAT-11's fix). Returns non-zero off Colima.
 # shellcheck disable=SC2016  # the VM's sh expands it, from the paths on its stdin
-_vm_hold_prog='for p do
+_vm_hold_prog='cat /proc/self/mounts 2>/dev/null | while read -r _ m t _; do
+case $t in virtiofs|9p|fuse.sshfs) printf "%s\n" "$m" ;; esac
+done; printf "\0"
+for p do
 d=${p%/*}; n=${p##*/}
 printf "%s\0" "$p"
 ( if cd -P -- "${d:-/}" 2>/dev/null; then
@@ -6349,15 +6355,28 @@ done'
 _vm_dev_ino_load() {
   # shellcheck disable=SC2178  # a nameref to the caller's associative array
   local -n _vl_map="$1"; shift
-  local prof p w r d tp=()
-  prof="$(_colima_profile)" || return 1
-  read -r -a tp <<<"$(_timeout_prefix 20)"
-  while IFS= read -r -d '' p && IFS= read -r -d '' w && IFS= read -r -d '' r; do
-    if [[ "$r" == N ]]; then _vl_map["$p"]=N; continue; fi
-    d="${p%/*}"
-    [[ "$w" == "${d:-/}"$'\n' && "$r" =~ ^[0-9]+\ [0-9]+$ ]] || continue
-    _vl_map["$p"]="$r"
-  done < <(printf '%s\0' "$@" | ${tp[@]+"${tp[@]}"} colima ssh -p "$prof" -- xargs -0 sh -c "$_vm_hold_prog" sh 2>/dev/null)
+  local _vl_prof _vl_p _vl_w _vl_r _vl_d _vl_m _vl_shr _vl_tp=() _vl_shares=()
+  _vl_prof="$(_colima_profile)" || return 1
+  read -r -a _vl_tp <<<"$(_timeout_prefix 20)"
+  {
+  IFS= read -r -d '' _vl_shr || _vl_shr=""
+  # The mount table writes a space, a tab, a newline and a backslash as \NNN.
+  while IFS= read -r _vl_m; do
+    [[ "$_vl_m" == /* ]] || continue
+    printf -v _vl_m '%b' "${_vl_m//\\/\\0}"
+    _vl_shares+=("${_vl_m%/}")
+  done <<<"$_vl_shr"
+  while IFS= read -r -d '' _vl_p && IFS= read -r -d '' _vl_w && IFS= read -r -d '' _vl_r; do
+    if [[ "$_vl_r" == N ]]; then
+      (( ${#_vl_shares[@]} )) || continue
+      for _vl_m in "${_vl_shares[@]}"; do [[ "$_vl_p" == "$_vl_m" || "$_vl_p" == "$_vl_m"/* ]] && continue 2; done
+      _vl_map["$_vl_p"]=N; continue
+    fi
+    _vl_d="${_vl_p%/*}"
+    [[ "$_vl_w" == "${_vl_d:-/}"$'\n' && "$_vl_r" =~ ^[0-9]+\ [0-9]+$ ]] || continue
+    _vl_map["$_vl_p"]="$_vl_r"
+  done
+  } < <(printf '%s\0' "$@" | ${_vl_tp[@]+"${_vl_tp[@]}"} colima ssh -p "$_vl_prof" -- xargs -0 sh -c "$_vm_hold_prog" sh 2>/dev/null)
   return 0
 }
 
