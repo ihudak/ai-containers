@@ -1400,6 +1400,33 @@ EXTRA_MOUNTS="$D187" launch "$TMP/app"
   || fail "G187 submodule (rc=$LAUNCH_RC; commondir: $(cat "$D187/sup/.git/modules/s/commondir" 2>&1))"
 rm -rf "$D187"
 
+# ── G294: a core.worktree set to nothing is one that is set ──────────────────
+# git takes core.worktree for set when it is set to nothing: every command in
+# such a repository ends in "cannot chdir to ''". The launch took it for unset
+# and made the ./ placeholder, beside which git reads core.worktree only from
+# config.worktree: the repository worked again, and used with --git-dir took
+# the current directory for its work tree, which is what G187's rule keeps a
+# launch from doing (bugs review GIT-104). It gets none now, and one an
+# earlier launch made there is named.
+D294="$TMP/d294"; mkdir -p "$D294/elsewhere" && "${G[@]}" init -q "$D294/r" && "${G[@]}" -C "$D294/r" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$D294/r" config core.worktree "" || { printf 'SCAFFOLD-FAILED: G294\n'; exit 1; }
+EXTRA_MOUNTS="$D294" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && ! -e "$D294/r/.git/commondir" ]] \
+  && has_mount "$D294/r/.git/config:/workspace/d294/r/.git/config:ro" \
+  && grep -qF "NOTE: /workspace/d294/r/.git sets core.worktree in its config" "$ERR" \
+  && pass "G294 a git directory whose config sets an empty core.worktree gets no placeholder, and is protected" \
+  || fail "G294 empty core.worktree (rc=$LAUNCH_RC; commondir: $(cat "$D294/r/.git/commondir" 2>&1 | head -1); $(grep -F 'r/.git' "$ERR" | head -2 | tr '\n' ' '))"
+! (cd "$D294/elsewhere" && "${G[@]}" --git-dir="$D294/r/.git" rev-parse --show-toplevel >/dev/null 2>&1) \
+  && pass "G294 git still refuses that repository after the launch, as before it" \
+  || fail "G294 git took a work tree ($(cd "$D294/elsewhere" && "${G[@]}" --git-dir="$D294/r/.git" rev-parse --show-toplevel 2>&1 | head -1))"
+# One an earlier launch made there is named, as G187's is.
+printf './\n' > "$D294/r/.git/commondir" || { printf 'SCAFFOLD-FAILED: G294 placeholder\n'; exit 1; }
+EXTRA_MOUNTS="$D294" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: $D294/r/.git/commondir, which an earlier launch made, has git ignore the core.worktree" "$ERR" \
+  && pass "G294 a placeholder an earlier launch made beside an empty core.worktree is named" \
+  || fail "G294 earlier placeholder (rc=$LAUNCH_RC; $(grep -E '^(WARNING|ERROR)' "$ERR" | head -2 | cut -c1-160 | tr '\n' ' '))"
+rm -rf "$D294"
+
 # ── G211: GIT-73's advice for a directory no printed command can enter ──────
 # A git directory whose name ends in a newline, which $(pwd -P) never gives
 # back, its config setting core.worktree and a ./ placeholder already there:
