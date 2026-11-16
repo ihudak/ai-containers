@@ -411,7 +411,7 @@ has "$out" '^ +cp: cannot stat .x.: No such file' && has "$out" '^ +ERROR: /r ha
 rm -f "$CORPUS"/test-*.sh
 START="$TMP/start"; mkdir -p "$START"
 mkt aa-stale 'rm -rf "$RA10_START" && mkdir "$RA10_START" && echo "PASS: the start directory was made again"'
-mkt bb-cwd 'if p="$(/bin/pwd 2>&1)" && [[ "$p" == "$RA10_PHYS" ]] && [[ "$(bash -c "echo ok" 2>&1)" == ok ]]; then echo "PASS: cwd resolves"; else echo "FAIL: cwd does not resolve: $p"; exit 1; fi'
+mkt bb-cwd 'if p="$(/bin/pwd -P 2>&1)" && [[ "$p" == "$RA10_PHYS" ]] && [[ "$(bash -c "echo ok" 2>&1)" == ok ]]; then echo "PASS: cwd resolves"; else echo "FAIL: cwd does not resolve: $p"; exit 1; fi'
 out="$(cd "$START" && RA10_START="$START" RA10_PHYS="$(cd "$START" && pwd -P)" TMPDIR="$TMP/tmpdir" bash "$CORPUS/run-all.sh" 2>&1)"; rc=$?
 [[ "$rc" == 0 ]] && has "$out" '2 test\(s\), 2 passed, 0 failed' \
   && pass "a test starts in the runner's directory looked up again, not one gone stale under it" \

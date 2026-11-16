@@ -1337,7 +1337,7 @@ launch "$R132"
 mk132 $'\xff'/x
 launch "$R132"
 [[ "$LAUNCH_RC" == 0 && ! -e "$R132/r/.git/"$'\xff' ]] && has_mount "$R132/r/.git/config:/workspace/p132/r/.git/config:ro" \
-  && grep -qaF "runs its git hooks from /workspace/p132/r/.git/"$'\xff'"/x" "$ERR" \
+  && LC_ALL=C grep -qaF "runs its git hooks from /workspace/p132/r/.git/"$'\xff'"/x" "$ERR" \
   && pass "G132 a value docker cannot be handed is named, and the repository keeps its own binds" \
   || fail "G132 unrepresentable (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep -F '/r/.git/config' | tr '\n' ' '); $(grep -aE 'WARNING|ERROR' "$ERR" | head -2 | tr '\n' ' '))"
 # Hooks already there are named, once: at the first protection, and where an
@@ -2008,8 +2008,10 @@ R208="$TMP/r208"; mkdir -p "$R208" && "${G[@]}" init -q "$R208/f" && "${G[@]}" i
   || { printf 'SCAFFOLD-FAILED: G208\n'; exit 1; }
 k208="$(printf 'filter.\377.clean')"
 LC_ALL=C.UTF-8 EXTRA_MOUNTS="$R208" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && grep -aqF -- "$k208" < <(grep -a -A1 -F 'NOTE: /workspace/r208/f/.git is protected for the first time' "$ERR") \
-  && grep -aqF "/workspace/r208/f/clean208.sh ($k208)" "$ERR" \
+# The greps in the C locale: BSD grep refuses a pattern that is not UTF-8 under
+# a UTF-8 locale ("illegal byte sequence") and matched nothing on a Mac.
+[[ "$LAUNCH_RC" == 0 ]] && LC_ALL=C grep -aqF -- "$k208" < <(grep -a -A1 -F 'NOTE: /workspace/r208/f/.git is protected for the first time' "$ERR") \
+  && LC_ALL=C grep -aqF "/workspace/r208/f/clean208.sh ($k208)" "$ERR" \
   && pass "G208 under a UTF-8 locale a filter whose subsection is not UTF-8 is named and its program judged" \
   || fail "G208 filter with a non-UTF-8 subsection (rc=$LAUNCH_RC; $(grep -a -A1 -F 'r208/f' "$ERR" | head -3 | tr '\n' ' '))"
 grep -aqF "inc208.cfg" < <(grep -a -A2 -F '/workspace/r208/i/.git/config' "$ERR") \
