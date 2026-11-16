@@ -266,6 +266,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the length. One that can be entered is followed as before (bugs review
   GIT-101).
 
+- **A `core.worktree` set to nothing no longer has a launch change what git
+  does there.** git takes an empty `core.worktree` for one that is set, and
+  refuses every command in that repository (`cannot chdir to ''`). The
+  launcher took it for unset and made its `./` placeholder, beside which git
+  ignores the value: the repository worked again, and used with `--git-dir`
+  took the current directory for its work tree. Such a repository now gets no
+  placeholder, as any other whose `config` sets `core.worktree`; its config
+  and hooks are protected as before. A placeholder an earlier launch made
+  there is named at the next launch, with the command that removes it; to
+  keep the repository working, remove the empty `core.worktree` from its
+  `config` instead (bugs review GIT-104).
+
 - **A very long `core.worktree` or `gitdir` no longer costs every launch minutes.**
   The search for the directory that blocks such a path took the path apart a
   component at a time, copying what was left at each step, so its cost grew

@@ -6448,13 +6448,18 @@ declare -A _git_wt_kid=()
 # reaches it through the .git file in its checkout and takes that directory for
 # the work tree either way, and the placeholder keeps the agent from making one.
 _git_wt_cfg() {
+  # shellcheck disable=SC2034  # _gw is _git_config_get's out variable; only whether the key is set is asked
   local _gw=""
   [[ "${1,,}" != */.git/modules/* ]] || return 1
   # Nor for a directory taken under a git directory's worktrees/ (_gdi_wt_kids):
   # git writes a commondir in every one, and a config planted there would leave
   # this one for the session to make (GIT-78; G189).
   [[ -z "${_git_wt_kid[$1]:-}" ]] || return 1
-  _git_config_get _gw "$1/config" core.worktree && [[ -n "$_gw" ]]
+  # Set, to nothing too: git takes an empty one for set, and refuses every
+  # command there ("cannot chdir to ''"). Asked whether the value is empty, a
+  # launch made the placeholder beside it, and git then ignored it and worked
+  # from any directory (bugs review GIT-104; G294).
+  _git_config_get _gw "$1/config" core.worktree
 }
 # The git directories whose config this launch bound read-only, or that lie under
 # a read-only overlay: their own common directory, config included (_git_runs).
