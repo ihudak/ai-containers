@@ -187,6 +187,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directory a concurrent container swaps for a link at that moment is refused;
   the host paths a launch mounts are recorded there as well (platform issues
   PLAT-11).
+- **On macOS, a directory that blocks a pointer's way is found however the
+  pointer spells it.** A pointer written with the mounted directory in another
+  case, or through `/System/Volumes/Data`, reaches the same directory; the
+  directory made unsearchable on its way is now read-only whole and named, as
+  it is for one spelled as on disk (bugs review GIT-98).
 
 - **`repo.sh gc` keeps another home's working copies.** It removed every
   `:rwcopy` working copy by default, and on a docker daemon several homes

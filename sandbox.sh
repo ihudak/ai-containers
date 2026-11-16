@@ -4350,6 +4350,11 @@ _gdi_blocked() {
     done
   done
   [[ -n "$_gb_b" ]] || return 1
+  # Its parent, which could be entered, spelled as on disk: where names ignore
+  # case, or through macOS's /System/Volumes/Data firmlink, the way could spell
+  # a mount's source otherwise and be under none of them (bugs review GIT-98).
+  _gb_t="${_gb_b%/*}"
+  if _cd_phys _gb_t "${_gb_t:-/}"; then _gb_b="${_gb_t%/}/${_gb_b##*/}"; fi
   # Only one the agent could reach into, by launcher_dirs_in's rule: one it owns,
   # which it can chmod back, one of yours (LNCH-25), or one whose mode lets it
   # search. A directory nobody but its owner can enter (a database's data
