@@ -56,6 +56,7 @@
 - **Updated 2026-11-15:** GIT-97 is FIXED, and by a launch it was MEDIUM by GIT-2's measure: a `core.worktree` of 16 KB cost a launch a minute. The way is split into its components once. GIT-98 stays open, for a Mac. GIT-101 (MEDIUM, open), found by the review of that fix: the walk's cost and memory still grow with the pointer's length, which nothing bounds, and a `core.worktree` longer than a path can be is used by git and not followed by the launch.
 - **Updated 2026-11-15:** GIT-96 (LOW) is FIXED: the directory that blocks a pointer's way is found by walking the way as the kernel walks it, so one named through a link outside the mounts is bound and named like any other.
 - **Updated 2026-11-15:** GIT-96 (LOW, open), found by the review of a survivors' brief of GAP-2's whole-file run: a checkout that a pointer names through a link outside the mounts is neither protected nor named when it cannot be searched.
+- **Updated 2026-11-16:** GIT-104 (LOW, open), found by the review of batch 7's brief of GAP-2's whole-file run: an empty `core.worktree` is taken for none, and the `./` placeholder a launch then makes has git ignore it.
 - **Updated 2026-11-15:** GIT-95 (LOW), found while classifying the survivors of GAP-2's whole-file run, is FIXED: a `.git` that is neither a directory nor a regular file (a link that leads nowhere, a FIFO), in a bare repository's directory above a mount, no longer keeps the launch from taking that repository as the one the mount lies in.
 - **Updated 2026-11-14:** LNCH-27 (MEDIUM) is FIXED on a Linux host, and wider than filed, the user's two choices: every host path a launch mounts joins the verify manifest, and every entry of it is recorded through its held parent directory. Colima is not covered (PLAT-11).
 - **Updated 2026-11-14:** LNCH-27 (MEDIUM, open), found by the final review of LNCH-26's fix and older than it: a bound host path inside a writable tree can be swapped by a concurrent container after the launch has judged it.
@@ -2956,6 +2957,15 @@ GIT-62 and GIT-63 were found by the review of the first tests that kill slice 7'
 - **Severity: LOW.** Noise the agent could produce: `WARNING: cannot read the index of …` for a repository out of every mount, whose unreadable index the walk's own comment calls the user's and not to be named at every launch.
 - **Location:** `sandbox.sh: git_dirs_in()`, the walk up from a mount, the branch for a `.git` directory: `if _is_git_dir "$up/.git" && [[ -z "${ionly_had[$up/.git]:-}" ]]; then`, inside which alone the repository was marked quiet (`gquiet`).
 - **What happened:** a repository `$R` out of every writable mount, its index unreadable, a mount `$R/w`, and a `.git` file under `$R/w/node_modules/p` naming `$R/.git`. That file's follow queued `$R/.git`'s index first and marked it read (`ionly_had`), so the walk up, reaching `$R/.git`, skipped the block that marks it quiet, and the launch printed `WARNING: cannot read the index of $R/.git`, which it does not print without the file.
+
+### GIT-104: an empty `core.worktree` is taken for none, and the placeholder made then changes what git does
+- **Status: OPEN** (2026-11-16), the Linux agent's.
+- **Severity: LOW.** No protection is lost: the repository's config and hooks are bound as any other's. What changes is what your git does there. Confidence: MEASURED (git 2.56, and one launch).
+- **Location:** `sandbox.sh: _git_wt_cfg()`.
+- **What's wrong:** GIT-73's rule is that no `./` placeholder is made in a git directory whose `config` sets `core.worktree`, because beside any `commondir` git reads `core.worktree` only from `config.worktree`. `_git_wt_cfg()` asks whether the value is not empty. git asks whether the key is set: with `core.worktree` set to nothing, every command in that repository ends in `fatal: cannot chdir to ''`. A launch takes the key for unset and makes the placeholder. From then on git ignores the value, the repository works again, and `git --git-dir=<it>` from any directory takes that directory for the work tree.
+- **Reach:** such a repository does not work at all before the launch, so it is one left that way by accident, or by the agent in a repository it made or one not yet protected.
+- **Fix direction:** take the key for set whenever git prints it, empty or not; the NOTE GIT-73's fix prints for such a config then covers it. A check: such a repository gets no placeholder, and the NOTE.
+- **Found by:** the review of batch 7's brief of GAP-2's whole-file run (feature-gaps review; survivor 236 of the run, whose damaged form is the right one).
 
 ## LNCH
 
