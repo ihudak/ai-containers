@@ -45,7 +45,7 @@
 | GIT-106 | CONFIRMED | a program a config key runs is passed in silence when the shell reaches it through a builtin, a keyword, an assignment or an interpreter's load option |
 | GIT-107 | CONFIRMED | planted `.git` files are all followed before `SANDBOX_GIT_MAX` refuses: 3000 take 43 s |
 | LNCH-30 | CONFIRMED | on drvfs/SMB (or a case-aliasing directory) a pointer or `EXTRA_MOUNTS` path inside a writable mount now refuses the launch, as "mounted read-only" |
-| LNCH-32 | PLAUSIBLE | on Colima, a launch whose verify paths pass xargs' command-line limit is refused: each xargs batch prints the header again and the reader loses its place |
+| LNCH-32 | CONFIRMED | on Colima, a launch whose verify paths pass xargs' command-line limit is refused: each xargs batch prints the header again and the reader loses its place |
 | LNCH-33 | CONFIRMED | the entrypoint prints a mismatched mount's destination to the terminal as it is |
 | LNCH-34 | CONFIRMED | a repo named `ro`, `rw` or `rwcopy` attached with the mode of the same name is mounted read-only |
 | PRJ-14 | CONFIRMED | `mv` cannot carry two working copies of one repo launched through two spellings of the project path |
@@ -217,10 +217,10 @@
   image exists before creating the volume.
 
 ### LNCH-32: on Colima, a launch whose verify paths pass xargs' command-line limit is refused: each xargs batch prints the header again and the reader loses its place
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, Mac agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** LOW
-- **Confidence:** PLAUSIBLE on Colima; the mechanism is CONFIRMED locally (fake `colima` running the VM's program under GNU xargs 4.10)
-- **Location:** `sandbox.sh`: `_vm_dev_ino_load()`, `colima ssh -p "$_vl_prof" -- xargs -0 sh -c "$_vm_hold_prog" sh`
+- **Confidence:** CONFIRMED on Colima (2026-11-17, the Mac agent: macOS 26.7.3, Colima 0.10.3). Before this, PLAUSIBLE: the mechanism was confirmed only locally, with a fake `colima` running the VM's program under GNU xargs 4.10. On the real VM, `_vm_dev_ino_load()` on directories with ~275-byte paths recorded 100 of 100 and 400 of 400 (109 KB), but only 477 of 1200 (329 KB).
+- **Location:** `sandbox.sh`: `_vm_dev_ino_load()`, whose `colima ssh` ran the VM's program, share list and all, under xargs directly
 - **Introduced:** `e51e472` (fix(sandbox): on Colima, read the verify manifest through held directories in the VM (PLAT-11))
 - **What happens:** `_vm_hold_prog` prints the VM's share list and a NUL first, then three
   NUL-ended fields per path. The reader takes one header, then triples. GNU xargs passes at
@@ -245,6 +245,8 @@
 - **Suggested fix:** print the header once, outside xargs (a fixed `sh -c` that prints the
   shares and then `exec xargs -0 sh -c …`), or tag each record so a header in the middle is
   recognised. AGENTS.md still says the paths go "to a fixed `xargs -0 stat`"; update it.
+- **Fix:** the first of those. `colima ssh` runs `_vm_hold_main`, which prints the share list and its NUL once and then `exec`s `xargs -0` with the per-path program, `_vm_hold_prog`, as its argument. A new batch therefore prints only triples. The paths stay on stdin, and `colima ssh`'s argv holds no path. After the fix, on the real VM, 400, 1200 and 3000 paths (824 KB) were all recorded. AGENTS.md now names both programs.
+- **Tests:** T66 in `tests/test-launcher-dir-ro.sh` gained a check that runs `_vm_dev_ino_load()` on 40 paths of ~230 bytes. It uses the fake VM, with a fake `xargs` that splits at 4 KiB so that GNU and BSD xargs both split. It was seen red before the fix, recording 18 of 40, and green after. T66's argv check now expects the new command, and T73 loads both programs.
 
 ### LNCH-33: the entrypoint prints a mismatched mount's destination to the terminal as it is
 - **Status: OPEN** (filed 2026-11-17).
