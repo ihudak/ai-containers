@@ -228,7 +228,31 @@ out="$(HOME="$NOKEY" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR"
 [[ "$out" == *"ai-containers-rvm-lostkey: another home's"* && "$out" == *"this home has no owner key"* ]] \
   && pass "PRJ-16 a home with no owner key says why its labelled volumes look like another home's" \
   || fail "PRJ-16 a home with no owner key (got: $out)"
+# list says it too, under the orphans it cannot tell apart; a home that has its
+# key says nothing of the kind (asserted above).
+out="$(HOME="$NOKEY" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" list 2>&1)"
+[[ "$out" == *"ai-containers-rvm-lostkey  (another home's: gc keeps it unless --all)"* && "$out" == *"this home has no owner key"* ]] \
+  && pass "PRJ-16 list, in a home with no owner key, says why its orphans look like another home's" \
+  || fail "PRJ-16 list in a home with no owner key (got: $out)"
 rm -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-lostkey" "$FAKE_VOLUMES_DIR/ai-containers-rvm-lostkey.labels"; rm -rf "$NOKEY"
+# rm of a group whose volume has no owner label, made before there was one,
+# removes the volume with its directory, as it always did, and says it may be
+# another home's; only one another home labelled is kept. This home's own is
+# removed with no such word. (The mutation tier found none of the three
+# asserted: a volume with no label kept, and the note on the wrong one, passed.)
+mkdir -p "$FAKE_HOME/.ai-containers/old16"; VOL_OWNER="" mkvol "ai-containers-rvm-old16" "old16"
+out="$(run_group rm old16 --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$FAKE_HOME/.ai-containers/old16" && ! -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-old16" ]] \
+  && grep -qxF "  rvm volume ai-containers-rvm-old16 (installed rubies and gems) — no owner label, so it may be another home's too" <<<"$out" \
+  && [[ "$out" != *"is kept"* ]] \
+  && pass "PRJ-16 rm removes a volume with no owner label, saying it may be another home's" \
+  || fail "PRJ-16 rm of a group whose volume has no owner label (rc=$rc; got: $out)"
+mkdir -p "$FAKE_HOME/.ai-containers/mine16"; mkvol "ai-containers-rvm-mine16" "mine16"
+out="$(run_group rm mine16 --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$FAKE_HOME/.ai-containers/mine16" && ! -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-mine16" ]] \
+  && grep -qxF "  rvm volume ai-containers-rvm-mine16 (installed rubies and gems)" <<<"$out" \
+  && pass "PRJ-16 rm removes this home's own volume with no word about another home" \
+  || fail "PRJ-16 rm of this home's own group (rc=$rc; got: $out)"
 
 # A docker that cannot be reached is not one with no volume: rm keeps the
 # directory, where it removed it and orphaned the volume, and gc says so, rc 1,
