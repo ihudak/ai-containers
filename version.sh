@@ -145,6 +145,19 @@ _ver_ok() {
   [[ "$1" =~ ^[A-Za-z0-9._+-]{1,128}$ ]]
 }
 
+# _ver_term <path>: a path fit for the terminal, for the NOTEs below. The agent
+# names the project's directories, and a NOTE naming engine-version printed
+# the path as it is, an escape sequence in it and all (bugs review PRJ-15, whose
+# test met ENV-11's NOTE). As ai-containers-report.sh: `_rterm()` and
+# sandbox-common.sh: `_ac_term()` render, which this file sources neither of:
+# control characters, UTF-8's C1 controls and the bidi controls each a ?.
+_ver_term() {
+  local LC_ALL=C s="$1"
+  s="${s//[[:cntrl:]]/?}"; s="${s//$'\xc2'[$'\x80'-$'\x9f']/?}"
+  s="${s//$'\xe2\x80'[$'\xaa'-$'\xae']/?}"; s="${s//$'\xe2\x81'[$'\xa6'-$'\xa9']/?}"
+  printf '%s' "$s"
+}
+
 # _ver_id <stat-args>...: "<dev>:<ino>" from GNU `stat -c` or BSD `stat -f`,
 # probed once, never a fallback on failure: GNU `stat -f` succeeds and reports
 # the filesystem (sandbox.sh: `_launcher_stat_gnu`).
@@ -341,16 +354,16 @@ version_engine() {
   # holds, and the version is git's, or unknown.
   local ev="$dir/engine-version"
   if [[ -L "$ev" || ( -e "$ev" && ! -f "$ev" ) ]]; then
-    printf 'NOTE: %s is not a regular file; not read.\n' "$ev" >&2
+    printf 'NOTE: %s is not a regular file; not read.\n' "$(_ver_term "$ev")" >&2
   elif [[ -f "$ev" ]]; then
     if _ver_run v _ver_cat_own "$ev"; then
       # Its first line, its leading and trailing whitespace dropped; whitespace
       # inside it is no version's.
       v="${v%%$'\n'*}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
       if _ver_ok "$v"; then printf '%s' "$v"; return 0; fi
-      [[ -z "$v" ]] || printf 'NOTE: %s holds something other than a version; not read.\n' "$ev" >&2
+      [[ -z "$v" ]] || printf 'NOTE: %s holds something other than a version; not read.\n' "$(_ver_term "$ev")" >&2
     else
-      printf 'NOTE: %s could not be read as the file at that name; not read.\n' "$ev" >&2
+      printf 'NOTE: %s could not be read as the file at that name; not read.\n' "$(_ver_term "$ev")" >&2
     fi
   fi
 

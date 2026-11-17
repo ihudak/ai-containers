@@ -275,7 +275,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from a project's `sandbox.env` reached the terminal with their escape
   sequences, and a tab in one shifted every later `--tsv` column. Control
   characters are now replaced, as the launcher replaces them (bugs review
-  PRJ-15).
+  PRJ-15). So is the path in the `NOTE:` that `--version`, a report or a sync
+  prints for an `engine-version` it does not read, which printed the project's
+  directory names as they were.
 - **A working copy whose seeding failed is no longer mounted.** A `:rwcopy`
   working copy is seeded once, by a copy from the repo's volume, and from then
   on an existing one is taken as seeded. When that copy failed (the image not

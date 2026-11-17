@@ -526,9 +526,13 @@ $OUT"
 # sandbox.env is the committed, shared file, and the agent writes the project:
 # an escape sequence in a value reached the host terminal, and a tab shifted
 # every later --tsv column. Every field and every note is rendered: here the
-# group, the mode, the CPUs, the memory, the engine version (one with a C1
-# control), the project's own name, a stale launcher's file name, and the note
-# that names a project registered in two bases.
+# group, the mode, the CPUs, the memory, the project's own name, a stale
+# launcher's file name, and the note that names a project registered in two
+# bases. An engine-version with a C1 control in it is no version, and is not
+# read (ENV-11): the NOTE version.sh prints for it names the file by a path
+# that holds the project's name, rendered too (version.sh: `_ver_term()`), or
+# this check, which passed before ENV-11, failed on that NOTE once both were
+# merged.
 CTLB="$TMP/ctl/base"; CTLB2="$TMP/ctl/base2"
 mk_base "$CTLB" && mk_base "$CTLB2" || { printf 'SCAFFOLD-FAILED: mk_base ctl\n'; exit 1; }
 CTLP="$TMP/ctl"$'\e]0;N\a'"proj"
@@ -540,11 +544,14 @@ printf 'export IMAGE_NAME=x\n' > "$CTLP/.ai-containers/old"$'\e[2K'"-container.s
 printf '%s\n' "$CTLP" >> "$CTLB/projects.conf"; printf '%s\n' "$CTLP" >> "$CTLB2/projects.conf"
 ctl_bad() { LC_ALL=C grep -qE $'[\x01-\x08\x0b-\x1f\x7f]|\xc2[\x80-\x9f]|\xe2\x80[\xaa-\xae]|\xe2\x81[\xa6-\xa9]' <<<"$1"; }
 run "$CTLB/ai-containers-report.sh" --tsv "$CTLB" "$CTLB2"
-ctl_row="$(grep -m1 'ctl?' <<<"$OUT")"
+# The rows, without the NOTE lines version.sh prints on stderr, which run()
+# keeps with them: the project's row and the header are the lines with tabs.
+ctl_row="$(grep -m1 $'\t.*ctl?\\|ctl?.*\t' <<<"$OUT")"
 ctl_fields="$(awk -F'\t' '{ print NF }' <<<"$ctl_row")"
-hdr_fields="$(head -1 <<<"$OUT" | awk -F'\t' '{ print NF }')"
+hdr_fields="$(grep -m1 $'\t' <<<"$OUT" | awk -F'\t' '{ print NF }')"
 [[ "$RC" == 0 && -n "$ctl_row" && "$ctl_fields" == "$hdr_fields" ]] && ! ctl_bad "$OUT" \
-  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4?'* && "$ctl_row" == *'8g?[1A'* && "$ctl_row" == *'v1?2J'* ]] \
+  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4?'* && "$ctl_row" == *'8g?[1A'* && "$ctl_row" != *'2J'* ]] \
+  && grep -qF 'proj/.ai-containers/engine-version holds something other than a version; not read.' <<<"$OUT" \
   && pass "PRJ-15 --tsv renders every field's control characters, a tab and a C1 among them, so each row keeps its columns" \
   || fail "PRJ-15 --tsv (rc=$RC; $ctl_fields fields under $hdr_fields; $(od -c <<<"$ctl_row" | head -3 | tr '\n' ' '))"
 run "$CTLB/ai-containers-report.sh" "$CTLB" "$CTLB2"

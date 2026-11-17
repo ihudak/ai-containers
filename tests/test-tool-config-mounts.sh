@@ -672,20 +672,27 @@ fi
 # The open is checked to be the file the name names: swapped to a link to the
 # host's file just before the open and back just after, the name looks as it
 # did and only that check sees the swap. Raced: a sibling swaps without pause.
+# What is asserted is that the host's token is never read. That some reads take
+# the group's is no promise of the launcher's, which may refuse every one while
+# the file changes under it: on a CI runner every one of 300 was refused, and
+# the check failed with no token leaked. Each read must end one of the two ways,
+# though: the group's token, or a WARNING and nothing.
 ( while [[ -e "$GT/gh" ]]; do
     ln -s "$GT/host/hosts.yml" "$GT/gh/.l" 2>/dev/null && mv -f "$GT/gh/.l" "$GT/gh/hosts.yml" 2>/dev/null
     cp "$GT/reg" "$GT/gh/.r" 2>/dev/null && mv -f "$GT/gh/.r" "$GT/gh/hosts.yml" 2>/dev/null
   done ) & swapper=$!
-leaks=0 reads=0
+leaks=0 reads=0 refused=0 odd=0
 for _ in $(seq 1 300); do
-  out="$(bash -c 'set -euo pipefail; source "$1"; _group_gh_token "$2"' _ "$GT/fns.sh" "$GT/gh/hosts.yml" 2>/dev/null)"
-  [[ "$out" == gho_HOSTX ]] && leaks=$(( leaks + 1 ))
-  [[ "$out" == gho_GROUPX ]] && reads=$(( reads + 1 ))
+  out="$(bash -c 'set -euo pipefail; source "$1"; _group_gh_token "$2"' _ "$GT/fns.sh" "$GT/gh/hosts.yml" 2>"$GT/race.err")"
+  if [[ "$out" == gho_HOSTX ]]; then leaks=$(( leaks + 1 ))
+  elif [[ "$out" == gho_GROUPX ]]; then reads=$(( reads + 1 ))
+  elif [[ -z "$out" ]] && grep -qF 'WARNING:' "$GT/race.err"; then refused=$(( refused + 1 ))
+  else odd=$(( odd + 1 )); fi
 done
 kill "$swapper" 2>/dev/null; wait "$swapper" 2>/dev/null
-(( leaks == 0 && reads > 0 )) \
-  && pass "LNCH-29 a sibling swapping hosts.yml for a link never hands over the host's token ($reads of 300 reads took the group's)" \
-  || fail "LNCH-29 the host's token was read $leaks time(s) of 300 while a sibling swapped hosts.yml ($reads took the group's)"
+(( leaks == 0 && odd == 0 && reads + refused == 300 )) \
+  && pass "LNCH-29 a sibling swapping hosts.yml for a link never hands over the host's token ($reads of 300 reads took the group's, $refused were refused)" \
+  || fail "LNCH-29 the host's token was read $leaks time(s) of 300 while a sibling swapped hosts.yml ($reads took the group's, $refused refused with a WARNING, $odd neither)"
 rm -rf "$GT"
 
 # ── The bootstrap menu offers only groups a launch could select (LNCH-20) ───────
