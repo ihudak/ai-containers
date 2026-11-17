@@ -1157,5 +1157,39 @@ got="$(cd "$REPO_DIR" && SANDBOX_CONF="$TMP/env11.conf" bash ./sandbox.sh --vers
   && pass "ENV-11 an nvm-version holding an escape sequence reports unknown, saying why" \
   || fail "ENV-11 an nvm-version holding an escape sequence (got $(od -c <<<"$got" | tail -4 | tr '\n' ' '))"
 
+# ── the path a NOTE names is rendered (PRJ-15, where it met ENV-11's NOTE) ───
+# The agent names the project's directories, and each NOTE above names
+# engine-version by its path: printed as it was, an escape sequence in a
+# directory's name reached the terminal. version.sh: `_ver_term()` renders it,
+# each class of character on its own here, since the mutation tier deletes its
+# statements one at a time: a C0 control, a C1 control, and the two ranges of
+# bidi controls.
+tn=0
+for tc in $'\033' $'\xc2\x9b' $'\xe2\x80\xae' $'\xe2\x81\xa6'; do
+  tn=$((tn + 1)); td="$TMP/term$tn/a${tc}b"
+  mkdir -p "$td" && printf 'no version!\n' > "$td/engine-version" || { fail "the fixture for a rendered path ($tn)"; continue; }
+  got="$(bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$td" 2>&1)"
+  [[ "$got" == *"/term$tn/a?b/engine-version holds something other than a version; not read."* ]] \
+    && ! LC_ALL=C grep -qF -- "$tc" <<<"$got" \
+    && pass "a NOTE renders the path it names: character class $tn of 4" \
+    || fail "a NOTE's path, character class $tn of 4 (got $(od -c <<<"$got" | head -3 | tr '\n' ' '))"
+done
+# The other two NOTEs name the path the same way.
+td="$TMP/term-link/a"$'\033'"b"; mkdir -p "$td" && ln -s /dev/null "$td/engine-version"
+got="$(bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$td" 2>&1)"
+[[ "$got" == *"/term-link/a?b/engine-version is not a regular file; not read."* && "$got" != *$'\033'* ]] \
+  && pass "the NOTE for an engine-version that is a link renders its path" \
+  || fail "the NOTE for a linked engine-version (got $(od -c <<<"$got" | head -3 | tr '\n' ' '))"
+td="$TMP/term-unread/a"$'\033'"b"; mkdir -p "$td" && printf 'v1.2.3\n' > "$td/engine-version" && chmod 000 "$td/engine-version"
+if [[ -r "$td/engine-version" ]]; then
+  printf 'NOTE: this user reads a mode-000 file (root); the rendered path of an unreadable engine-version is not checked\n'
+else
+  got="$(bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$td" 2>&1)"
+  [[ "$got" == *"/term-unread/a?b/engine-version could not be read as the file at that name; not read."* && "$got" != *$'\033'* ]] \
+    && pass "the NOTE for an engine-version that cannot be opened renders its path" \
+    || fail "the NOTE for an unreadable engine-version (got $(od -c <<<"$got" | head -3 | tr '\n' ' '))"
+fi
+chmod 600 "$td/engine-version" 2>/dev/null
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
