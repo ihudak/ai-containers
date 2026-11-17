@@ -6081,17 +6081,110 @@ _git_walk_keys() {
 # with this HOME's id (ai_containers_owner_id()), which tells project.sh this
 # home's copies from another's on a daemon several homes share. A launch never
 # fails over the id: without one the copy is made unlabelled, as before.
-seed_workcopy_volume() {
-  local base_vol="$1" wc_vol="$2" repo_name="${3:-}" launch="${4:-}" owner
-  if docker volume inspect "$wc_vol" >/dev/null 2>&1; then
+#
+# An existing working copy is taken as seeded, so a copy cut short (a failed
+# run, an interrupt, a full disk, a launcher killed, the VM stopped) left a
+# volume that every later launch mounted, empty or in part, with no word (bugs
+# review LNCH-31). So a seeding is recorded, before the volume is made, in
+# _seed_dir/<volume>, a file of this home created exclusively and holding the
+# launcher's pid and start time, and the record goes only once the copy has
+# finished. While a record is there, no launch mounts the volume:
+# - its launcher is still running: another launch is seeding it now, and this
+#   one is refused, so that neither copies into, nor removes, the other's;
+# - its launcher is gone, killed or stopped with no chance to clean up: the
+#   volume was never mounted, so it is removed and seeded again.
+# The EXIT trap (_seed_wc_drop) removes a volume this launch's copy did not
+# finish. A record is never in the volume itself: the agent could remove it
+# there, and the next launch would copy over its work.
+_seed_dir="${ai_containers_root}/.seeding"
+_seed_wc_vol="" _seed_wc_name="" _seed_wc_rec="" _seed_wc_pid=""
+# _seed_proc <pid>: "<pid> <start time>" of a running process, or nothing; the
+# start time tells a launcher still running from another process given its pid.
+# On Linux from /proc (its 22nd field; a minimal image has no ps), elsewhere
+# (macOS) from ps.
+_seed_proc() {
+  local t
+  local -a f=()
+  if [[ -r "/proc/$1/stat" ]]; then
+    t="$(head -c 4096 "/proc/$1/stat" 2>/dev/null)" || return 0
+    read -r -a f <<< "${t##*) }"
+    [[ -n "${f[19]:-}" ]] && printf '%s %s' "$1" "${f[19]}"
     return 0
   fi
+  t="$(ps -o lstart= -p "$1" 2>/dev/null)" || return 0
+  t="${t//[[:space:]]/_}"
+  [[ -n "$t" ]] && printf '%s %s' "$1" "$t"
+  return 0
+}
+# _seed_vol_state <volume>: 0 when it exists, 1 when docker says there is no
+# such volume, 2 when docker could not say: one it could not find for another
+# reason (a busy daemon) is never taken for one that is not there.
+_seed_vol_state() {
+  local out
+  out="$(docker volume inspect "$1" 2>&1 >/dev/null)" && return 0
+  [[ "${out,,}" == *"no such volume"* ]] && return 1
+  return 2
+}
+seed_workcopy_volume() {
+  local base_vol="$1" wc_vol="$2" repo_name="${3:-}" launch="${4:-}" owner
+  local rec="$_seed_dir/$wc_vol" held="" me vst=0 crc=0
+  if [[ -e "$rec" || -L "$rec" ]]; then
+    held="$(head -c 200 "$rec" 2>/dev/null | head -n 1)" || held=""
+    if [[ -n "$held" && "$(_seed_proc "${held%% *}")" == "$held" ]]; then
+      printf 'ERROR: the working copy "%s" is being seeded by another launch (pid %s), which has not\n' "$wc_vol" "${held%% *}" >&2
+      printf '       finished; run this again once it has.\n' >&2
+      exit 1
+    fi
+    _seed_vol_state "$wc_vol" || vst=$?
+    if (( vst == 0 )) && ! docker volume rm "$wc_vol" >/dev/null 2>&1; then
+      printf 'ERROR: the working copy "%s" was left half-seeded by a launch that did not finish, and could\n' "$wc_vol" >&2
+      printf '       not be removed (does a container use it?). Remove it, then launch again: docker volume rm %s\n' "$wc_vol" >&2
+      exit 1
+    fi
+    if (( vst == 2 )); then
+      printf 'ERROR: the working copy "%s" was left half-seeded by a launch that did not finish, and docker\n' "$wc_vol" >&2
+      printf '       could not say whether it is still there. Launch again once docker answers.\n' >&2
+      exit 1
+    fi
+    rm -f -- "$rec" || { printf 'ERROR: could not remove %s.\n' "$rec" >&2; exit 1; }
+    if (( vst == 0 )); then
+      printf 'NOTE: the working copy "%s" was left half-seeded by a launch that did not finish; it is\n' "$wc_vol" >&2
+      printf '      removed and seeded again.\n' >&2
+    fi
+  fi
+  vst=0; _seed_vol_state "$wc_vol" || vst=$?
+  case "$vst" in
+    0) return 0 ;;
+    2) printf 'ERROR: docker could not say whether the working copy "%s" exists; launch again once it answers.\n' "$wc_vol" >&2
+       exit 1 ;;
+  esac
   # The copy runs the project image, which --pull=never never fetches. An image
-  # not built yet is named before any volume is made, not after (bugs review
-  # LNCH-31).
+  # not built yet is named before any volume is made, not after (LNCH-31).
   if ! docker image inspect "$image_name" >/dev/null 2>&1; then
     printf 'ERROR: the image "%s" is not built, so the working copy "%s" cannot be seeded.\n' "$image_name" "$wc_vol" >&2
     printf '       Build it first: ./build.sh\n' >&2
+    exit 1
+  fi
+  # The record, made exclusively: of two launches that both found no volume,
+  # one seeds and the other is refused.
+  me="$(_seed_proc "$$")"
+  if [[ -z "$me" ]] || ! { { [[ -d "$_seed_dir" ]] || mkdir -m 700 "$_seed_dir" || [[ -d "$_seed_dir" ]]; } \
+                           && ( set -o noclobber; printf '%s\n' "$me" > "$rec" ); } 2>/dev/null; then
+    if [[ -n "$me" && ( -e "$rec" || -L "$rec" ) ]]; then
+      printf 'ERROR: the working copy "%s" is being seeded by another launch, which has not finished;\n' "$wc_vol" >&2
+      printf '       run this again once it has.\n' >&2
+    else
+      printf 'ERROR: could not record the seeding of the working copy "%s" in %s.\n' "$wc_vol" "$_seed_dir" >&2
+    fi
+    exit 1
+  fi
+  _seed_wc_rec="$rec"
+  # Seeded by another launch between the look above and the record: its.
+  vst=0; _seed_vol_state "$wc_vol" || vst=$?
+  if (( vst != 1 )); then
+    rm -f -- "$rec"; _seed_wc_rec=""
+    (( vst == 0 )) && return 0
+    printf 'ERROR: docker could not say whether the working copy "%s" exists; launch again once it answers.\n' "$wc_vol" >&2
     exit 1
   fi
   printf 'Seeding writable working copy "%s" from "%s" (one-time local copy)...\n' "$wc_vol" "$base_vol" >&2
@@ -6099,39 +6192,53 @@ seed_workcopy_volume() {
   [[ -n "$repo_name" ]] && labels+=(--label "ai-containers.repo=${repo_name}")
   [[ -n "$launch" ]] && labels+=(--label "ai-containers.launch-dir=${launch}")
   if owner="$(ai_containers_owner_id 2>/dev/null)"; then labels+=(--label "ai-containers.owner=${owner}"); fi
-  docker volume create "${labels[@]}" "$wc_vol" >/dev/null
-  # An existing working copy is taken as seeded (above). So a copy cut short (a
-  # failed run, an interrupt, a full disk) left a volume that every later launch
-  # mounted, empty or in part, with no word (bugs review LNCH-31). Until the copy
-  # has finished, the EXIT trap removes it (_seed_wc_drop), and a failed copy
-  # ends the launch. The copy's container is named so that it can be removed first.
   _seed_wc_vol="$wc_vol" _seed_wc_name="${wc_vol}-seed-$$"
+  docker volume create "${labels[@]}" "$wc_vol" >/dev/null
+  # In the background, so that the EXIT trap can stop it before it removes the
+  # volume: a copy still running would make the volume again, empty.
   # --entrypoint bash bypasses entrypoint.sh (which ignores args and would run the
   # firewall/restricted flow). cp -a preserves the ownership set on the base volume.
-  if ! docker run --rm --pull=never --name "$_seed_wc_name" --entrypoint bash \
+  docker run --rm --pull=never --name "$_seed_wc_name" --entrypoint bash \
     -v "$base_vol":/src:ro \
     -v "$wc_vol":/dst \
-    "$image_name" -c 'cp -a /src/. /dst/'; then
+    "$image_name" -c 'cp -a /src/. /dst/' &
+  _seed_wc_pid=$!
+  wait "$_seed_wc_pid" || crc=$?
+  _seed_wc_pid=""
+  if (( crc != 0 )); then
     printf 'ERROR: seeding the working copy "%s" from "%s" failed.\n' "$wc_vol" "$base_vol" >&2
     exit 1
   fi
-  _seed_wc_vol="" _seed_wc_name=""
+  if ! rm -f -- "$rec"; then
+    printf 'ERROR: could not remove %s, the record of the seeding just finished.\n' "$rec" >&2
+    exit 1
+  fi
+  _seed_wc_vol="" _seed_wc_name="" _seed_wc_rec=""
 }
 
 # _seed_wc_drop: run by the EXIT trap. It removes a working copy whose seeding
-# did not finish (seed_workcopy_volume), so the next launch seeds it again
-# rather than mounting what was copied so far.
-_seed_wc_vol="" _seed_wc_name=""
+# did not finish (seed_workcopy_volume): its copy is stopped and its container
+# removed first, so that nothing makes the volume again, then the volume and its
+# record go. A volume that cannot be removed keeps its record, so the next
+# launch removes it and seeds it again.
 _seed_wc_drop() {
-  [[ -n "${_seed_wc_vol:-}" ]] || return 0
-  docker rm -f "$_seed_wc_name" >/dev/null 2>&1 || true
-  if docker volume rm "$_seed_wc_vol" >/dev/null 2>&1; then
-    printf 'NOTE: the working copy "%s" was not seeded to the end and is removed; the next launch seeds it again.\n' "$_seed_wc_vol" >&2
-  else
-    printf 'WARNING: the working copy "%s" was not seeded to the end and could not be removed;\n' "$_seed_wc_vol" >&2
-    printf '         the next launch would mount it as it is. Remove it first: docker volume rm %s\n' "$_seed_wc_vol" >&2
+  [[ -n "${_seed_wc_rec:-}" ]] || return 0
+  local i=0
+  if [[ -n "${_seed_wc_pid:-}" ]]; then
+    kill "$_seed_wc_pid" 2>/dev/null || true
+    while kill -0 "$_seed_wc_pid" 2>/dev/null && (( i < 100 )); do sleep 0.1; i=$(( i + 1 )); done
+    kill -KILL "$_seed_wc_pid" 2>/dev/null || true
+    wait "$_seed_wc_pid" 2>/dev/null || true
   fi
-  _seed_wc_vol=""
+  if [[ -n "${_seed_wc_name:-}" ]]; then docker rm -f "$_seed_wc_name" >/dev/null 2>&1 || true; fi
+  if [[ -z "${_seed_wc_vol:-}" ]] || docker volume rm "$_seed_wc_vol" >/dev/null 2>&1; then
+    rm -f -- "$_seed_wc_rec" 2>/dev/null || true
+    [[ -z "${_seed_wc_vol:-}" ]] || printf 'NOTE: the working copy "%s" was not seeded to the end and is removed; the next launch seeds it again.\n' "$_seed_wc_vol" >&2
+  else
+    printf 'WARNING: the working copy "%s" was not seeded to the end and could not be removed now;\n' "$_seed_wc_vol" >&2
+    printf '         the next launch removes it and seeds it again.\n' >&2
+  fi
+  _seed_wc_vol="" _seed_wc_rec=""
 }
 
 split_env_list() {  # $1=raw value (e.g. "$REPOS", "$EXTRA_MOUNTS", "$PREVIEW_PORTS")
@@ -6528,7 +6635,7 @@ _git_watch_add() {
   [[ -z "${_git_watch_had[$1]:-}" ]] || return 0
   _git_watch_had[$1]=1; _git_watch+=("$1")
 }
-trap '_seed_wc_drop; rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
+trap '_seed_wc_drop || true; rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
 
 # _host_way_add <what> <path as set> <what the launch resolved it to>: records a
 # host path the launch mounts, for launcher_ro_overlay to judge the way to it
@@ -6644,12 +6751,31 @@ validate_sandbox_ids() {
 # - a file at mode 000 ended every launch of the group under set -e.
 #
 # So only a regular file that is not a link is read, through one open checked
-# to be the file the name names, as project-files.sh: `_proj_read()` reads a
-# project's files. Anything else is a WARNING, never the end of the launch.
-# Not covered, as there: a file swapped for a FIFO between the check and the
-# open blocks the launch.
+# to be the very file judged so, as project-files.sh: `_proj_read()` reads a
+# project's files. The open and the read run in a child under a time bound
+# (_timeout_prefix): a sibling container of the group shares that directory and
+# can swap a FIFO in between the check and the open, where the open blocks
+# (review of the LNCH-29 fix). Anything else is a WARNING, never the end of the
+# launch.
+_gh_read_prog='
+  f="$1"; want="$2"; b=""
+  { exec {fd}<"$f"; } 2>/dev/null || { printf unreadable; exit 0; }
+  # The open is the very file the launcher checked, by its inode: ls -L gives
+  # the open file'"'"'s for /dev/fd/N on Linux, where it is a link into /proc,
+  # and on macOS, whose fdescfs node carries it
+  # (project-files.sh: `_proj_fd_is()`). A file swapped in between the check
+  # and the open, a link to your own hosts.yml included, has another (review of
+  # the LNCH-29 fix).
+  if [[ -f "/dev/fd/$fd" ]] && read -r b _ < <(ls -diL "/dev/fd/$fd" 2>/dev/null) && [[ -n "$b" && "$b" == "$want" ]]; then
+    # The whole of the first 64 KiB: an awk that exits at the first match would
+    # end head with SIGPIPE, which pipefail reports.
+    printf "ok %s" "$(head -c 65536 <&"$fd" | awk '"'"'/oauth_token:/ && t == "" { t = $2 } END { print t }'"'"')"
+  else
+    printf changed
+  fi'
 _group_gh_token() {
-  local f="$1" fd a="" b="" tok=""
+  local f="$1" out="" rc=0 secs=5 ino=""
+  local -a tp=()
   [[ -e "$f" || -L "$f" ]] || return 0
   if [[ -L "$f" || ! -f "$f" ]]; then
     printf 'WARNING: %s is a link or not a regular file, so no Copilot token is read from it.\n' "$(_term "$f")" >&2
@@ -6658,25 +6784,17 @@ _group_gh_token() {
     printf '           rm %s\n' "$(_q "$f")" >&2
     return 0
   fi
-  # Braced: on a bare exec the 2>/dev/null would stay on the shell.
-  if ! { exec {fd}<"$f"; } 2>/dev/null; then
-    printf 'WARNING: %s cannot be read, so no Copilot token is taken from it.\n' "$(_term "$f")" >&2
-    return 0
-  fi
-  # The open is the file the name names: Linux's /dev/fd/N leads to it (-ef);
-  # macOS's is a node of fdescfs carrying only the open file's inode
-  # (project-files.sh: `_proj_fd_is()`).
-  if [[ ! -L "$f" && -f "/dev/fd/$fd" ]] && { [[ "$f" -ef "/dev/fd/$fd" ]] || {
-       [[ ! -L "/dev/fd/$fd" ]] && read -r a _ < <(ls -di "$f" 2>/dev/null) \
-         && read -r b _ < <(ls -di "/dev/fd/$fd" 2>/dev/null) && [[ -n "$a" && "$a" == "$b" ]]; }; }; then
-    # The whole of the first 64 KiB: an awk that exits at the first match would
-    # end head with SIGPIPE, which pipefail reports.
-    tok="$(head -c 65536 <&"$fd" | awk '/oauth_token:/ && t == "" { t = $2 } END { print t }')" || true
-  else
-    printf 'WARNING: %s changed while it was being opened, so no Copilot token is read from it.\n' "$(_term "$f")" >&2
-  fi
-  exec {fd}<&-
-  printf '%s' "$tok"
+  read -r ino _ < <(ls -di "$f" 2>/dev/null) || ino=""
+  read -r -a tp <<< "$(_timeout_prefix "$secs")"
+  out="$("${tp[@]}" "${BASH:-bash}" -c "set -uo pipefail; $_gh_read_prog" _ "$f" "$ino" 2>/dev/null)" || rc=$?
+  case "$rc:$out" in
+    "0:ok "*) printf '%s' "${out#ok }" ;;
+    0:unreadable) printf 'WARNING: %s cannot be read, so no Copilot token is taken from it.\n' "$(_term "$f")" >&2 ;;
+    0:changed) printf 'WARNING: %s changed while it was being opened, so no Copilot token is read from it.\n' "$(_term "$f")" >&2 ;;
+    *) printf 'WARNING: %s could not be read within %s s (was a FIFO put there?), so no Copilot token\n' "$(_term "$f")" "$secs" >&2
+       printf '         is taken from it.\n' >&2 ;;
+  esac
+  return 0
 }
 
 run_container() {

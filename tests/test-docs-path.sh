@@ -59,9 +59,21 @@ if [[ "\$1" == "volume" ]]; then
     for kv in \${FAKE_LABELS:-}; do [[ "\${kv%%=*}" == "\$vol" ]] && lbl="\${kv#*=}"; done
     printf '%s\n' "\$lbl"; exit 0
   fi
-  [[ "\$2" == inspect && "\$vol" == *--wc-* && -n "\${FAKE_WC_MISSING:-}" ]] && exit 1
+  # A missing volume is answered as docker answers it: the launcher tells "no
+  # such volume" from a daemon that could not say (LNCH-31's review);
+  # FAKE_INSPECT_ERR is the latter for a working copy.
+  if [[ "\$2" == inspect && "\$vol" == *--wc-* && -n "\${FAKE_INSPECT_ERR:-}" ]]; then
+    echo "Error response from daemon: context deadline exceeded" >&2; exit 1
+  fi
+  if [[ "\$2" == inspect && "\$vol" == *--wc-* && -n "\${FAKE_WC_MISSING:-}" && ! -e "$TMP/made-\$vol" ]]; then
+    echo "Error response from daemon: get \$vol: no such volume" >&2; exit 1
+  fi
+  [[ "\$2" == create ]] && : > "$TMP/made-\$vol"
+  [[ "\$2" == rm ]] && rm -f "$TMP/made-\$vol"
   # FAKE_VOL_MISSING: no base volume either (a registered repo whose volume is gone).
-  [[ "\$2" == inspect && -n "\${FAKE_VOL_MISSING:-}" ]] && exit 1
+  if [[ "\$2" == inspect && -n "\${FAKE_VOL_MISSING:-}" ]]; then
+    echo "Error response from daemon: get \$vol: no such volume" >&2; exit 1
+  fi
   exit 0
 fi
 exit 1
@@ -648,6 +660,42 @@ FAKE_WC_MISSING=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$T
 seeded ok \
   && pass "LNCH-31 a seeding that finishes keeps its working copy and mounts it" \
   || fail "LNCH-31 a finished seeding (rc=$RC; $(grep -E '^(volume|rm|run)' "$TMP/docker-calls.txt" | tr '\n' ';' | cut -c1-300))"
+# The seeding is recorded on the host, outside the volume, and the record goes
+# only once the copy has finished (review of the LNCH-31 fix): a launcher killed
+# with no chance to clean up (SIGKILL, the VM stopped) left a volume the next
+# launch mounted as seeded.
+wc31="$(grep -o '^volume create .*' "$TMP/docker-calls.txt" | awk '{print $NF}')"; rec31="$HOME/.ai-containers/.seeding/$wc31"
+[[ -n "$wc31" && ! -e "$rec31" && -d "$HOME/.ai-containers/.seeding" ]] \
+  && pass "LNCH-31 a seeding that finishes leaves no record" || fail "LNCH-31 a record left after a finished seeding ($wc31)"
+# A record whose launcher is gone: the volume was never mounted, so it is
+# removed and seeded again.
+printf '999999999 1\n' > "$rec31"
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_WC_MISSING=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && ! -e "$rec31" ]] && grep -qx "volume rm $wc31" "$TMP/docker-calls.txt" && grep -q "^volume create .*$wc31\$" "$TMP/docker-calls.txt" \
+  && grep -qF "was left half-seeded by a launch that did not finish" "$ERR" && grep -q "^$wc31:/workspace/good13\$" "$CAPTURE" \
+  && pass "LNCH-31 a working copy whose seeding launcher died is removed and seeded again" \
+  || fail "LNCH-31 a dead launcher's record (rc=$RC; $(grep -E '^(volume|run)' "$TMP/docker-calls.txt" | tr '\n' ';' | cut -c1-300); $(head -2 "$ERR" | tr '\n' ' '))"
+# A record whose launcher still runs: another launch is seeding it now, and
+# this one neither copies into nor removes it. This shell stands in for it.
+if [[ -r "/proc/$$/stat" ]]; then st31="$(head -c 4096 "/proc/$$/stat")"; read -r -a f31 <<< "${st31##*) }"; me31="$$ ${f31[19]}"
+else me31="$$ $(ps -o lstart= -p $$ | tr -s '[:space:]' '_' | sed 's/_$//')"; fi
+printf '%s\n' "$me31" > "$rec31"
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_WC_MISSING=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -ne 0 && ! -s "$CAPTURE" && -e "$rec31" ]] && ! grep -qE '^volume (rm|create)' "$TMP/docker-calls.txt" \
+  && grep -qF "is being seeded by another launch (pid $$)" "$ERR" \
+  && pass "LNCH-31 a working copy another launch is seeding is neither copied into nor removed: the launch is refused" \
+  || fail "LNCH-31 a live launcher's record (rc=$RC; $(grep -E '^volume' "$TMP/docker-calls.txt" | tr '\n' ';'); $(head -2 "$ERR" | tr '\n' ' '))"
+rm -f "$rec31"
+# A docker that cannot say whether the working copy exists is not taken to say
+# it does not: nothing is made or copied over.
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_INSPECT_ERR=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -ne 0 && ! -s "$CAPTURE" ]] && ! grep -qE '^volume create|--entrypoint bash' "$TMP/docker-calls.txt" \
+  && grep -qF 'docker could not say whether the working copy' "$ERR" \
+  && pass "LNCH-31 an inspect that fails for another reason than no such volume refuses the launch" \
+  || fail "LNCH-31 an inspect error (rc=$RC; $(grep -E '^volume' "$TMP/docker-calls.txt" | tr '\n' ';'); $(head -1 "$ERR"))"
 unset -f seeded
 # A repo whose name is a mode keeps the mode written (bugs review LNCH-34): "no
 # mode given" was told by the mode equalling the name, so `rw:rw` mounted :ro and
@@ -666,6 +714,14 @@ register_git_repo ro "git@example.invalid:ro.git" "$TMP/rock"
 [[ "$RC" -eq 0 ]] && grep -qx 'ai-containers-repo-rw:/workspace/rw' "$CAPTURE" && grep -qx '/workspace/rw' "$CAPTURE" \
   && pass "LNCH-34 @rw is the writable working directory" \
   || fail "LNCH-34 @rw (rc=$RC; $(grep -F 'ERROR' "$ERR" | head -1))"
+# So does the REPO-13 check before anything is attached: a repo named rwcopy
+# given with no mode is :ro, and no working copy of it is looked at, so one
+# labelled for another repo under that name refuses nothing.
+register_git_repo rwcopy "git@example.invalid:rwcopy.git" "$TMP/rwcck"
+: > "$CAPTURE"; REPOS="rwcopy" FAKE_LABELS="ai-containers-repo-rwcopy=rwcopy" FAKE_REPO_LABEL=other run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && grep -qx 'ai-containers-repo-rwcopy:/workspace/rwcopy:ro' "$CAPTURE" \
+  && pass "LNCH-34 a repo named rwcopy with no mode is attached :ro, no working copy of it judged" \
+  || fail "LNCH-34 rwcopy with no mode (rc=$RC; $(grep -F ERROR "$ERR" | head -1))"
 # The pointer's desugar (pointer_repo_entry) reads an entry's mode the same way.
 : > "$CAPTURE"; REPOS="rw:rw" DOCS_PATH=@rw run_sandbox "$TMP/app"
 [[ "$RC" -eq 0 ]] && grep -qF "NOTE: repo 'rw' is already mounted (rw); the pointer's :ro is ignored." "$ERR" \

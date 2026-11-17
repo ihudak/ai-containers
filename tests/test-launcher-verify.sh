@@ -147,7 +147,7 @@ fi
 # (bugs review LNCH-33): it holds directory names the agent chose, printed to
 # the terminal the launch runs in, as sandbox.sh: `_term()` renders them there.
 d="$TMP/ctl"; rm -rf "$RUN" "$d"
-evil=$'p\e]0;PWNED\a\e[2K\xc2\x9bx\xe2\x80\xaey'
+evil=$'p\e]0;PWNED\a\e[2K\xc2\x9bx\xe2\x80\xaey\xe2\x81\xa6z'
 mkdir -p "$RUN" "$d/$evil"
 read -r dev ino < <(p_dev_ino "$d/$evil")
 printf '%s\0%s\0%s\0' "$dev" "$((ino + 1000000))" "$d/$evil" > "$RUN/manifest"
@@ -155,7 +155,7 @@ anchor="$(p_dev_ino "$RUN" | tr ' ' ':')"
 # shellcheck source=/dev/null
 out="$( { set -euo pipefail; source "$fn"; AI_LAUNCHER_ANCHOR="$anchor" verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
 line="$(grep 'is not the directory it was checked as' <<<"$out")"
-[[ "$line" == *"/p?]0;PWNED??[2K?x?y is not"* ]] && ! LC_ALL=C grep -q $'[\x01-\x1f\x7f]' <<<"$line" \
+[[ "$line" == *"/p?]0;PWNED??[2K?x?y?z is not"* ]] && ! LC_ALL=C grep -q $'[\x01-\x1f\x7f]' <<<"$line" \
   && pass "LNCH-33 a mismatched destination is printed with its control characters replaced" \
   || fail "LNCH-33 the destination reached the terminal as it is (got: $(od -c <<<"$line" | head -3 | tr '\n' ' '))"
 
