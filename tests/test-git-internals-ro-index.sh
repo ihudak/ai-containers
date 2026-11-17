@@ -3389,5 +3389,23 @@ SANDBOX_GIT_MAX=2 EXTRA_MOUNTS="$B331" launch "$TMP/app"
   || fail "G331 taken twice (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 rm -rf "$B331"
 
+# ── G333: …and so does one whose config git could not read ─────────────────
+# A launch records a git directory it protected whether or not it could name
+# its keys: with a config git cannot parse nothing is recorded as named
+# (G332), and with no line at all the scan lost G320's submodule once the
+# session dropped it from the index: no bind, and nothing said (review of the
+# GAP-30 fix).
+mk320; printf '[core\n' >> "$P320/vendor/lib/.git/config"
+FAKE_SESSION='git -C "$P320" update-index --force-remove vendor/lib' EXTRA_MOUNTS="$B320" launch "$TMP/app"
+first333="$(n320)"; r333="$LAUNCH_RC"
+EXTRA_MOUNTS="$B320" launch "$TMP/app"
+[[ "$r333" == 0 && "$LAUNCH_RC" == 0 && "$first333" -ge 4 && "$(n320)" == "$first333" ]] \
+  && [[ -z "$("${G[@]}" -C "$P320" ls-files -s vendor/lib)" ]] \
+  && has_mount "$P320/vendor/lib/.git/config:/workspace/b320/p/vendor/lib/.git/config:ro" \
+  && grep -qF " unread:$P320/vendor/lib/.git" "$rec320" \
+  && pass "G333 a submodule whose config git cannot parse, dropped from the index, is still protected by the next launch ($first333 binds)" \
+  || fail "G333 unread, dropped from the index, and unprotected (rc=$r333, $LAUNCH_RC; $(n320) binds, $first333 before; $(grep -cF 'vendor/lib/.git' "$rec320") record lines)"
+rm -rf "$B320"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

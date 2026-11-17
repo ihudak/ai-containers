@@ -1161,10 +1161,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so is one in a repository a session made, in the warning when the container
   exits. A repository an earlier engine already reported has its aliases named
   once, ten and then a count, at the next launch where git runs. A config git
-  cannot read or parse is named as not checked, and is read again by the next
-  launch: read as setting nothing, one the agent left unreadable was recorded
-  as named. Where the launch cannot hold a config read-only (it is a link), its
-  aliases are named at every launch. Two limits: what such an alias runs is not
+  cannot read or parse is named as not checked, with what to do, and is read
+  again by the next launch: read as setting nothing, one the agent left
+  unreadable was recorded as named. Where the launch cannot hold a config
+  read-only (it is a link), its aliases are named at every launch, for the
+  first twenty such repositories. Two limits: what such an alias runs is not
   checked at each launch, as a `!` alias's program is, and an alias in a file
   the config includes is not named, only the include (feature-gaps review
   GAP-30).
