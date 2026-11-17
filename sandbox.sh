@@ -6224,8 +6224,10 @@ _git_exec_keys() {
   for f in "$@"; do
     if [[ ! -f "$f" ]]; then continue; fi
     if [[ ! -r "$f" ]]; then cut+=("(${f##*/}, which git could not read: not checked)"); continue; fi
-    n=0
+    n=0; rc=""
     while IFS= read -r -d '' rec; do
+      # git's status, which the reader writes after git's keys: no key starts with `=`.
+      if [[ "$rec" == =* ]]; then rc="${rec#=}"; continue; fi
       if (( ++n > 1200 )); then cut+=("(${f##*/}: more than 1200 keys that can run a program, the rest not read)"); break; fi
       # A key over 256 bytes is named by its size, once (GIT-49).
       if ! _git_kv "$rec" k v; then
@@ -6251,11 +6253,14 @@ _git_exec_keys() {
       esac
       had[$k]=1
       _git_key_shown "$k" ks; out+=("$ks")
-    done < <(LC_ALL=C _git_file_config "$f" --null --get-regexp "$re" 2>/dev/null)
-    # The reader's own status: 1 is no key that counts. Not where the loop
-    # stopped reading, which ends the reader.
-    rc=0; wait "$!" 2>/dev/null || rc=$?
-    if (( n <= 1200 && rc != 0 && rc != 1 )); then cut+=("(${f##*/}, which git could not read: not checked)"); fi
+    done < <(rc=0; LC_ALL=C _git_file_config "$f" --null --get-regexp "$re" 2>/dev/null || rc=$?; printf '=%d\0' "$rc")
+    # 1 is no key that counts. The status comes down the pipe, never from a
+    # wait on the process substitution, which bash 5.1 to 5.3 report as failed
+    # now and then under load (version.sh: `_ver_run()`; GIT-50, TST-29). A
+    # reader that wrote none ended before it could, and its file counts as
+    # unread; not where the loop stopped reading at the cut, which is what
+    # ended it.
+    if (( n <= 1200 )) && [[ "$rc" != 0 && "$rc" != 1 ]]; then cut+=("(${f##*/}, which git could not read: not checked)"); fi
   done
   if [[ -n "$plain" ]]; then out=(); fi
   for k in ${cut[@]+"${cut[@]}"} ${out[@]+"${out[@]}"}; do printf '%s\0' "$k"; done
