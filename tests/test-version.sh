@@ -1046,5 +1046,116 @@ else
   printf 'NOTE: git is not /usr/bin/git here; the macOS shim checks are not applicable\n'
 fi
 
+# ── ENV-10, ENV-11: engine-version never through a link, and only a version ──
+# The engine checkout can be the agent's to write (GIT-28's premise). A link
+# named engine-version led to a host file whose first line a sync then wrote
+# into every registered project (ENV-10); a value with an escape sequence, from
+# the file or from the name inside an annotated tag object, reached the
+# terminal and the projects as it was (ENV-11).
+esc=$'\033'
+ver_out() {  # <dir> → version_engine's stdout only
+  bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$1" 2>/dev/null
+}
+# A host file's first line, standing in for a credential: no version's.
+printf 'first-line: ENV10SECRET\n' > "$TMP/env10-secret"
+e10="$TMP/env10"; e10d="$TMP/env10-dst"; mkdir -p "$e10" "$e10d"
+ln -s "$TMP/env10-secret" "$e10/engine-version"
+out="$(bash -c 'source "$1/version.sh"; version_record "$2" "$3"' _ "$REPO_DIR" "$e10" "$e10d" 2>&1)"
+[[ ! -e "$e10d/engine-version" ]] \
+  && pass "ENV-10 a linked engine-version is not recorded into a project" \
+  || fail "ENV-10 a linked engine-version was recorded into a project ('$(cat "$e10d/engine-version")')"
+[[ "$(ver_out "$e10")" == unknown ]] \
+  && pass "ENV-10 a linked engine-version is not read" \
+  || fail "ENV-10 a linked engine-version was read (got '$(ver_out "$e10")')"
+[[ "$out" == *"engine-version is not a regular file"* && "$out" != *ENV10SECRET* ]] \
+  && pass "ENV-10 a linked engine-version is named, never what it leads to" \
+  || fail "ENV-10 a linked engine-version's note (got '$out')"
+# The guard after the open: a link at the name when the file is opened, which
+# a swap after the -L test would make, gives nothing.
+got="$(bash -c 'source "$1/version.sh"; _ver_cat_own "$2"; echo "rc=$?"' _ "$REPO_DIR" "$e10/engine-version" 2>&1)"
+[[ "$got" == "rc=1" ]] \
+  && pass "ENV-10 the read refuses what a link at the name led to" \
+  || fail "ENV-10 the read followed a link at the name (got '$got')"
+got="$(bash -c 'source "$1/version.sh"; _ver_cat_own "$2"' _ "$REPO_DIR" "$TMP/env10-secret" 2>&1)"
+[[ "$got" == *ENV10SECRET* ]] \
+  && pass "ENV-10 the read returns a regular file at the name" \
+  || fail "ENV-10 the read of a regular file (got '$got')"
+# In an engine tree, a linked engine-version leaves git to answer.
+e10g="$TMP/env10-git"; mkdir -p "$e10g"
+if mkrepo "$e10g" v4.5.6; then
+  ln -s "$TMP/env10-secret" "$e10g/engine-version"
+  got="$(ver_out "$e10g")"
+  [[ "$got" == v4.5.6* ]] \
+    && pass "ENV-10 an engine tree with a linked engine-version reports git's version" \
+    || fail "ENV-10 an engine tree with a linked engine-version (got '$got')"
+else
+  printf 'SCAFFOLD-FAILED: could not build the ENV-10 repo\n'; exit 1
+fi
+# A FIFO there is not opened: the read would wait for a writer.
+e10f="$TMP/env10-fifo"; mkdir -p "$e10f"
+if mkfifo "$e10f/engine-version" 2>/dev/null; then
+  [[ "$(ver_out "$e10f")" == unknown ]] \
+    && pass "ENV-10 a FIFO named engine-version is not read" \
+    || fail "ENV-10 a FIFO named engine-version (got '$(ver_out "$e10f")')"
+fi
+# One that cannot be opened is said so, and not read.
+e10u="$TMP/env10-unreadable"; mkdir -p "$e10u"; printf 'v1.2.3\n' > "$e10u/engine-version"; chmod 000 "$e10u/engine-version"
+if [[ -r "$e10u/engine-version" ]]; then
+  printf 'NOTE: this user reads a mode-000 file (root); the unreadable engine-version check is not applicable\n'
+else
+  got="$(bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$e10u" 2>&1)"
+  [[ "$got" == *"could not be read as the file at that name"*unknown ]] \
+    && pass "ENV-10 an engine-version that cannot be opened is named, and not read" \
+    || fail "ENV-10 an engine-version that cannot be opened (got '$got')"
+fi
+chmod 600 "$e10u/engine-version"
+
+e11="$TMP/env11"; mkdir -p "$e11"
+printf 'v1.0\033]0;PWNED\007\033[2J\n' > "$e11/engine-version"
+got="$(bash -c 'source "$1/version.sh"; version_report "$2"' _ "$REPO_DIR" "$e11" 2>&1)"
+[[ "$got" != *"$esc"* ]] && grep -qE '^ai-containers +unknown$' <<<"$got" \
+  && pass "ENV-11 an engine-version holding an escape sequence reports unknown" \
+  || fail "ENV-11 an engine-version holding an escape sequence (got $(od -c <<<"$got" | head -2 | tr '\n' ' '))"
+[[ "$got" == *"engine-version holds something other than a version; not read."* ]] \
+  && pass "ENV-11 an engine-version that is no version is named, not printed" \
+  || fail "ENV-11 an engine-version that is no version is named (got $(od -c <<<"$got" | head -3 | tr '\n' ' '))"
+e11r="$TMP/env11-dst"; mkdir -p "$e11r"
+bash -c 'source "$1/version.sh"; version_record "$2" "$3"' _ "$REPO_DIR" "$e11" "$e11r" 2>/dev/null
+[[ ! -e "$e11r/engine-version" ]] \
+  && pass "ENV-11 an engine-version holding an escape sequence is not recorded" \
+  || fail "ENV-11 an engine-version holding an escape sequence was recorded"
+printf 'v1 .2\n' > "$e11/engine-version"
+[[ "$(ver_out "$e11")" == unknown ]] \
+  && pass "ENV-11 whitespace inside a recorded version is no version" \
+  || fail "ENV-11 whitespace inside a recorded version (got '$(ver_out "$e11")')"
+printf ' v1.2.3+build_7 \n' > "$e11/engine-version"
+[[ "$(ver_out "$e11")" == v1.2.3+build_7 ]] \
+  && pass "ENV-11 a version's characters, trimmed, are reported" \
+  || fail "ENV-11 a version's characters (got '$(ver_out "$e11")')"
+# The name written inside an annotated tag object, which describe prints.
+e11g="$TMP/env11-git"; mkdir -p "$e11g"
+if mkrepo "$e11g"; then
+  c="$(git -C "$e11g" rev-parse HEAD)"
+  t="$(printf 'object %s\ntype commit\ntag v9\033]0;PWNED\007\ntagger a <a@b> 1 +0000\n\nm\n' "$c" \
+        | git -C "$e11g" hash-object -t tag -w --stdin --literally)"
+  printf '%s\n' "$t" > "$e11g/.git/refs/tags/v9"
+  got="$(ver_out "$e11g")"
+  [[ "$got" == unknown ]] \
+    && pass "ENV-11 a tag object naming itself with an escape sequence reports unknown" \
+    || fail "ENV-11 a tag object naming itself with an escape sequence (got $(od -c <<<"$got" | head -2 | tr '\n' ' '))"
+  got="$(bash -c 'source "$1/version.sh"; version_engine "$2"' _ "$REPO_DIR" "$e11g" 2>&1 >/dev/null)"
+  [[ "$got" == "NOTE: git describes "*" with something other than a version"* && "$got" != *"$esc"* ]] \
+    && pass "ENV-11 git's answer that is no version is named, not printed" \
+    || fail "ENV-11 git's answer that is no version is named (got $(od -c <<<"$got" | head -3 | tr '\n' ' '))"
+else
+  printf 'SCAFFOLD-FAILED: could not build the ENV-11 repo\n'; exit 1
+fi
+# nvm-version, from the project's sandbox.conf, the same.
+printf '# schema-version: 4\nnvm-version=v0.40\033[2J\n' > "$TMP/env11.conf"
+got="$(cd "$REPO_DIR" && SANDBOX_CONF="$TMP/env11.conf" bash ./sandbox.sh --version 2>&1)"
+[[ "$got" != *"$esc"* ]] && grep -qE '^nvm +unknown  \(the value set is not a version\)$' <<<"$got" \
+  && pass "ENV-11 an nvm-version holding an escape sequence reports unknown, saying why" \
+  || fail "ENV-11 an nvm-version holding an escape sequence (got $(od -c <<<"$got" | tail -4 | tr '\n' ' '))"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

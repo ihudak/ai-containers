@@ -135,6 +135,38 @@ _ver_read() {
   _vrd_out="${_vrd_out%"${_vrd_out##*[!$'\r\n']}"}"
 }
 
+# _ver_ok <value>: whether <value> is a version: 1 to 128 of [A-Za-z0-9._+-],
+# which every tag name, `describe` suffix and short commit is. Whoever writes
+# the checkout writes what is checked here (bugs review ENV-11): a recorded
+# engine-version, and the name inside an annotated tag object, which `describe`
+# prints and git's ref-name check does not cover, so either could hold an
+# escape sequence for the terminal, or a credential line (ENV-10).
+_ver_ok() {
+  [[ "$1" =~ ^[A-Za-z0-9._+-]{1,128}$ ]]
+}
+
+# _ver_id <stat-args>...: "<dev>:<ino>" from GNU `stat -c` or BSD `stat -f`,
+# probed once, never a fallback on failure: GNU `stat -f` succeeds and reports
+# the filesystem (sandbox.sh: `_launcher_stat_gnu`).
+if stat -c '%i' / >/dev/null 2>&1; then _ver_stat_gnu=1; else _ver_stat_gnu=0; fi
+_ver_id() {
+  if (( _ver_stat_gnu )); then stat -c '%d:%i' "$@" 2>/dev/null; else stat -f '%d:%i' "$@" 2>/dev/null; fi
+}
+
+# _ver_cat_own <file>: the first 4096 bytes of <file>, only if what was opened
+# is the regular file at that name and not something a link there led to. Run
+# as _ver_run's job, so an open a FIFO swapped in blocks is killed at the
+# bound. A `! -L` test before the open leaves the time between the two to
+# swap a link in and out again; the identity of the open descriptor, compared
+# after the open with that of the name itself (stat without -L: a link's own),
+# leaves none (bugs review ENV-10).
+_ver_cat_own() {
+  local f="$1" a b
+  exec 3< "$f" || return 1
+  a="$(_ver_id -L /dev/fd/3)" && b="$(_ver_id -- "$f")" && [[ -n "$a" && "$a" == "$b" ]] || return 1
+  head -c 4096 <&3
+}
+
 # _ver_git_version <dir>: `git describe --tags` of the checkout <dir> is in;
 # its short commit when no tag describes it. Prints nothing when it cannot
 # answer, and a NOTE when git did not answer in time. The checkout is found as
@@ -299,9 +331,23 @@ version_engine() {
   # Read bounded, its first line, as every small file the agent can write is:
   # `head -1` read a planted sparse file of no newline for hours, and a FIFO
   # swapped in after the -f test for ever (seventh review of the GIT-28 fix).
-  if _ver_read v "$dir/engine-version"; then
-    v="${v%%$'\n'*}"; v="${v//[[:space:]]/}"
-    [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
+  # Never through a link, and only as a version (bugs review ENV-10, ENV-11):
+  # a link to ~/.git-credentials was read, and a sync wrote its first line into
+  # every registered project. One that is not read is said so, never what it
+  # holds, and the version is git's, or unknown.
+  local ev="$dir/engine-version"
+  if [[ -L "$ev" || ( -e "$ev" && ! -f "$ev" ) ]]; then
+    printf 'NOTE: %s is not a regular file; not read.\n' "$ev" >&2
+  elif [[ -f "$ev" ]]; then
+    if _ver_run v _ver_cat_own "$ev"; then
+      # Its first line, its leading and trailing whitespace dropped; whitespace
+      # inside it is no version's.
+      v="${v%%$'\n'*}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+      if _ver_ok "$v"; then printf '%s' "$v"; return 0; fi
+      [[ -z "$v" ]] || printf 'NOTE: %s holds something other than a version; not read.\n' "$ev" >&2
+    else
+      printf 'NOTE: %s could not be read as the file at that name; not read.\n' "$ev" >&2
+    fi
   fi
 
   # GIT IS ONLY EVER ASKED ABOUT AN ENGINE TREE. `git -C` resolves the ENCLOSING
@@ -329,7 +375,8 @@ version_engine() {
     # Only its output counts: it leaves early with the status of the test
     # that stopped it.
     v="$(_ver_git_version "$dir")" || v=""
-    [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
+    if _ver_ok "$v"; then printf '%s' "$v"; return 0; fi
+    [[ -z "$v" ]] || printf 'NOTE: git describes %s with something other than a version (a tag object names itself so); reporting unknown.\n' "$dir" >&2
   fi
 
   printf 'unknown'
@@ -396,6 +443,12 @@ version_report() {
       nvm="$(grep -oE '^ARG NVM_VERSION=.*' "$dir/Dockerfile" 2>/dev/null | head -1 | cut -d= -f2-)"
     fi
     if [[ -n "$nvm" ]]; then nvm_note="  (Dockerfile default)"; else nvm="unknown"; fi
+  fi
+
+  # A version, or unknown, saying why: sandbox.conf and the Dockerfile are the
+  # project's, and printed as they were they reached the terminal (ENV-11).
+  if [[ "$nvm" != unknown ]] && ! _ver_ok "$nvm"; then
+    nvm="unknown"; nvm_note="  (the value set is not a version)"
   fi
 
   printf '%-16s%s\n' "ai-containers" "$(version_engine "$dir")"

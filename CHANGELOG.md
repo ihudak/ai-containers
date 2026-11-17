@@ -181,6 +181,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`--version` and a sync no longer pass on what the engine checkout's
+  writer chose** (bugs review ENV-10, ENV-11). An `engine-version` that is a
+  link, or not a regular file, is not read, so a link to a credentials file no
+  longer has its first line written into every registered project; and the
+  engine version, from that file or from git, and `nvm-version` must be a
+  version's characters (`[A-Za-z0-9._+-]`, at most 128), or are reported as
+  `unknown` with a `NOTE:`, so no escape sequence reaches the terminal.
+
 - **`repo.sh reset` and `sync` no longer lose work they did not name** (bugs
   review REPO-19 to REPO-23). `reset`'s summary lists the commits of a detached
   HEAD and the submodule repositories in `.git/modules`, counted at risk, and

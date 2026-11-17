@@ -401,7 +401,15 @@ transport and `GIT_ALLOC_LIMIT=64m`. Every call has a 10 s bound (`_ver_run()`),
 is running and removes the directory, and nothing runs on a Mac whose
 `/usr/bin/git` would open the Command Line Tools' installer (`_ver_git_runs()`).
 There is no `-dirty`: it needs the index and the worktree. A recorded
-`engine-version` is read the same bounded way, 4096 bytes at most. Running git in the
+`engine-version` is read the same bounded way, 4096 bytes at most, and only a
+regular file at that name: never through a link, which is named instead, the
+descriptor it read checked to be the name's own (`_ver_cat_own()`), so a link
+to `~/.git-credentials` cannot put its first line into every project a sync
+records into (bugs review ENV-10). Whatever answers, the file or git, is a
+version only as 1 to 128 of `[A-Za-z0-9._+-]` (`_ver_ok()`), and is otherwise
+`unknown` with a `NOTE:`, as is an `nvm-version` that is not one, so an escape
+sequence in the file or in an annotated tag object's own name reaches neither
+the terminal nor a project (ENV-11). Running git in the
 checkout ran `core.fsmonitor`, a clean filter and, through a lazy fetch, a
 remote's `uploadpack` and a credential helper; copying its files for git let
 planted links fill memory and TMPDIR (bugs review GIT-28 and seven reviews of
