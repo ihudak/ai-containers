@@ -36,7 +36,15 @@ setup() {
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$TMP/docker-calls.txt"
+# A working copy's seeding run (--entrypoint bash): FAKE_SEED_FAIL makes it fail,
+# FAKE_SEED_TERM kills the launcher while it runs (LNCH-31).
+if [[ "\$1" == "run" && "\$*" == *"--entrypoint bash"* ]]; then
+  [[ -n "\${FAKE_SEED_FAIL:-}" ]] && exit 125
+  if [[ -n "\${FAKE_SEED_TERM:-}" ]]; then kill -TERM "\$PPID"; sleep 0.3; exit 143; fi
+fi
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
+# The project image is there unless FAKE_NO_IMAGE.
+if [[ "\$1 \$2" == "image inspect" ]]; then [[ -z "\${FAKE_NO_IMAGE:-}" ]]; exit; fi
 # Volume queries succeed with no output: a registered repo's volume counts as
 # PRESENT, so a volume-backed repo can be exercised without a daemon. Without
 # this, sandbox.sh stops at "its docker volume is missing" before reaching any
@@ -605,6 +613,65 @@ if [[ "$RC" -ne 0 ]] && ! grep -q '^volume create' "$TMP/docker-calls.txt" && ! 
 else
   fail "REPO-13 seeding ran before a later entry was refused (rc=$RC; $(grep -E '^(volume create|run)' "$TMP/docker-calls.txt" | head -2 | tr '\n' ';'))"
 fi
+# A working copy is used only once its seeding finished (bugs review LNCH-31):
+# one left by a copy cut short was taken as seeded, and mounted empty or in
+# part at every later launch. The copy's failure, or the launcher's death
+# during it, removes the volume; an image not built is named before any is made.
+export REPOS="good13:rwcopy"
+seeded() { # <label> <rc expected: 0|nonzero> <grep in stderr>: one launch's checks
+  local wc; wc="$(grep -o '^volume create .*' "$TMP/docker-calls.txt" | awk '{print $NF}')"
+  if [[ "$1" == ok ]]; then
+    [[ "$RC" -eq 0 && -n "$wc" ]] && grep -q -- "--entrypoint bash" "$TMP/docker-calls.txt" \
+      && ! grep -q '^volume rm' "$TMP/docker-calls.txt" && grep -q "^$wc:/workspace/good13\$" "$CAPTURE"
+  else
+    [[ "$RC" -ne 0 && -n "$wc" ]] && grep -qx "volume rm $wc" "$TMP/docker-calls.txt" \
+      && grep -q "rm -f $wc-seed-" "$TMP/docker-calls.txt" && grep -qF -- "$2" "$ERR" && [[ ! -s "$CAPTURE" ]]
+  fi
+}
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_WC_MISSING=1 FAKE_SEED_FAIL=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+seeded fail 'is removed; the next launch seeds it again' \
+  && pass "LNCH-31 a failed seeding run removes the working copy and ends the launch" \
+  || fail "LNCH-31 a failed seeding run (rc=$RC; $(grep -E '^(volume|rm|run)' "$TMP/docker-calls.txt" | tr '\n' ';' | cut -c1-300); $(grep -F working "$ERR" | head -2 | tr '\n' ' '))"
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_WC_MISSING=1 FAKE_SEED_TERM=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+seeded fail 'is removed; the next launch seeds it again' \
+  && pass "LNCH-31 a launcher killed while seeding removes the working copy" \
+  || fail "LNCH-31 a launcher killed while seeding (rc=$RC; $(grep -E '^(volume|rm|run)' "$TMP/docker-calls.txt" | tr '\n' ';' | cut -c1-300))"
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_WC_MISSING=1 FAKE_NO_IMAGE=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -ne 0 ]] && ! grep -q '^volume create' "$TMP/docker-calls.txt" && grep -qF 'is not built, so the working copy' "$ERR" \
+  && pass "LNCH-31 an image not built is named before any working copy is made" \
+  || fail "LNCH-31 an image not built (rc=$RC; $(grep -c '^volume create' "$TMP/docker-calls.txt") created; $(head -1 "$ERR"))"
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_WC_MISSING=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+seeded ok \
+  && pass "LNCH-31 a seeding that finishes keeps its working copy and mounts it" \
+  || fail "LNCH-31 a finished seeding (rc=$RC; $(grep -E '^(volume|rm|run)' "$TMP/docker-calls.txt" | tr '\n' ';' | cut -c1-300))"
+unset -f seeded
+# A repo whose name is a mode keeps the mode written (bugs review LNCH-34): "no
+# mode given" was told by the mode equalling the name, so `rw:rw` mounted :ro and
+# `@rw` was refused as a read-only working directory.
+register_git_repo rw "git@example.invalid:rw.git" "$TMP/rwck"
+register_git_repo ro "git@example.invalid:ro.git" "$TMP/rock"
+: > "$CAPTURE"; REPOS="rw:rw" run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && grep -qx 'ai-containers-repo-rw:/workspace/rw' "$CAPTURE" && grep -qF 'REPO: /workspace/rw  (rw,' "$ERR" \
+  && pass "LNCH-34 a repo named rw attached :rw is mounted writable" \
+  || fail "LNCH-34 rw:rw (rc=$RC; $(grep -F '/workspace/rw' "$CAPTURE"); $(grep -F 'REPO:' "$ERR"))"
+: > "$CAPTURE"; REPOS="ro" run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && grep -qx 'ai-containers-repo-ro:/workspace/ro:ro' "$CAPTURE" \
+  && pass "LNCH-34 a repo named ro with no mode given is mounted read-only, the default" \
+  || fail "LNCH-34 ro with no mode (rc=$RC; $(grep -F '/workspace/ro' "$CAPTURE"))"
+: > "$CAPTURE"; REPOS="" run_sandbox @rw
+[[ "$RC" -eq 0 ]] && grep -qx 'ai-containers-repo-rw:/workspace/rw' "$CAPTURE" && grep -qx '/workspace/rw' "$CAPTURE" \
+  && pass "LNCH-34 @rw is the writable working directory" \
+  || fail "LNCH-34 @rw (rc=$RC; $(grep -F 'ERROR' "$ERR" | head -1))"
+# The pointer's desugar (pointer_repo_entry) reads an entry's mode the same way.
+: > "$CAPTURE"; REPOS="rw:rw" DOCS_PATH=@rw run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 ]] && grep -qF "NOTE: repo 'rw' is already mounted (rw); the pointer's :ro is ignored." "$ERR" \
+  && grep -qx 'ai-containers-repo-rw:/workspace/rw' "$CAPTURE" \
+  && pass "LNCH-34 a pointer to a repo named rw already attached :rw sees it as rw" \
+  || fail "LNCH-34 DOCS_PATH=@rw beside rw:rw (rc=$RC; $(grep -F "repo 'rw'" "$ERR" | head -1))"
 teardown
 
 # ── An @<repo> primary, and the refusals of a mount, by their status ────────

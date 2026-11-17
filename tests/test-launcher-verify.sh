@@ -143,5 +143,21 @@ if [[ "$(id -u)" -ne 0 ]]; then
     || fail "an unreadable manifest notes that the mounts are not verified (got: $(tr '\n' ' ' <<<"$out"))"
 fi
 
+# 7) a mismatched destination is named with its control characters replaced
+# (bugs review LNCH-33): it holds directory names the agent chose, printed to
+# the terminal the launch runs in, as sandbox.sh: `_term()` renders them there.
+d="$TMP/ctl"; rm -rf "$RUN" "$d"
+evil=$'p\e]0;PWNED\a\e[2K\xc2\x9bx\xe2\x80\xaey'
+mkdir -p "$RUN" "$d/$evil"
+read -r dev ino < <(p_dev_ino "$d/$evil")
+printf '%s\0%s\0%s\0' "$dev" "$((ino + 1000000))" "$d/$evil" > "$RUN/manifest"
+anchor="$(p_dev_ino "$RUN" | tr ' ' ':')"
+# shellcheck source=/dev/null
+out="$( { set -euo pipefail; source "$fn"; AI_LAUNCHER_ANCHOR="$anchor" verify_launcher_mounts; printf 'rc=%s\n' "$?"; } 2>&1 )"
+line="$(grep 'is not the directory it was checked as' <<<"$out")"
+[[ "$line" == *"/p?]0;PWNED??[2K?x?y is not"* ]] && ! LC_ALL=C grep -q $'[\x01-\x1f\x7f]' <<<"$line" \
+  && pass "LNCH-33 a mismatched destination is printed with its control characters replaced" \
+  || fail "LNCH-33 the destination reached the terminal as it is (got: $(od -c <<<"$line" | head -3 | tr '\n' ' '))"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

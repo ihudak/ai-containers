@@ -2593,5 +2593,34 @@ for c91 in build nonsense; do
     || fail "T91 sandbox.sh $c91 (rc=$rc91; $(head -2 "$ERR" | tr '\n' ' '))"
 done
 
+# ── T92: the case/Windows refusal judges binds below a writable mount, not the mounted host paths (LNCH-30) ─
+# GIT-41's refusal is for a read-only overlay, pin or file bind below a writable
+# mount root on a filesystem where another spelling, or an 8.3 short name,
+# reaches what the bind covers. LNCH-27 put every mounted host path into the
+# list it walks, so a pointer inside a writable mount there was refused too,
+# though it is a mount root of its own and needs no bind below anything. Here an
+# engine copy takes one directory for a Windows filesystem (_win_fs).
+W92="$TMP/win92"; L92="$TMP/l92/.ai-containers"
+mkdir -p "$W92/data/docs" "$W92/data/notes" "$TMP/l92" && cp -R "$LAUNCHER" "$L92" \
+  && awk -v w="$W92" 'index($0, "command=\"${1:-") == 1 { print "_win_fs() { [[ \"$1\" == \"" w "\" || \"$1\" == \"" w "\"/* ]]; }" } { print }' \
+       "$LAUNCHER/sandbox.sh" > "$L92/sandbox.sh" && grep -q '^_win_fs() { \[\[ "\$1" == "' "$L92/sandbox.sh" \
+  || { printf 'SCAFFOLD-FAILED: T92\n'; exit 1; }
+EXTRA_MOUNTS="$W92/data" DOCS_PATH="$W92/data/docs" launch "$L92" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && mounts | grep -qxF "$W92/data/docs:/workspace/docs:ro" \
+  && pass "T92 a :ro pointer inside a writable mount on a Windows filesystem is mounted, not refused" \
+  || fail "T92 DOCS_PATH inside a writable Windows mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+EXTRA_MOUNTS="$W92/data" VAULT_PATH="$W92/data/notes" launch "$L92" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && mounts | grep -qxF "$W92/data/notes:/workspace/vault:rw" \
+  && pass "T92 a writable pointer inside a writable mount on a Windows filesystem is mounted, not refused" \
+  || fail "T92 VAULT_PATH inside a writable Windows mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+# The control: a launcher planted there still needs a read-only overlay below
+# the writable mount, which is refused, so _win_fs took effect.
+mk_launcher "$W92/data/proj"
+EXTRA_MOUNTS="$W92/data" launch "$L92" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "is mounted read-only, but $W92/data is on a filesystem where" \
+  && pass "T92 an overlay below a writable mount on a Windows filesystem is still refused" \
+  || fail "T92 the control overlay (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$W92" "$TMP/l92"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

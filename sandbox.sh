@@ -67,7 +67,9 @@ pointer_repo_entry() {  # $1=name  $2=mode  $3..=current repos_list entries
   local e existing_mode
   for e in "$@"; do
     if [[ "${e%%:*}" == "$name" ]]; then
-      existing_mode="${e##*:}"; [[ "$existing_mode" == "$name" ]] && existing_mode="ro"
+      # No mode given is no `:`, never a mode equal to the name: a repo named
+      # rw attached rw:rw was mounted :ro (bugs review LNCH-34).
+      existing_mode="ro"; [[ "$e" == *:* ]] && existing_mode="${e##*:}"
       if [[ "$existing_mode" != "$mode" ]]; then
         printf "NOTE: repo '%s' is already mounted (%s); the pointer's :%s is ignored.\n" \
           "$name" "$existing_mode" "$mode" >&2
@@ -2151,9 +2153,14 @@ launcher_ro_overlay() {
   # 1ed3de8), and nothing on Linux lists them, so any name there counts.
   # No bind can close that, so every overlay, pin and file bind is checked, and
   # one that can be reached so refuses the launch (bugs review GIT-41).
+  # A mounted host path (a pointer, an EXTRA_MOUNTS entry) is in the same list
+  # for its verification (LNCH-27), but it is a mount of its own, not a bind below
+  # a writable one: what lies under it is as writable through the outer mount on
+  # any filesystem, so it is not judged here (bugs review LNCH-30).
   local _gw_why _gw_flip
   for ((k = 0; k < ${#_vrfy[@]}; k += 2)); do
     f="${_vrfy[k]}"
+    [[ -z "${_host_verified[$f|${_vrfy[k+1]}]:-}" ]] || continue
     for i in ${bsrc[@]+"${!bsrc[@]}"}; do
       [[ "$f" == "${bsrc[i]}"/* ]] || continue
       p="${bsrc[i]}"; rest="${f#"${bsrc[i]}"/}"
@@ -6079,18 +6086,52 @@ seed_workcopy_volume() {
   if docker volume inspect "$wc_vol" >/dev/null 2>&1; then
     return 0
   fi
+  # The copy runs the project image, which --pull=never never fetches. An image
+  # not built yet is named before any volume is made, not after (bugs review
+  # LNCH-31).
+  if ! docker image inspect "$image_name" >/dev/null 2>&1; then
+    printf 'ERROR: the image "%s" is not built, so the working copy "%s" cannot be seeded.\n' "$image_name" "$wc_vol" >&2
+    printf '       Build it first: ./build.sh\n' >&2
+    exit 1
+  fi
   printf 'Seeding writable working copy "%s" from "%s" (one-time local copy)...\n' "$wc_vol" "$base_vol" >&2
   local labels=(--label "ai-containers.workcopy=1")
   [[ -n "$repo_name" ]] && labels+=(--label "ai-containers.repo=${repo_name}")
   [[ -n "$launch" ]] && labels+=(--label "ai-containers.launch-dir=${launch}")
   if owner="$(ai_containers_owner_id 2>/dev/null)"; then labels+=(--label "ai-containers.owner=${owner}"); fi
   docker volume create "${labels[@]}" "$wc_vol" >/dev/null
+  # An existing working copy is taken as seeded (above). So a copy cut short (a
+  # failed run, an interrupt, a full disk) left a volume that every later launch
+  # mounted, empty or in part, with no word (bugs review LNCH-31). Until the copy
+  # has finished, the EXIT trap removes it (_seed_wc_drop), and a failed copy
+  # ends the launch. The copy's container is named so that it can be removed first.
+  _seed_wc_vol="$wc_vol" _seed_wc_name="${wc_vol}-seed-$$"
   # --entrypoint bash bypasses entrypoint.sh (which ignores args and would run the
   # firewall/restricted flow). cp -a preserves the ownership set on the base volume.
-  docker run --rm --pull=never --entrypoint bash \
+  if ! docker run --rm --pull=never --name "$_seed_wc_name" --entrypoint bash \
     -v "$base_vol":/src:ro \
     -v "$wc_vol":/dst \
-    "$image_name" -c 'cp -a /src/. /dst/'
+    "$image_name" -c 'cp -a /src/. /dst/'; then
+    printf 'ERROR: seeding the working copy "%s" from "%s" failed.\n' "$wc_vol" "$base_vol" >&2
+    exit 1
+  fi
+  _seed_wc_vol="" _seed_wc_name=""
+}
+
+# _seed_wc_drop: run by the EXIT trap. It removes a working copy whose seeding
+# did not finish (seed_workcopy_volume), so the next launch seeds it again
+# rather than mounting what was copied so far.
+_seed_wc_vol="" _seed_wc_name=""
+_seed_wc_drop() {
+  [[ -n "${_seed_wc_vol:-}" ]] || return 0
+  docker rm -f "$_seed_wc_name" >/dev/null 2>&1 || true
+  if docker volume rm "$_seed_wc_vol" >/dev/null 2>&1; then
+    printf 'NOTE: the working copy "%s" was not seeded to the end and is removed; the next launch seeds it again.\n' "$_seed_wc_vol" >&2
+  else
+    printf 'WARNING: the working copy "%s" was not seeded to the end and could not be removed;\n' "$_seed_wc_vol" >&2
+    printf '         the next launch would mount it as it is. Remove it first: docker volume rm %s\n' "$_seed_wc_vol" >&2
+  fi
+  _seed_wc_vol=""
 }
 
 split_env_list() {  # $1=raw value (e.g. "$REPOS", "$EXTRA_MOUNTS", "$PREVIEW_PORTS")
@@ -6487,7 +6528,7 @@ _git_watch_add() {
   [[ -z "${_git_watch_had[$1]:-}" ]] || return 0
   _git_watch_had[$1]=1; _git_watch+=("$1")
 }
-trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
+trap '_seed_wc_drop; rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
 
 # _host_way_add <what> <path as set> <what the launch resolved it to>: records a
 # host path the launch mounts, for launcher_ro_overlay to judge the way to it
@@ -6591,6 +6632,51 @@ validate_sandbox_ids() {
     printf '       e.g. SANDBOX_UID=1000 SANDBOX_GID=1000, for repo.sh as well.\n' >&2
     exit 1
   fi
+}
+
+# _group_gh_token <hosts.yml>: prints the first oauth_token of the group's gh
+# hosts.yml, for COPILOT_GITHUB_TOKEN, or nothing.
+#
+# That file is in the agent's ~/.config/gh, a writable mount, so it is the
+# agent's to replace (bugs review LNCH-29):
+# - a link to your own ~/.config/gh/hosts.yml, or to another group's, made the
+#   next launch hand the container the token the group was made to keep from it;
+# - a file at mode 000 ended every launch of the group under set -e.
+#
+# So only a regular file that is not a link is read, through one open checked
+# to be the file the name names, as project-files.sh: `_proj_read()` reads a
+# project's files. Anything else is a WARNING, never the end of the launch.
+# Not covered, as there: a file swapped for a FIFO between the check and the
+# open blocks the launch.
+_group_gh_token() {
+  local f="$1" fd a="" b="" tok=""
+  [[ -e "$f" || -L "$f" ]] || return 0
+  if [[ -L "$f" || ! -f "$f" ]]; then
+    printf 'WARNING: %s is a link or not a regular file, so no Copilot token is read from it.\n' "$(_term "$f")" >&2
+    printf '         The agent can make it one, to have a launch hand it a token from elsewhere.\n' >&2
+    printf '         Remove it, then run "gh auth login" in the container (or set COPILOT_GITHUB_TOKEN):\n' >&2
+    printf '           rm %s\n' "$(_q "$f")" >&2
+    return 0
+  fi
+  # Braced: on a bare exec the 2>/dev/null would stay on the shell.
+  if ! { exec {fd}<"$f"; } 2>/dev/null; then
+    printf 'WARNING: %s cannot be read, so no Copilot token is taken from it.\n' "$(_term "$f")" >&2
+    return 0
+  fi
+  # The open is the file the name names: Linux's /dev/fd/N leads to it (-ef);
+  # macOS's is a node of fdescfs carrying only the open file's inode
+  # (project-files.sh: `_proj_fd_is()`).
+  if [[ ! -L "$f" && -f "/dev/fd/$fd" ]] && { [[ "$f" -ef "/dev/fd/$fd" ]] || {
+       [[ ! -L "/dev/fd/$fd" ]] && read -r a _ < <(ls -di "$f" 2>/dev/null) \
+         && read -r b _ < <(ls -di "/dev/fd/$fd" 2>/dev/null) && [[ -n "$a" && "$a" == "$b" ]]; }; }; then
+    # The whole of the first 64 KiB: an awk that exits at the first match would
+    # end head with SIGPIPE, which pipefail reports.
+    tok="$(head -c 65536 <&"$fd" | awk '/oauth_token:/ && t == "" { t = $2 } END { print t }')" || true
+  else
+    printf 'WARNING: %s changed while it was being opened, so no Copilot token is read from it.\n' "$(_term "$f")" >&2
+  fi
+  exec {fd}<&-
+  printf '%s' "$tok"
 }
 
 run_container() {
@@ -6840,7 +6926,7 @@ run_container() {
     # unlabelled volume, made before labels, names no owner.
     local _pe _pn _pm _prec
     for _pe in "${repos_list[@]}"; do
-      _pn="${_pe%%:*}"; _pm="${_pe##*:}"
+      _pn="${_pe%%:*}"; _pm="ro"; [[ "$_pe" == *:* ]] && _pm="${_pe##*:}"
       _prec="$(repo_registry_lookup "$_pn" 2>/dev/null)" || continue
       [[ "$(repo_record_backend "$_prec")" == "bind" ]] && continue
       _repo_volume_foreign "$_pn" "$(repo_volume_name "$_pn")"
@@ -6849,8 +6935,8 @@ run_container() {
     for entry in "${repos_list[@]}"; do
       local rname rmode
       rname="${entry%%:*}"
-      rmode="${entry##*:}"
-      [[ "$rmode" == "$rname" ]] && rmode="ro"
+      # No mode given is no `:` (pointer_repo_entry(), LNCH-34).
+      rmode="ro"; [[ "$entry" == *:* ]] && rmode="${entry##*:}"
 
       if ! validate_repo_name "$rname"; then
         exit 1
@@ -7285,10 +7371,7 @@ run_container() {
   # Resolve COPILOT_GITHUB_TOKEN from the group's gh hosts.yml if not set.
   local copilot_token="${COPILOT_GITHUB_TOKEN:-}"
   if is_enabled copilot && [[ -z "$copilot_token" ]]; then
-    local gh_hosts="$group_root/.config/gh/hosts.yml"
-    if [[ -f "$gh_hosts" ]]; then
-      copilot_token="$(awk '/oauth_token:/{print $2; exit}' "$gh_hosts")"
-    fi
+    copilot_token="$(_group_gh_token "$group_root/.config/gh/hosts.yml")"
     if [[ -z "$copilot_token" ]]; then
       printf 'HINT: No gh auth token found for group "%s".\n' "$group" >&2
       printf '      Run "gh auth login" inside the container to authenticate Copilot CLI.\n' >&2

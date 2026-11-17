@@ -82,6 +82,7 @@ Then rebuild the image with `./build.sh` and restart the container.
 - No `/login` is needed inside the container (if `gh auth` is configured in the group)
 - Multiple containers can run simultaneously without revoking each other's sessions (device-flow OAuth is single-session per user; env-var token auth is not)
 - You can override by setting `COPILOT_GITHUB_TOKEN` explicitly on the host
+- That `hosts.yml` lies in a directory the agent can write, so it is read only when it is a regular file and not a link. A link (to your own `~/.config/gh/hosts.yml`, say), a FIFO or a file that cannot be read gets a `WARNING:` instead, and the launch goes on with no token
 
 > **⚠️ The token is extracted once, at container launch — not while the container runs.**
 > `sandbox.sh` reads `hosts.yml` and sets `COPILOT_GITHUB_TOKEN` **before** `docker run` starts the

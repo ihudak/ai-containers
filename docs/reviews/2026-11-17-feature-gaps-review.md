@@ -55,7 +55,7 @@
 ## 2. Host-side launcher: mounts, binds and the verify manifest
 
 ### GAP-17: nothing tests what the launcher reads from inside a group directory the agent writes
-- Status: OPEN (filed 2026-11-17).
+- Status: DONE (2026-11-17, with LNCH-29). `tests/test-tool-config-mounts.sh` makes the group's `hosts.yml` a link to the host's own, a FIFO and a mode-000 file, each asserting no token, a `WARNING:` and rc 0 (the last skipped as root, where mode 000 is readable).
 - **Area:** LNCH (group mounts)
 - **Source:** AGENTS.md, "Host directory mounts": "so a sandboxed agent never writes to the
   developer's real host config", and the feature-gaps review's slice for
@@ -70,7 +70,7 @@
   non-regular-file cases, each asserting no `COPILOT_GITHUB_TOKEN` and rc 0.
 
 ### GAP-18: the case/Windows refusal is not tested against the host paths LNCH-27 added to the verify list
-- Status: OPEN (filed 2026-11-17).
+- Status: DONE (2026-11-17, with LNCH-30). `tests/test-launcher-dir-ro.sh` T91 runs the case/Windows refusal against pointers inside a writable mount, with a planted launcher as the control that it still refuses.
 - **Area:** LNCH (verify manifest)
 - **Source:** AGENTS.md, "Mount layout": "a launch that needs any overlay, pin or file bind
   below a writable mount root is refused".

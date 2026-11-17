@@ -129,7 +129,7 @@
 ## 2. Host-side launcher: mounts, binds and the verify manifest
 
 ### LNCH-29: the group's `hosts.yml` is read through a link the agent can plant, and the host's real `gh` token is passed into the container
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `sandbox.sh`: `_group_gh_token()` reads `hosts.yml` only when it is a regular file and not a link, through one open checked to be the file the name names (as project-files.sh: `_proj_read()`), and the first 64 KiB of it; a link, a FIFO or a file that cannot be read is a `WARNING:` and the launch goes on with no token. `tests/test-tool-config-mounts.sh`: the link, FIFO and mode-000 cases, each seen failing first (the link handed over the host's token; mode 000 ended the launch, rc 2). The suggested quoting of the `-e` argument was checked and needs no change: the token there is already one argument, unglobbed.
 - **Severity:** MEDIUM
 - **Confidence:** CONFIRMED
 - **Location:** `sandbox.sh`: `run_container()`, `copilot_token="$(awk '/oauth_token:/{print $2; exit}' "$gh_hosts")"`
@@ -164,7 +164,7 @@
   read non-fatal (`|| copilot_token=""`). Add both cases to `tests/test-tool-config-mounts.sh`.
 
 ### LNCH-30: on drvfs/SMB (or a case-aliasing directory) a pointer or `EXTRA_MOUNTS` path inside a writable mount now refuses the launch, as "mounted read-only"
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). The GIT-41 refusal loop in `launcher_ro_overlay()` passes over the verify list's mounted host paths (`_host_verified`), so it judges overlays, pins and file binds only, as before LNCH-27. Confirmed first on a real drvfs drive (`/mnt/c`, Docker Desktop's WSL): `EXTRA_MOUNTS=<C:>/data DOCS_PATH=<C:>/data/docs` was refused at `HEAD` and launches with the fix. `tests/test-launcher-dir-ro.sh` T91 (with `_win_fs()` taking one directory for Windows's): a `:ro` and a writable pointer inside such a writable mount launch (seen failing first), and a launcher planted there is still refused.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED (with `_win_fs()` overridden for one directory; not on a real drive)
 - **Location:** `sandbox.sh`: `launcher_ro_overlay()`, the loop `for ((k = 0; k < ${#_vrfy[@]}; k += 2)); do` that prints `is mounted read-only, but %s is on a filesystem where`
@@ -192,7 +192,7 @@
   `_win_fs` overridden.
 
 ### LNCH-31: a working copy whose first seed failed is mounted empty (or half-copied) on every later launch, silently
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `sandbox.sh`: `seed_workcopy_volume()` names an image not built before any volume is made, and until the copy has finished the EXIT trap's `_seed_wc_drop()` removes the volume (the copy's container first, by the name it is given), so a failed copy and a launcher stopped during it leave nothing the next launch takes for a working copy. `tests/test-docs-path.sh`: a failed copy, a launcher killed by TERM during it, an image not built, and a copy that finishes; the first three seen failing first. A volume an earlier failure left is still mounted; the CHANGELOG says how to remove it.
 - **Severity:** MEDIUM
 - **Confidence:** CONFIRMED
 - **Location:** `sandbox.sh`: `seed_workcopy_volume()`, `if docker volume inspect "$wc_vol" >/dev/null 2>&1; then`
@@ -249,7 +249,7 @@
 - **Tests:** T66 in `tests/test-launcher-dir-ro.sh` gained a check that runs `_vm_dev_ino_load()` on 40 paths of ~230 bytes. It uses the fake VM, with a fake `xargs` that splits at 4 KiB so that GNU and BSD xargs both split. It was seen red before the fix, recording 18 of 40, and green after. T66's argv check now expects the new command, and T73 loads both programs.
 
 ### LNCH-33: the entrypoint prints a mismatched mount's destination to the terminal as it is
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `entrypoint.sh`: `verify_launcher_mounts()` replaces C0, DEL, UTF-8's C1 controls and the bidi controls in a refused destination, as `sandbox.sh`: `_term()` does on the host. `tests/test-launcher-verify.sh` case 7, seen failing first. Takes effect after a `./build.sh`.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED (from the code, and by running the function on a crafted manifest)
 - **Location:** `entrypoint.sh`: `verify_launcher_mounts()`, `printf 'ERROR: %s is not the directory it was checked as (expected %s, got %s).\n' "$dst"`
@@ -270,7 +270,7 @@
   entrypoint; assert it in `tests/test-launcher-verify.sh`.
 
 ### LNCH-34: a repo named `ro`, `rw` or `rwcopy` attached with the mode of the same name is mounted read-only
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). "No mode given" is now an entry with no `:`, in `run_container()`'s REPOS loop, its REPO-13 pre-check and `pointer_repo_entry()`. `tests/test-docs-path.sh`: `rw:rw`, a bare `ro`, `@rw`, and `DOCS_PATH=@rw` beside `rw:rw`; all but the bare `ro` (the control) seen failing first.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `sandbox.sh`: `run_container()`, `[[ "$rmode" == "$rname" ]] && rmode="ro"` (and the same test in `pointer_repo_entry()`)

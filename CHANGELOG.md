@@ -204,6 +204,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   would not remove and keeps its registry line; `add` refuses a source holding
   `|`; and a first clone that fails removes the volume it made, so the next run
   seeds it again.
+- **A working copy whose seeding failed is no longer mounted.** A `:rwcopy`
+  working copy is seeded once, by a copy from the repo's volume, and from then
+  on an existing one is taken as seeded. When that copy failed (the image not
+  built yet, an interrupt, a full disk), the volume stayed, and every later
+  launch mounted it, empty or in part, with no word. The volume is now removed
+  when the copy fails or the launcher is stopped during it, so the next launch
+  seeds it again, and an image not built is named before any volume is made
+  (bugs review LNCH-31). A volume an earlier failure left is still mounted:
+  `docker volume rm <name>` it, or `./repo.sh gc`.
+- **A repo named `ro`, `rw` or `rwcopy` keeps the mode written.** A `REPOS`
+  entry with no mode was told by its mode equalling its name, so `rw:rw`
+  mounted the repo read-only and `@rw` was refused as a read-only working
+  directory (bugs review LNCH-34).
+- **On WSL's drvfs and SMB, a pointer inside a writable mount is mounted
+  again.** Since every mounted host path joined the launch's checks (LNCH-27),
+  a `DOCS_PATH`, `VAULT_PATH` or other pointer inside an `EXTRA_MOUNTS`
+  directory there was refused as a read-only bind that an 8.3 name gets round.
+  It is a mount of its own, not a bind below the writable one, and is no
+  longer judged so (bugs review LNCH-30).
+- **The entrypoint renders the name of a mount it refuses.** A mount found
+  swapped at container start was named with its control characters as they
+  were, and the name holds directories the agent chose. They are replaced as
+  the launcher replaces them on the host (bugs review LNCH-33). Takes effect
+  after a `./build.sh`.
 - **On Colima, the launch checks are read through held directories too.** The
   ids recorded for the container's own check are read in Colima's VM from the
   directory that holds each path, while it is held, as on a Linux host, so a
@@ -1006,6 +1030,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **The Copilot token is no longer read through a link the agent planted.**
+  With `copilot=ON` and no `COPILOT_GITHUB_TOKEN` set, every launch takes the
+  token from the group's `~/.config/gh/hosts.yml`. That file lies in a
+  directory the agent writes. A link planted there to your own
+  `~/.config/gh/hosts.yml`, or to another group's, handed the next container
+  that token, and a file at mode 000 ended every launch of the group. The file
+  is now read only when it is a regular file and not a link, through one
+  checked open. Anything else is a `WARNING:`, and the launch goes on with no
+  token (bugs review LNCH-29).
 - **A program a git config has the host's git run is judged where it lies.**
   The keys that make git run a program (`core.fsmonitor`, a filter, a diff
   driver, a credential helper, a `!` alias, …) were named once, at a

@@ -581,6 +581,38 @@ rm -f "$GROUP_ROOT/.config/gh/hosts.yml"
 : > "$CAPTURE"; run_sandbox "$TMP/app"
 [[ "$RC" -eq 0 ]] && ! grep -qF 'No gh auth token' "$ERR" \
   && pass "copilot off, no gh login: no HINT" || fail "copilot off: a HINT to log in for Copilot"
+# The group's .config/gh is the agent's ~/.config/gh, so hosts.yml is the
+# agent's to replace (bugs review LNCH-29). A link to the host's own hosts.yml
+# handed the container the host's token; a file it cannot read ended every
+# launch of the group under set -e. Each is a WARNING now, with no token, rc 0.
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ncopilot=ON\n' > "$SANDBOX_CONF"
+mkdir -p "$HOME/.config/gh"
+printf 'github.com:\n    oauth_token: gho_HOST8\n' > "$HOME/.config/gh/hosts.yml"
+ln -s "$HOME/.config/gh/hosts.yml" "$GROUP_ROOT/.config/gh/hosts.yml"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && -s "$CAPTURE" ]] && ! grep -q '^COPILOT_GITHUB_TOKEN=' "$CAPTURE" \
+  && grep -qF "WARNING: $GROUP_ROOT/.config/gh/hosts.yml is a link or not a regular file" "$ERR" \
+  && pass "LNCH-29: a hosts.yml that is a link is not followed: no token, a WARNING, the launch goes on" \
+  || fail "LNCH-29: a linked hosts.yml (rc=$RC; $(grep '^COPILOT_GITHUB_TOKEN=' "$CAPTURE"); $(grep -F hosts.yml "$ERR" | head -1))"
+rm -f "$GROUP_ROOT/.config/gh/hosts.yml"; mkfifo "$GROUP_ROOT/.config/gh/hosts.yml"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && -s "$CAPTURE" ]] && ! grep -q '^COPILOT_GITHUB_TOKEN=' "$CAPTURE" \
+  && grep -qF "WARNING: $GROUP_ROOT/.config/gh/hosts.yml is a link or not a regular file" "$ERR" \
+  && pass "LNCH-29: a hosts.yml that is a FIFO is not opened: no token, a WARNING, the launch goes on" \
+  || fail "LNCH-29: a FIFO hosts.yml (rc=$RC; $(grep -F hosts.yml "$ERR" | head -1))"
+rm -f "$GROUP_ROOT/.config/gh/hosts.yml"
+printf 'github.com:\n    oauth_token: gho_test8\n' > "$GROUP_ROOT/.config/gh/hosts.yml"
+chmod 000 "$GROUP_ROOT/.config/gh/hosts.yml"
+if [[ -r "$GROUP_ROOT/.config/gh/hosts.yml" ]]; then
+  printf 'SKIP: LNCH-29 the unreadable-hosts.yml check: mode 000 is still readable here (root)\n'
+else
+  : > "$CAPTURE"; run_sandbox "$TMP/app"
+  [[ "$RC" -eq 0 && -s "$CAPTURE" ]] && ! grep -q '^COPILOT_GITHUB_TOKEN=' "$CAPTURE" \
+    && grep -qF "WARNING: $GROUP_ROOT/.config/gh/hosts.yml cannot be read" "$ERR" \
+    && pass "LNCH-29: a hosts.yml that cannot be read is a WARNING, not the end of the launch" \
+    || fail "LNCH-29: an unreadable hosts.yml (rc=$RC; $(tr '\n' ' ' < "$ERR" | cut -c1-300))"
+fi
+chmod 600 "$GROUP_ROOT/.config/gh/hosts.yml"
 teardown
 
 # ── The bootstrap menu offers only groups a launch could select (LNCH-20) ───────
