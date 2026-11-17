@@ -38,6 +38,15 @@ nfnetlink_log
 xt_NFLOG
 ```
 
+## Several homes on one docker (WSL distros, or users)
+
+Docker Desktop serves one docker to every WSL distro, and a Linux machine's docker can serve several users. Each of those homes has its own `~/.ai-containers`, but the docker volumes are shared, and their names hold no home: a repo volume is `ai-containers-repo-<name>`, a group's Ruby home `ai-containers-rvm-<group>`, a working copy `ai-containers-repo-<name>--wc-<launch dir>`. So:
+
+- **A group of the same name in two homes shares one Ruby volume.** The launch says so in a `NOTE:` when the volume was made by another home. That home's `./group.sh rm` or `./group.sh gc --all` can remove it, and this group then builds its Rubies again on its next start (minutes). `gc` without `--all` keeps a volume it did not make.
+- **Another user's volumes are owned by that user's uid.** Two distros of one person normally have the same uid (1000) and see no difference. Two different users do: a repo volume attached `:rw`, a shared Ruby volume or a working copy whose launch paths collide holds the other user's files, and the agent gets `Permission denied`.
+
+To keep homes apart, give each its own prefix, which every repo, working-copy and Ruby volume name starts with: `REPO_VOLUME_PREFIX=ai-containers-<user>` in each project's `sandbox.local.env`, or exported in that home's shell profile. Set it before the first launch: the volumes made under the old prefix are not renamed, and are seeded again under the new one. A docker several users share is no boundary between them anyway: membership of the `docker` group is root on that machine.
+
 ## Claude Code bug: `--dangerously-skip-permissions` still asks for permission
 
 This is a **bug in Claude Code**, not in the container. Started with

@@ -873,11 +873,31 @@ rvm_group_from_volume() {
 # "$root/.rvm" left by a group created before rvm moved to a volume, so upgrading
 # does not silently discard already-compiled rubies (minutes per version to rebuild).
 #   $1 = group name   $2 = group root dir   $3 = image to run the copy in
+# _rvm_shared_note <volume> <group>: a NOTE when the group's Ruby volume was made
+# by another home. One docker serves several homes (Docker Desktop's, by every
+# WSL distro), and the volume's name has no home in it, so that home's group of
+# this name mounts the same volume, and its group.sh rm or gc --all can remove it
+# from under this one. A stated limit, the user's choice (bugs review PRJ-16);
+# REPO_VOLUME_PREFIX, which every repo and Ruby volume name starts with, keeps
+# homes apart.
+_rvm_shared_note() {
+  local o own
+  o="$(docker_volume_label "$1" 'ai-containers.owner')"
+  [[ -n "$o" ]] || return 0
+  own="$(ai_containers_owner_id 2>/dev/null)" || own=""
+  [[ -n "$own" && "$o" == "$own" ]] && return 0
+  printf 'NOTE: the Ruby volume %s was made by another home on this docker (another WSL distro or\n' "$1" >&2
+  printf '      user, or this one before ~/.ai-containers/project-id.key was lost). Its group "%s" uses it\n' "$2" >&2
+  printf '      too, and its group.sh rm or gc --all can remove it; this group then builds its Rubies again.\n' >&2
+  printf '      To keep homes apart, give each its own REPO_VOLUME_PREFIX (docs/troubleshooting.md).\n' >&2
+}
+
 rvm_volume_ensure() {
   local group="$1" root="$2" image="$3"
   local vol; vol="$(rvm_volume_name "$group")"
 
   if docker volume inspect "$vol" >/dev/null 2>&1; then
+    _rvm_shared_note "$vol" "$group"
     printf '%s\n' "$vol"; return 0
   fi
   # With this HOME's id: one daemon serves several homes (Docker Desktop's, by
@@ -1077,15 +1097,6 @@ validate_group_name() {
     echo "         AI_CONTAINER_GROUP=mine AI_CONTAINER_GROUP_INIT=from:host" >&2
     exit 1
   fi
-  # ~/.ai-containers/restored holds what a launch kept from a protected git
-  # file's place on a share that ignores case (sandbox.sh: `_ro_files_restore()`),
-  # files the agent wrote. As a group its dot-directories were mounted into the
-  # container, and `group.sh rm` deleted them (bugs review PRJ-18).
-  if [[ "$name" == restored ]]; then
-    echo "ERROR: restored is not a group: ~/.ai-containers/restored holds the files a launch kept from" >&2
-    echo "       a protected git file's place (see its WARNING). Pick another name." >&2
-    exit 1
-  fi
   [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || {
     echo "Invalid AI_CONTAINER_GROUP='$name'. Allowed: lowercase letters, digits, dashes; 1-32 chars; must start with alphanum." >&2
     exit 1
@@ -1150,7 +1161,7 @@ group_menu_choices() {
   while IFS= read -r -d '' dir; do
     name="$(basename "$dir")"
     [[ "$name" == "default" || "$name" == "$group" ]] && continue
-    [[ "$name" != host && "$name" != restored && "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || continue
+    [[ "$name" != host && "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || continue
     printf '%s\n' "$name"
   done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
            | xargs -0 ls -dt 2>/dev/null \

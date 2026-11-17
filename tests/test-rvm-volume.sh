@@ -135,6 +135,19 @@ check "rvm_group_from_volume round-trips via the label" \
 # another's by on a daemon several homes share (bugs review PRJ-16).
 check "PRJ-16 rvm_volume_ensure labels the volume with this home's owner id" \
   "$(ai_containers_owner_id)" "$(docker_volume_label ai-containers-rvm-docs 'ai-containers.owner')"
+# A volume another home made is used, and named in a NOTE: that home's group of
+# this name shares it, and can remove it (PRJ-16's stated limit). This home's,
+# and one with no owner label, are used with no note.
+err="$(rvm_volume_ensure "docs" "$TMP/nonexistent-group-root" "ai-sandbox" 2>&1 >/dev/null)"
+[[ -z "$err" ]] && pass "PRJ-16 this home's Ruby volume is used with no note" || fail "PRJ-16 a note on this home's own volume ($err)"
+printf 'ai-containers.rvm-group=docs\nai-containers.owner=sha256:%064d\n' 7 > "$FAKE_VOLUMES_DIR/ai-containers-rvm-docs.labels"
+err="$(rvm_volume_ensure "docs" "$TMP/nonexistent-group-root" "ai-sandbox" 2>&1 >/dev/null)"
+[[ "$err" == *"NOTE: the Ruby volume ai-containers-rvm-docs was made by another home"* && "$err" == *REPO_VOLUME_PREFIX* ]] \
+  && pass "PRJ-16 a Ruby volume another home made is named in a NOTE, with the way to keep homes apart" \
+  || fail "PRJ-16 no note on another home's volume (got: $err)"
+printf 'ai-containers.rvm-group=docs\n' > "$FAKE_VOLUMES_DIR/ai-containers-rvm-docs.labels"
+err="$(rvm_volume_ensure "docs" "$TMP/nonexistent-group-root" "ai-sandbox" 2>&1 >/dev/null)"
+[[ -z "$err" ]] && pass "PRJ-16 an unlabelled Ruby volume is used with no note" || fail "PRJ-16 a note on an unlabelled volume ($err)"
 # Fallback path: an unlabeled volume still resolves by stripping the prefix.
 : > "$FAKE_VOLUMES_DIR/ai-containers-rvm-legacy"
 : > "$FAKE_VOLUMES_DIR/ai-containers-rvm-legacy.labels"

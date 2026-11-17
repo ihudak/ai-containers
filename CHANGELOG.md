@@ -209,8 +209,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   projects' basenames even when it was an unregistered directory in the
   current one, so `./project.sh rm api --yes` beside an unregistered `./api`
   removed the registered project `api` elsewhere, working copies and all. Such
-  a name is now refused, naming both; a path (`./api`) picks one (bugs review
-  PRJ-13).
+  a name is now refused, naming both, while that registered project is there
+  too; a path (`./api`) picks one. A registered project that is gone (moved by
+  hand) is still found by its name, and so is one reached by another path to
+  the same directory, a bind mount's (bugs review PRJ-13).
 - **An interrupted `project.sh mv` can be finished.** Interrupted while it
   removed the old `.ai-containers` after a move across filesystems, it undid
   the new working copies and said to run it again, which then refused because
@@ -227,13 +229,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   may be another home's group, and `gc` removed its volume. A Ruby volume now
   carries the `ai-containers.owner` of the home that made it, and `gc` takes
   only this home's; another home's, and one made before the label, are kept and
-  named, and `--all` takes them too. Every volume made before this change is
-  unlabelled, so collecting one now takes `--all` (bugs review PRJ-16).
-- **`restored` is not a group.** `~/.ai-containers/restored`, where a launch
-  keeps files from a protected git file's place, was listed by `group.sh`,
-  removable with `group.sh rm`, offered by `project-init.sh` and selectable as
-  `AI_CONTAINER_GROUP`, which mounted it into the container. It is now refused
-  and skipped as `host` is (bugs review PRJ-18).
+  named, and `--all` takes them too, still named. `group.sh rm` keeps a volume
+  another home made and removes this home's directory. Neither reads a docker
+  that cannot list its containers as one none uses. Every volume made before
+  this change is unlabelled, so collecting one now takes `--all` (bugs review
+  PRJ-16).
+- **What a launch keeps is no longer a group.** The files a launch keeps from a
+  protected git file's place went to `~/.ai-containers/restored`, which
+  `group.sh` listed and removed as a group, `project-init.sh` offered, and
+  `AI_CONTAINER_GROUP` selected. They now go to the hidden
+  `~/.ai-containers/.restored/`, a name no group can have, and `restored` is a
+  group name like any other. An earlier launch's `restored` directory is still
+  listed as a group: move what it holds into `.restored`, or remove it (bugs
+  review PRJ-18).
 - **`ai-containers-report.sh` renders what it reads from a project.** Values
   from a project's `sandbox.env` reached the terminal with their escape
   sequences, and a tab in one shifted every later `--tsv` column. Control

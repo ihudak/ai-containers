@@ -523,22 +523,35 @@ grep -q '^  - grphost (.*AI_CONTAINER_GROUP=host is no longer supported' <<<"$OU
 $OUT"
 
 # ── values from a project's files are rendered (bugs review PRJ-15) ──────────
-# sandbox.env is the committed, shared file: an escape sequence in a value
-# reached the host terminal, and a tab shifted every later --tsv column.
-CTLB="$TMP/ctl/base"; mk_base "$CTLB" || { printf 'SCAFFOLD-FAILED: mk_base ctl\n'; exit 1; }
-mk_proj "$CTLB" "$TMP/ctlproj" $'g\tx\ty' $'open\e[2K\rrestricted' $'\e]0;PWNED\a4'
-run "$CTLB/ai-containers-report.sh" --tsv
-ctl_row="$(grep 'ctlproj' <<<"$OUT")"
+# sandbox.env is the committed, shared file, and the agent writes the project:
+# an escape sequence in a value reached the host terminal, and a tab shifted
+# every later --tsv column. Every field and every note is rendered: here the
+# group, the mode, the CPUs, the memory, the engine version (one with a C1
+# control), the project's own name, a stale launcher's file name, and the note
+# that names a project registered in two bases.
+CTLB="$TMP/ctl/base"; CTLB2="$TMP/ctl/base2"
+mk_base "$CTLB" && mk_base "$CTLB2" || { printf 'SCAFFOLD-FAILED: mk_base ctl\n'; exit 1; }
+CTLP="$TMP/ctl"$'\e]0;N\a'"proj"
+mkdir -p "$CTLP/.ai-containers"
+printf '%s\n' 'AI_CONTAINER_GROUP=g'$'\t''x'$'\t''y' 'SANDBOX_MODE=open'$'\e[2K\r''restricted' \
+  'CONTAINER_CPUS='$'\e]0;PWNED\a''4' 'CONTAINER_MEMORY=8g'$'\e[1A' > "$CTLP/.ai-containers/sandbox.env"
+printf 'v1'$'\xc2\x9b''2J\n' > "$CTLP/.ai-containers/engine-version"
+printf 'export IMAGE_NAME=x\n' > "$CTLP/.ai-containers/old"$'\e[2K'"-container.sh"
+printf '%s\n' "$CTLP" >> "$CTLB/projects.conf"; printf '%s\n' "$CTLP" >> "$CTLB2/projects.conf"
+ctl_bad() { LC_ALL=C grep -qE $'[\x01-\x08\x0b-\x1f\x7f]|\xc2[\x80-\x9f]' <<<"$1"; }
+run "$CTLB/ai-containers-report.sh" --tsv "$CTLB" "$CTLB2"
+ctl_row="$(grep -m1 'ctl?' <<<"$OUT")"
 ctl_fields="$(awk -F'\t' '{ print NF }' <<<"$ctl_row")"
 hdr_fields="$(head -1 <<<"$OUT" | awk -F'\t' '{ print NF }')"
-[[ "$RC" == 0 && -n "$ctl_row" && "$ctl_fields" == "$hdr_fields" ]] && ! LC_ALL=C grep -q $'[\x01-\x08\x0a-\x1f\x7f]' <<<"$OUT" \
-  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4'* ]] \
-  && pass "PRJ-15 --tsv renders a value's control characters, a tab among them, so the row keeps its columns" \
-  || fail "PRJ-15 --tsv (rc=$RC; $ctl_fields fields under $hdr_fields; $(od -c <<<"$ctl_row" | head -2 | tr '\n' ' '))"
-run "$CTLB/ai-containers-report.sh"
-! LC_ALL=C grep -q $'[\x01-\x09\x0b-\x1f\x7f]' <<<"$OUT" && grep -q 'ctlproj' <<<"$OUT" \
-  && pass "PRJ-15 the table carries no control character from a project's files to the terminal" \
-  || fail "PRJ-15 the table ($(grep ctlproj <<<"$OUT" | od -c | head -2 | tr '\n' ' '))"
+[[ "$RC" == 0 && -n "$ctl_row" && "$ctl_fields" == "$hdr_fields" ]] && ! ctl_bad "$OUT" \
+  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4'* && "$ctl_row" == *'8g?[1A'* && "$ctl_row" == *'v1?2J'* ]] \
+  && pass "PRJ-15 --tsv renders every field's control characters, a tab and a C1 among them, so each row keeps its columns" \
+  || fail "PRJ-15 --tsv (rc=$RC; $ctl_fields fields under $hdr_fields; $(od -c <<<"$ctl_row" | head -3 | tr '\n' ' '))"
+run "$CTLB/ai-containers-report.sh" "$CTLB" "$CTLB2"
+[[ "$RC" == 0 ]] && ! ctl_bad "$(tr -d '\n' <<<"$OUT")" && grep -q 'registered in multiple bases' <<<"$OUT" \
+  && grep -q 'stale pre-rename launcher' <<<"$OUT" && grep -q 'ctl?' <<<"$OUT" \
+  && pass "PRJ-15 the table and its notes carry no control character from a project's files to the terminal" \
+  || fail "PRJ-15 the table ($(grep -n 'ctl' <<<"$OUT" | od -c | head -4 | tr '\n' ' '))"
 
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then

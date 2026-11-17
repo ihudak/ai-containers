@@ -46,9 +46,8 @@ existing_groups() {
   for d in "$HOME/.ai-containers"/*/; do
     [[ -d "$d" ]] || continue
     name="$(basename "$d")"
-    # Not `host`, which every launch refuses, even as a leftover directory, nor
-    # `restored`, the launcher's own (bugs review PRJ-18).
-    if valid_group_name "$name" && [[ "$name" != host && "$name" != restored ]]; then printf '%s\n' "$name"; fi
+    # Not `host`, which every launch refuses, even as a leftover directory.
+    if valid_group_name "$name" && [[ "$name" != host ]]; then printf '%s\n' "$name"; fi
   done | LC_ALL=C sort
 }
 
@@ -347,8 +346,6 @@ while [[ -z "$group_name" ]]; do
   elif [[ "$reply" == "host" ]]; then
     printf '  The host group, which mounted your real $HOME dot-directories, is no longer supported.\n' >&2
     printf '  Pick or name a group; a new one can start as a copy of them (from:host, asked next).\n' >&2
-  elif [[ "$reply" == "restored" ]]; then
-    printf '  restored is not a group: ~/.ai-containers/restored holds files a launch kept. Pick another name.\n' >&2
   elif [[ -d "$HOME/.ai-containers/$reply" ]]; then
     group_name="$reply"
   else

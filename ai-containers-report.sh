@@ -360,7 +360,8 @@ printf '%s\n' "$bases" | while IFS= read -r base_raw; do
       "$(_rterm "$group")" "$(_rterm "$name")" "$(_rterm "$netmode")" "$(_rterm "$cpu")" "$(_rterm "$mem")" "$(_rterm "$disc")" \
       "$(_rterm "$(display_path "$proj")")" >>"$rows"
     [ -n "$note" ] && printf '%s (%s): %s\n' "$(_rterm "$name")" "$(_rterm "$(display_path "$proj")")" "$(_rterm "$note")" >>"$notes"
-    printf '%s\t%s\n' "$proj" "$base_label" >>"$seen"
+    # Rendered as the rows are: the note below prints both (review of the PRJ-15 fix).
+    printf '%s\t%s\n' "$(_rterm "$proj")" "$(_rterm "$base_label")" >>"$seen"
   done
 done
 

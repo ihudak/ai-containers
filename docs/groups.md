@@ -160,8 +160,8 @@ it. Use `group.sh`, which removes both halves together:
 (Docker Desktop's, by every WSL distro), and a group directory missing here may
 be another home's group, so a volume another home made, or one made before
 volumes carried their owner, is kept and named; `./group.sh gc --all` takes it
-too. `restored` in `~/.ai-containers` is not a group: it holds files a launch
-kept, and `group.sh` neither lists nor removes it.
+too. `~/.ai-containers/.restored/` is not a group: it holds files a launch kept
+from a protected git file's place, and `group.sh` neither lists nor removes it.
 
 `group.sh rm` refuses while a running container still mounts the group's
 volume, and refuses `host`, which is not a group. It never touches repo volumes — those are global and shared across

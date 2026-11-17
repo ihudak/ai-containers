@@ -5869,11 +5869,13 @@ _ro_files_snapshot() {
 # mode from the umask (no chmod, which follows a link), and renamed over the file
 # without following a link at the destination. What stood there is never moved:
 # a regular file's content, or a link's target, is copied into a directory of the
-# launcher's own, ~/.ai-containers/restored/<time>-<pid>, which the WARNING names
+# launcher's own, ~/.ai-containers/.restored/<time>-<pid>, which the WARNING names
 # (the change may be the user's own, made on the host while the container ran:
 # git push -u, git remote add). Not covered: the host's git reads the changed
 # file until the container exits, and a launcher killed before then puts nothing
 # back. Never a refusal, and the container's exit status stays the launcher's.
+# Hidden: a name no group can have, where `restored` was listed, removable and
+# selectable as a group (bugs review PRJ-18).
 _ro_files_restore() {
   local i f k tmp m rd="" keep msg gone
   local -a t=()
@@ -5886,9 +5888,9 @@ _ro_files_restore() {
     keep=""; gone=""
     [[ -e "$f" || -L "$f" ]] || gone=1
     if [[ -z "$rd" ]]; then
-      rd="$ai_containers_root/restored/$(date +%Y%m%d%H%M%S)-$$"
-      if ! { mkdir -p "$ai_containers_root" && { mkdir -m 700 "$ai_containers_root/restored" \
-                 || [[ -d "$ai_containers_root/restored" && ! -L "$ai_containers_root/restored" ]]; } \
+      rd="$ai_containers_root/.restored/$(date +%Y%m%d%H%M%S)-$$"
+      if ! { mkdir -p "$ai_containers_root" && { mkdir -m 700 "$ai_containers_root/.restored" \
+                 || [[ -d "$ai_containers_root/.restored" && ! -L "$ai_containers_root/.restored" ]]; } \
              && mkdir -m 700 "$rd"; } 2>/dev/null || [[ -L "$rd" || ! -d "$rd" ]]; then rd=-; fi
     fi
     if [[ "$rd" != - ]]; then

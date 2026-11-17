@@ -297,17 +297,44 @@ ok "resolve accepts an unregistered path when allowed" \
 # the registered project of that basename (bugs review PRJ-13): `rm api --yes`
 # beside an unregistered ./api removed another project. Which is meant cannot
 # be told, so neither is taken, for rm and for mv alike; a path picks one.
-mkdir -p "$TMP/here/alpha"
+mkdir -p "$TMP/here/alpha"; HERE_A="$(cd "$TMP/here/alpha" && pwd -P)"
 r="$(res "alpha" "" "$TMP/here")"; rc=$?
 ok "resolve refuses a bare name that is an unregistered directory here and a registered basename, naming both" \
-  bash -c '[ "$1" != 0 ] && [[ "$2" == *"$3"* && "$2" == *"$4"* && "$2" == *"not a registered project"* ]]' _ "$rc" "$r" "$TMP/here/alpha" "$A"
+  bash -c '[ "$1" != 0 ] && [[ "$2" == *"$3"* && "$2" == *"$4"* && "$2" == *"not a registered project"* ]]' _ "$rc" "$r" "$HERE_A" "$A"
 r="$(res "alpha" ok "$TMP/here")"; rc=$?
 ok "resolve refuses that bare name when an unregistered path is allowed too (mv)" \
-  bash -c '[ "$1" != 0 ] && [[ "$2" == *"$3"* && "$2" == *"$4"* ]]' _ "$rc" "$r" "$TMP/here/alpha" "$A"
+  bash -c '[ "$1" != 0 ] && [[ "$2" == *"$3"* && "$2" == *"$4"* ]]' _ "$rc" "$r" "$HERE_A" "$A"
 r="$(res "./alpha" ok "$TMP/here")"; rc=$?
 ok "resolve takes ./alpha, a path, as the directory here when allowed" \
-  bash -c '[ "$1" = 0 ] && [ "$2" = "$3|$3/.ai-containers" ]' _ "$rc" "$r" "$(cd "$TMP/here/alpha" && pwd -P)"
+  bash -c '[ "$1" = 0 ] && [ "$2" = "$3|$3/.ai-containers" ]' _ "$rc" "$r" "$HERE_A"
 rm -rf "$TMP/here"
+# The registered project of that name gone (a setup moved by hand), the name is
+# still the registered one's: `mv api <new-dir>` from beside the new place
+# finishes the move (review of the PRJ-13 fix).
+printf '%s\n' "$TMP/gone13/beta13" > "$ENG/projects.conf"; mkdir -p "$TMP/new13/beta13"
+r="$(res "beta13" ok "$TMP/new13")"; rc=$?
+ok "resolve takes a bare name for its registered project when that one is gone, a directory here or not" \
+  bash -c '[ "$1" = 0 ] && [ "$2" = "$3|$3/.ai-containers" ]' _ "$rc" "$r" "$TMP/gone13/beta13"
+# Standing in a project that holds a subdirectory of its own name: which is
+# meant cannot be told either, and both are named.
+printf '%s\n' "$TMP/own13/mysite" > "$ENG/projects.conf"; mkdir -p "$TMP/own13/mysite/mysite"
+r="$(res "mysite" "" "$TMP/own13/mysite")"; rc=$?
+ok "resolve refuses the name of the project it stands in when a subdirectory there has it, naming both" \
+  bash -c '[ "$1" != 0 ] && [[ "$2" == *"$3/mysite"* && "$2" == *"the registered project $3"* ]]' _ "$rc" "$r" "$TMP/own13/mysite"
+# The registered root reached by another path to the same directory (a bind
+# mount) is that project, not a directory of the same name (review of the
+# PRJ-13 fix). A bind mount needs a mount namespace of one's own.
+if unshare -rm true 2>/dev/null; then
+  printf '%s\n' "$TMP/real13/api" > "$ENG/projects.conf"; mkdir -p "$TMP/real13/api" "$TMP/view13"
+  r="$(unshare -rm bash -c 'mount --bind "$1" "$2" && cd "$2" && source "$3" && prj_resolve api && printf "%s" "$PRJ_ROOT"' _ "$TMP/real13" "$TMP/view13" "$P" 2>&1)"; rc=$?
+  ok "resolve takes a bind-mounted view of the registered root for that project" \
+    bash -c '[ "$1" = 0 ] && [ "$2" = "$3" ]' _ "$rc" "$r" "$TMP/real13/api"
+  rm -rf "$TMP/real13" "$TMP/view13"
+else
+  printf 'SKIP: the bind-mounted view of a registered root: no unprivileged mount namespace here\n'
+fi
+rm -rf "$TMP/gone13" "$TMP/new13" "$TMP/own13"
+printf '%s\n%s\n%s\n%s\n' "$A" "$B" "$C" "$S" > "$ENG/projects.conf"
 
 # ── registered roots that no longer exist on disk (the rm case) ──
 GONE="$TMP/gone/vanished"; GONE2="$TMP/gone/crlf-gone"; GONE3="$TMP/gone/unique-name-gone"
@@ -1517,6 +1544,27 @@ mvrun "$A" "$N" --yes; rc=$?
 ok "PRJ-12 ... and running it again finishes the move" \
   bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && [ -d "$4/$5" ] && [ ! -d "$4/$6" ]' _ "$rc" "$N" "$ENG/projects.conf" "$VOLS" "$nv" "$OLDWC"
 "$REAL_RM" -f -- "$TMP/bin/rm"; hash -r
+# Interrupted right after the rename that lands the checked copy, before the
+# old directory is touched (review of the PRJ-12 fix): it is in place, so the
+# working copies stay. An rmdir of the emptied temp directory sends the TERM.
+REAL_RMDIR="$(command -v rmdir)"; export REAL_RMDIR
+cat > "$TMP/bin/rmdir" <<'FAKERMDIR'
+#!/usr/bin/env bash
+"$REAL_RMDIR" "$@"; rc=$?
+for a in "$@"; do [[ -n "${FAKE_RMDIR_TERM:-}" && "${a##*/}" == .ai-containers.* ]] && kill -TERM "$PPID"; done
+exit "$rc"
+FAKERMDIR
+chmod +x "$TMP/bin/rmdir"; hash -r
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+AI_CONTAINERS_MV_COPY=1 FAKE_RMDIR_TERM=1 mvrun "$A" "$N" --yes; rc=$?
+"$REAL_RM" -f -- "$TMP/bin/rmdir"; hash -r
+ok "PRJ-12 mv interrupted right after the checked copy lands keeps the new working copy and names the old directory as the leftover" \
+  bash -c '[ "$1" = 143 ] && [ -d "$2/.ai-containers" ] && [ -d "$3/$4" ] && grep -qF "$2/.ai-containers is in place, the checked copy of $5/.ai-containers" "$6" \
+           && ! grep -qF "The old working copies are as they were" "$6"' _ "$rc" "$N" "$VOLS" "$nv" "$A" "$TMP/out"
+"$REAL_RM" -rf -- "$A/.ai-containers"; mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 ... and its way out finishes the move" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && [ -d "$4/$5" ] && [ ! -d "$4/$6" ]' _ "$rc" "$N" "$ENG/projects.conf" "$VOLS" "$nv" "$OLDWC"
 
 # Two copies of one repo, launched through a link to the project and through
 # its real path, would both take one new name (bugs review PRJ-14): refused
