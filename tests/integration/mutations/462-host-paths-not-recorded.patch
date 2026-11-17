@@ -11,10 +11,10 @@
 #
 # NOTE: sandbox.sh runs from the tree, so --reuse-image works against an image
 # a --keep run left. With no image the launcher probe has nothing to start,
-# and case 460 SKIPs (requires: launcher). And it needs a host whose own
-# device:inode survive a bind mount, a Linux engine: on Colima and on macOS
-# Docker Desktop the case does not assert the host paths (on Colima it has not
-# been run), and this mutant cannot be told apart there.
+# and case 460 SKIPs (requires: launcher). And it needs a host where the ids
+# a container sees are known: a Linux engine, or Colima, whose VM reports them
+# (run there 2026-11-17). On macOS Docker Desktop the case does not assert the
+# host paths, and this mutant cannot be told apart there.
 diff --git a/sandbox.sh b/sandbox.sh
 index 226d0d1..388b889 100755
 --- a/sandbox.sh
