@@ -108,7 +108,7 @@
 - **Introduced:** `809ee06` (GIT-42)
 - **What happens:** AGENTS.md says a program a key has git run "is judged … and gets a `NOTE:` where the agent can change it", and one that cannot be followed "is named as not judged". These values are neither judged nor named, and the host's `git status` runs the agent-writable file in each case (run):
   `. ./evil.sh`, `source ./evil.sh`, `eval ./evil.sh`, `time ./evil.sh` (the first word has no `/`, so it is "found on PATH" and its arguments are not looked at); `PATH=./bin tool` and `env PATH=./bin tool` (the assignment is stepped over, then `tool` is "found on PATH", which the assignment just changed); `BASH_ENV=./evil.sh bash /dev/null`; `node -r ./evil.js /usr/lib/x.js`, `node --require=./evil.js …`, `perl -I ./lib -MEvil /usr/bin/x.pl`, `ruby -r ./evil …`, `php -d auto_prepend_file=./evil.php …` (the option's argument is skipped as an argument, only the script is judged). `if ./x` likewise. The config is one the agent wrote before the first protection (a repository it made in a session), so the agent picks the form.
-- **Repro:** after one `launch ..`, append `[core]` / `fsmonitor = . ./evil.sh` to `$PROJ/.git/config`, make `$PROJ/evil.sh` (`echo RAN > $TMP/ran`), `launch ..`: `$ERR` holds no NOTE naming `core.fsmonitor` or `evil.sh`, and `( cd "$PROJ" && git status )` creates `$TMP/ran`. With `fsmonitor = ./evil.sh` the NOTE is printed. Same result for `eval ./evil.sh`, `time ./evil.sh`, `PATH=./bin tool`, `BASH_ENV=./evil.sh bash /dev/null`. Unit level: `_git_prog core.fsmonitor '. ./evil.sh' o` fails with `o` empty; `_git_prog core.fsmonitor 'node -r ./evil.js /usr/lib/tool.js' o` gives only `p:/usr/lib/tool.js`.
+- **Repro:** after one `launch ..`, append `[core]` / `fsmonitor = . ./evil.sh` to `$PROJ/.git/config`, make `$PROJ/evil.sh` (`echo RAN > $TMP/ran`), `launch ..`: `$ERR` holds no NOTE naming `core.fsmonitor` or the script, and `( cd "$PROJ" && git status )` creates `$TMP/ran`. With `fsmonitor = ./evil.sh` the NOTE is printed. Same result for `eval ./evil.sh`, `time ./evil.sh`, `PATH=./bin tool`, `BASH_ENV=./evil.sh bash /dev/null`. Unit level: `_git_prog core.fsmonitor '. ./evil.sh' o` fails with `o` empty; `_git_prog core.fsmonitor 'node -r ./evil.js /usr/lib/tool.js' o` gives only `p:/usr/lib/tool.js`.
 - **Expected:** each is judged, or named as not judged.
 - **Suggested fix:** fail closed, as the function already does elsewhere: a first word that is a shell builtin or keyword that runs or reads its argument (`.`, `source`, `eval`, `time`, `if`, `while`, `until`, `!`, `{`) is `u:`; an assignment to `PATH`, `BASH_ENV`, `ENV`, `LD_*`, `DYLD_*`, `PYTHONPATH`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH`, `PERL5LIB`, `PERL5OPT`, `RUBYLIB`, `RUBYOPT`, `GIT_*` before the program is `u:`; an interpreter option that loads code (`-r`, `--require`, `--import`, `-I`, `-M`, `-m`, `-d`, `-l`, `--rcfile`, `--init-file`) gives its argument as a `p:` entry instead of skipping it.
 
@@ -777,8 +777,8 @@ What I could not cover, and why:
   `git_dirs_in()` were out of scope and read only where the launcher half calls them.
 - `_agent_bits_writable()`'s ACL branch (`getfacl`, uutils `ls`) and the `_ci_*` /
   `_ds_readdir()` spelling code were read, not exercised: no case-insensitive filesystem here.
-- The test files `test-env-file.sh`, `test-docs-path.sh`, `test-repos-path.sh` and
-  `test-launcher-verify.sh` were not read in full; I checked only that none covers the
+- The test files `tests/test-env-file.sh`, `tests/test-docs-path.sh`, `tests/test-repos-path.sh` and
+  `tests/test-launcher-verify.sh` were not read in full; I checked only that none covers the
   findings below.
 
 Checked and found sound (no finding): `container_env_filter()` against the entrypoint's
@@ -797,7 +797,7 @@ Files read: `project.sh` (whole), `project-files.sh` (whole), `sync-to-projects.
 
 Reproductions used the scaffold of `tests/test-project-tool.sh` (its lines from `unset VAULT_PATH` to `P="$ENG/project.sh"`: an engine copy, a HOME and the fake `docker` in a temp dir) plus its `mkproj`/`mkbase`/`mkwc`/`wcdata` helpers; "harness" below means that. `tests/test-project-tool.sh` itself passes here (316 PASS, 65 s).
 
-What I could not cover, and why: `docs/groups.md` and the plan `2026-11-14-project-tool.md` were not read line by line; the tests other than `test-project-tool.sh` were not audited for assertions that cannot fail (time); nothing was run on macOS or against a real daemon, so `_proj_fd_is()`'s fdescfs branch, BSD `mv`, and what `docker inspect` reports for a bind mount's source on Docker Desktop are unverified (see PRJ-17).
+What I could not cover, and why: `docs/groups.md` and the plan `2026-11-14-project-tool.md` were not read line by line; the tests other than `tests/test-project-tool.sh` were not audited for assertions that cannot fail (time); nothing was run on macOS or against a real daemon, so `_proj_fd_is()`'s fdescfs branch, BSD `mv`, and what `docker inspect` reports for a bind mount's source on Docker Desktop are unverified (see PRJ-17).
 
 
 ### REPO
@@ -811,7 +811,7 @@ What I could not cover, and why:
 - macOS and Colima paths of `sandbox-common.sh` (`resolve_path`, `_utf8_valid`) were read, not run.
 - The tests named in the task were read for what they cover, not mutated.
 
-Every repro below ran under `TMPDIR=<review-tmp>/REPO`, `HOME=<that>/home`, `GIT_CONFIG_GLOBAL` an empty file and `GIT_CONFIG_SYSTEM=/dev/null`; `$H` is `WT/repo-git-reset.sh`, `$T` the temp dir. All of it is removed.
+Every repro below ran under `TMPDIR=<review-tmp>/REPO`, `HOME=<that>/home`, `GIT_CONFIG_GLOBAL` an empty file and `GIT_CONFIG_SYSTEM=/dev/null`; `$H` is the review worktree's `repo-git-reset.sh`, `$T` the temp dir. All of it is removed.
 
 
 ### RT
@@ -852,9 +852,9 @@ Checks run:
 - Check G72 was seen failing under a planted mutant (the launch budget counting empty include entries).
 
 What I could not cover, and why:
-- `tests/falsify/generate.sh`, `derive-targets.sh`, the watchdog and CPU-budget code of `run.sh`, and most of `tests/lib-layer-checks.sh`: about 5,000 lines, read only where a verdict or selection depends on them.
-- `tests/portability.sh`, `tests/integration/minimal-conf.sh`, `docker-shim.sh`, `mutate.sh`: not read.
-- The other five git-internals test files, `test-launcher-dir-ro.sh`, `test-project-tool.sh` and `test-repo-git-reset.sh` were sampled by script and by reading about 40 checks, not run. The casefold file needs a case-insensitive `TMPDIR`.
+- `tests/falsify/generate.sh`, `tests/falsify/derive-targets.sh`, the watchdog and CPU-budget code of `tests/falsify/run.sh`, and most of `tests/lib-layer-checks.sh`: about 5,000 lines, read only where a verdict or selection depends on them.
+- `tests/portability.sh`, `tests/integration/minimal-conf.sh`, `tests/integration/docker-shim.sh`, `tests/integration/mutate.sh`: not read.
+- The other five git-internals test files, `tests/test-launcher-dir-ro.sh`, `tests/test-project-tool.sh` and `tests/test-repo-git-reset.sh` were sampled by script and by reading about 40 checks, not run. The casefold file needs a case-insensitive `TMPDIR`.
 - Nothing that needs a docker daemon, macOS or GitHub itself was run.
 
 
@@ -862,7 +862,7 @@ What I could not cover, and why:
 
 Files read: the diff `bec1c57..104fcc8` of README.md, docs/*.md, docs/components/*.md and sandbox.conf (every added line); AGENTS.md (whole, as given); CHANGELOG.md Unreleased (Added, Changed, Removed in full; the headlines of Fixed and Security); docs/troubleshooting.md, docs/groups.md, docs/security.md items 6 to 8, docs/repos-and-mounts.md's mount table; docs/superpowers/specs/2026-11-13-agent-git-directory-design.md (first half; status ON HOLD, "nothing here is built"), specs/2026-11-14-project-tool-design.md (whole), plans/2026-11-14-project-tool.md (task list), to-test.md (whole), the diffs of the falsify backlog and the auto-update regression spec; the feature-gaps review's entry list. Code checked against: sandbox.sh, sandbox-common.sh, repo.sh, project.sh, build.sh, Dockerfile (npm layer), agent-tools-reconcile.sh, multiline-env.sh, verify-on-host.sh, tests/integration/run.sh, tests/falsify/run.sh and targets.conf, .github/workflows/hermetic-checks.yml, allowlist fragments.
 
-Checked and found in step with the code: every `./x.sh` command and flag the user docs print (repo.sh, group.sh, project.sh, multiline-env.sh, run.sh, falsify run.sh); the env-var table of docs/configuration.md against AGENTS.md's (names and defaults, by script) and the defaults against the code; the portable / machine-only key lists; the `npm=` key (build.sh, Dockerfile); the bootstrap prompt and group-name rule; `repo.sh reset`'s summary strings; every `tests/…` path and integration case the docs name (all exist); the falsify shards against the workflow; launcher template number (4); `PHASES` default and `VALID_PHASES`; Codex/Claude allowlist hosts. `tests/test-code-references.sh` and `tests/test-docs.sh` pass at 104fcc8 (run alone, TMPDIR and HOME in my area dir).
+Checked and found in step with the code: every `./<script>.sh` command and flag the user docs print (repo.sh, group.sh, project.sh, multiline-env.sh, run.sh, falsify run.sh); the env-var table of docs/configuration.md against AGENTS.md's (names and defaults, by script) and the defaults against the code; the portable / machine-only key lists; the `npm=` key (build.sh, Dockerfile); the bootstrap prompt and group-name rule; `repo.sh reset`'s summary strings; every `tests/…` path and integration case the docs name (all exist); the falsify shards against the workflow; launcher template number (4); `PHASES` default and `VALID_PHASES`; Codex/Claude allowlist hosts. `tests/test-code-references.sh` and `tests/test-docs.sh` pass at 104fcc8 (run alone, TMPDIR and HOME in my area dir).
 
 What I could not cover, and why: the ~900 lines of CHANGELOG Fixed/Security were checked by headline only; AGENTS.md's git-internals paragraph (the G-numbered claims) was not checked claim by claim against sandbox.sh, which belongs to the launcher reviewers and would take the whole budget; docs/testing.md's diff was checked only for the falsify shards; project.sh's refusal list in docs/multiple-projects.md was matched to function names, not exercised.
 
