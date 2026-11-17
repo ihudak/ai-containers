@@ -1,6 +1,7 @@
 # Feature-gaps review — 2026-10-26
 
 - **Review date:** 2026-10-26 (statuses updated through 2026-11-15)
+- **Updated 2026-11-17:** gaps found since, in `bec1c57..104fcc8`, are GAP-15 to GAP-29 in [2026-11-17-feature-gaps-review.md](2026-11-17-feature-gaps-review.md).
 - **Last reviewed commit:** `bec1c57` (`bec1c5737acdc549143e2c55e4a4b945ae27a287`, main, 2026-10-18 — "Merge pull request #312")
 - **Scope:** every design, plan and backlog in the repository, wherever written — `docs/superpowers/specs/`, `docs/superpowers/plans/`, the follow-up and falsify backlogs, `tests/falsify/survivors.txt` / `targets.conf`, AGENTS.md, README.md, `docs/`, CHANGELOG.md, and TODO/deferred/follow-up markers in code.
 - **Companion:** [2026-10-26-bugs-review.md](2026-10-26-bugs-review.md) (defects; doc errors that mislead users are filed there as `DOC-*`).
@@ -673,7 +674,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - **What this is:** survivors 180 to 215 of the same measurement, 36 of them, read when it stood at 2,823 of 3,312 mutants (2,558 killed, 215 survived, 50 unproven). 14 are owed a check, in two items; 3 are a Mac's to confirm; 1 only a race tells apart; 18 are recorded at the end as equivalent, with the reason. Every line quoted below reads the same at `14f42bd`, where the run measures, and at the base.
 - **Rules:** those of batch 1, with these numbers.
   - **New checks** are **G300 to G309** in the `tests/test-git-internals-ro-*.sh` files (batch 7 has G310 on). G291 to G295 are taken (G293 by the Mac agent, for GIT-98) and G296 to G299 are kept for the Linux agent's fixes.
-  - **A product bug** found on the way is GIT-105 or later, or LNCH-29 or later: GIT-101 to GIT-104 are taken (the Linux agent's), and LNCH-28 (the Mac agent's). Look before numbering.
+  - **A product bug** found on the way is GIT-108 or later, or LNCH-35 or later: GIT-101 to GIT-104 are taken (the Linux agent's), LNCH-28 (the Mac agent's), and GIT-105 to GIT-107 and LNCH-29 to LNCH-34 by the [2026-11-17 review](2026-11-17-bugs-review.md). Look before numbering.
   - **"Run on Linux"** below means: on 2026-11-15 the unchanged code and the code with the damage named were run side by side. For item 1 that is the function called directly, as G134's second half calls it, with each surviving mutant's own line put in (the function as at `14f42bd`, which is the base's byte for byte); for item 2 and the launched equivalents it is a layout built on `tests/lib-git-internals-ro.sh` and launched once with each. No check was written. "Read" means read from the code only.
   - **One identity can be several mutants:** a line with several operators to flip gives one mutant for each, all under the same identity. The entry says which are meant.
   - Demonstrate, do not score. No entries in `tests/falsify/survivors.txt`. Results in this section, one line per item.
@@ -729,7 +730,7 @@ A gap is something a design promised that is not in the code at the reviewed com
 - **What this is:** survivors 216 to 245 of the same measurement, the last 30. The run ended on 2026-11-16: 3,312 mutants, 3,016 killed, 245 survived, 51 unproven, both controls passed, none unattempted. 9 are owed a check, in four items, and a tenth, item 5, is from the run's first day; 1 is a product bug, filed as GIT-104; 1 is killed by a test the run's set did not hold; 19 are recorded at the end as equivalent, with the reason. Every line quoted below reads the same at `14f42bd`, where the run measured, and at the base.
 - **Rules:** those of batch 1, with these numbers.
   - **New checks** from **G310** in the `tests/test-git-internals-ro-*.sh` files (batch 6 has G300 to G309; G291 to G295 are taken and G296 to G299 are kept for the Linux agent's fixes). Item 4 may sit better in `tests/test-launcher-dir-ro.sh`, from T91, or beside the checks of `host_checkout_preflight`: the agent's choice.
-  - **A product bug** found on the way is GIT-105 or later, or LNCH-29 or later (LNCH-28 is the Mac agent's); look before numbering. GIT-104 is the one this brief's review found (below).
+  - **A product bug** found on the way is GIT-108 or later, or LNCH-35 or later (LNCH-28 is the Mac agent's; GIT-105 to GIT-107 and LNCH-29 to LNCH-34 are the [2026-11-17 review](2026-11-17-bugs-review.md)'s); look before numbering. GIT-104 is the one this brief's review found (below).
   - **"Run on Linux"** below means: on 2026-11-16 the unchanged launcher and the one with the damage named were run side by side on a layout built on `tests/lib-git-internals-ro.sh`, and the lines named compared. No check was written. "Read" means read from the code only.
   - **One identity can be several mutants:** a line with several operators to flip gives one mutant for each, and a line that occurs more than once gives one for each copy, all under the same identity. The entry says which are meant.
   - Demonstrate, do not score. No entries in `tests/falsify/survivors.txt`. Results in this section, one line per item.

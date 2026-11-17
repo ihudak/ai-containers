@@ -1518,8 +1518,12 @@ else
   fail "T66 VM ids (rc=$LAUNCH_RC; $dst66 -> '$(man66 "$dst66")' want '$(vm66 "$src66")'; anchor '$aenv66'; stderr: $(tail -3 "$ERR" | tr '\n' ' '))"
 fi
 # Only fixed arguments reach the VM: the paths go on stdin.
-[[ "$(head -n 9 "$CAPTURE.colima" 2>/dev/null)" == "$(printf '%s\n' ssh -p default -- xargs -0 sh -c 'cat /proc/self/mounts 2>/dev/null | while read -r _ m t _; do')" \
-   && "$(tail -n 1 "$CAPTURE.colima" 2>/dev/null)" == sh ]] && ! grep -qF "$TMP" "$CAPTURE.colima" \
+# The shares are listed once, by _vm_hold_main, which then has xargs run the
+# per-path program, _vm_hold_prog, its argument (LNCH-32).
+eval "$(awk '/^_vm_hold_[a-z]*=/ {p = 1} p {print} p && /'\''$/ {p = 0}' "$ENGINE/sandbox.sh")"
+[[ "$(head -n 7 "$CAPTURE.colima" 2>/dev/null)" == "$(printf '%s\n' ssh -p default -- sh -c 'cat /proc/self/mounts 2>/dev/null | while read -r _ m t _; do')" \
+   && "$(cat "$CAPTURE.colima" 2>/dev/null)" == "$(printf '%s\n' ssh -p default -- sh -c "${_vm_hold_main:-}" sh "${_vm_hold_prog:-}")" \
+   && "${_vm_hold_main:-}" == *$'\nexec xargs -0 sh -c "$1" sh' ]] && ! grep -qF "$TMP" "$CAPTURE.colima" \
   && pass "T66 colima ssh gets the profile and a fixed command, no path" \
   || fail "T66 colima argv: $(tr '\n' ' ' < "$CAPTURE.colima" 2>/dev/null)"
 # The VM reads each id from the directory that holds the path, while it holds
@@ -1575,6 +1579,30 @@ for ep66 in unix:///var/run/docker.sock "unix://$HOME/.colima/../x/docker.sock";
     && pass "T66 docker at $ep66 is not Colima's: colima is not asked" \
     || fail "T66 $ep66: colima asked ($(tr '\n' ' ' < "$CAPTURE.colima" 2>/dev/null)), $dst66 -> '$(man66 "$dst66")'"
 done
+# Paths past the VM's xargs limit: xargs runs the program again for the rest,
+# and every path is still recorded once, with its own id. The header (the
+# shares) was printed by each run, and the reader, taking one, lost its place in
+# every later batch: those paths were dropped and recorded 0:0, refusing the
+# launch (bugs review LNCH-32, ~128 KiB of paths under the VM's GNU xargs). The
+# fake xargs splits at 4 KiB, so a few dozen paths show it.
+printf '#!/usr/bin/env bash\nexec /usr/bin/xargs -s 4096 "$@"\n' > "$TMP/bin66/xargs" && chmod +x "$TMP/bin66/xargs"
+mkdir -p "$TMP/big66"; big66=()
+for i66 in $(seq 40); do big66+=("$TMP/big66/$i66$(printf 'y%.0s' $(seq 200))"); mkdir -p "${big66[-1]}"; done
+got66="$(
+  for f66 in _colima_profile _timeout_prefix _vm_dev_ino_load; do
+    eval "$(awk -v f="$f66() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh")"
+  done
+  eval "$(awk '/^_vm_hold_[a-z]*=/ {p = 1} p {print} p && /'\''$/ {p = 0}' "$ENGINE/sandbox.sh")"
+  declare -A m66=(); DOCKER_HOST="$colima66" _vm_dev_ino_load m66 "${big66[@]}"
+  n66=0; for p66 in "${big66[@]}"; do [[ "${m66[$p66]:-}" == "$(vm66 "$p66")" ]] && n66=$((n66 + 1)); done
+  printf '%s of %s' "$n66" "${#m66[@]}"
+)"
+if [[ "$got66" == "40 of 40" ]]; then
+  pass "T66 paths past the VM's xargs limit are each recorded with their own id (LNCH-32)"
+else
+  fail "T66 xargs batches: $got66 recorded with their own id, of 40 (LNCH-32)"
+fi
+rm -rf "$TMP/big66" "$TMP/bin66/xargs"
 rm -f "$TMP/bin/colima"; rm -rf "$T66" "$TMP/bin66"
 
 # ── T67: a host path holding ':', or bytes that are not UTF-8 ──────────────
@@ -1938,7 +1966,7 @@ rm -f "$fns72"
 # GAP-2 slice 5: a condition or a return of each, turned, survived every test.
 fns73="$TMP/fns73.sh"
 { awk -v f="resolve_path() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox-common.sh"
-  awk "index(\$0, \"_vm_hold_prog='\") == 1 {p = 1} p {print} p && /^done'\$/ {exit}" "$ENGINE/sandbox.sh"
+  awk '/^_vm_hold_[a-z]*=/ {p = 1} p {print} p && /'\''$/ {p = 0}' "$ENGINE/sandbox.sh"
   for f73 in _term _q _timeout_prefix seed_workcopy_volume _colima_profile _vm_dev_ino_load _bind_read repos_path_in_container launcher_dirs_in; do
     awk -v f="$f73() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
   done; } > "$fns73"

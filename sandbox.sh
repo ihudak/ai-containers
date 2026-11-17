@@ -6346,11 +6346,17 @@ _colima_profile() {
 # docker mounts what the VM has there. Under a share, the agent could have made
 # that directory unsearchable for the moment it is read, so it is absent, as is
 # any other path (security review of PLAT-11's fix). Returns non-zero off Colima.
-# shellcheck disable=SC2016  # the VM's sh expands it, from the paths on its stdin
-_vm_hold_prog='cat /proc/self/mounts 2>/dev/null | while read -r _ m t _; do
+# The share list is printed once, before xargs: xargs runs the program again for
+# each batch of paths past its command-line limit (~128 KiB in the VM), and a
+# header printed by every run put the reader out of step for every later batch,
+# those paths recorded 0:0 and the launch refused (bugs review LNCH-32).
+# shellcheck disable=SC2016  # the VM's sh expands it; $1 is _vm_hold_prog
+_vm_hold_main='cat /proc/self/mounts 2>/dev/null | while read -r _ m t _; do
 case $t in virtiofs|9p|fuse.sshfs) printf "%s\n" "$m" ;; esac
 done; printf "\0"
-for p do
+exec xargs -0 sh -c "$1" sh'
+# shellcheck disable=SC2016  # the VM's sh expands it, from the paths on its stdin
+_vm_hold_prog='for p do
 d=${p%/*}; n=${p##*/}
 printf "%s\0" "$p"
 ( if cd -P -- "${d:-/}" 2>/dev/null; then
@@ -6385,7 +6391,7 @@ _vm_dev_ino_load() {
     [[ "$_vl_w" == "${_vl_d:-/}"$'\n' && "$_vl_r" =~ ^[0-9]+\ [0-9]+$ ]] || continue
     _vl_map["$_vl_p"]="$_vl_r"
   done
-  } < <(printf '%s\0' "$@" | ${_vl_tp[@]+"${_vl_tp[@]}"} colima ssh -p "$_vl_prof" -- xargs -0 sh -c "$_vm_hold_prog" sh 2>/dev/null)
+  } < <(printf '%s\0' "$@" | ${_vl_tp[@]+"${_vl_tp[@]}"} colima ssh -p "$_vl_prof" -- sh -c "$_vm_hold_main" sh "$_vm_hold_prog" 2>/dev/null)
   return 0
 }
 
