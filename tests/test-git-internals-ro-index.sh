@@ -2826,5 +2826,138 @@ if [[ "$(id -u)" != 0 ]]; then
   "${G[@]}" -C "$PROJ" worktree prune; "${G[@]}" -C "$PROJ" branch -q -D bw278
 else skip_root G278; fi
 
+# ── G301: a directory the launch named, readable and not searchable after ────
+# G169's layout. The session makes the directory an outside commondir names a
+# repository, takes its HEAD away and leaves it readable but not searchable
+# (mode 400). The check after the session cannot look inside, and says so,
+# naming it (feature-gaps review GAP-2, the whole-file run, batch 6, item 2).
+# Mode 400, not 300: the mount's own scan reaches a 300 directory first and
+# names it with the same words. Skipped as root, where a mode stops nothing.
+if [[ "$(id -u)" != 0 ]]; then
+  B301="$TMP/b301"; O301="$TMP/o301"
+  mkdir -p "$B301/node_modules/ng" "$B301/co" "$O301/wt" && printf 'ref: refs/heads/main\n' > "$O301/wt/HEAD" \
+    && printf '%s\n' "$B301/node_modules/ng" > "$O301/wt/commondir" && printf '%s\n' "$B301/co/.git" > "$O301/wt/gitdir" \
+    && printf 'gitdir: %s\n' "$O301/wt" > "$B301/co/.git" || { printf 'SCAFFOLD-FAILED: G301\n'; exit 1; }
+  FAKE_SESSION="git init -q --bare '$B301/node_modules/ng' && rm -f '$B301/node_modules/ng/HEAD' && chmod 400 '$B301/node_modules/ng'" \
+    EXTRA_MOUNTS="$B301" launch "$TMP/app"
+  if [[ -x "$B301/node_modules/ng" ]]; then
+    pass "G301 skipped: mode 400 did not take on this filesystem"
+  else
+    [[ "$LAUNCH_RC" == 0 ]] \
+      && grep -qF "$B301/node_modules/ng (cannot be listed, so it was not checked)" \
+         < <(grep -A3 -F 'WARNING: the session made git repositories in a writable mount' "$ERR") \
+      && pass "G301 a directory the launch named that the session leaves unsearchable is named as not checked" \
+      || fail "G301 not searchable after the session (rc=$LAUNCH_RC; $(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
+  fi
+  chmod 700 "$B301/node_modules/ng" 2>/dev/null; rm -rf "$B301" "$O301"
+else skip_root G301; fi
+
+# ── G310: what the check after a session says of a directory a commondir named
+# An outside worktree's commondir names $N, a linked worktree's directory of a
+# repository under a writable mount's pruned node_modules, not there at launch.
+# The session makes it, with a commondir of ../..: the check after the session
+# reads it by what that names and by its own config and hooks, and says each
+# key and hook once, its own hooks included, with nothing after the last
+# (feature-gaps review GAP-2, the whole-file run, batch 7, item 1). The line is
+# compared whole: G169 and G171 match its start only.
+B310="$TMP/b310"; O310="$TMP/o310"; X310="$B310/node_modules/x"; N310="$X310/.git/worktrees/nv"
+mk310() {  # $1 = hooks in x/.git, $2 = hooks the session makes in $N, $3 = 1 to set core.fsmonitor in both
+  rm -rf "$B310" "$O310"
+  mkdir -p "$B310/co" "$O310/wt" && "${G[@]}" init -q "$X310" && "${G[@]}" -C "$X310" commit -q --allow-empty -m i \
+    && rm -f "$X310/.git/hooks/"*.sample && printf 'ref: refs/heads/main\n' > "$O310/wt/HEAD" \
+    && printf '%s\n' "$N310" > "$O310/wt/commondir" && printf '%s\n' "$B310/co/.git" > "$O310/wt/gitdir" \
+    && printf 'gitdir: %s\n' "$O310/wt" > "$B310/co/.git" || { printf 'SCAFFOLD-FAILED: G310\n'; exit 1; }
+  local h s310="mkdir -p '$N310/refs' '$N310/objects' '$N310/hooks' && printf 'ref: refs/heads/main\n' > '$N310/HEAD' && printf '../..\n' > '$N310/commondir'"
+  for h in $1; do printf '#!/bin/sh\n' > "$X310/.git/hooks/$h" && chmod +x "$X310/.git/hooks/$h" || { printf 'SCAFFOLD-FAILED: G310 %s\n' "$h"; exit 1; }; done
+  for h in $2; do s310+=" && printf '#!/bin/sh\n' > '$N310/hooks/$h' && chmod +x '$N310/hooks/$h'"; done
+  if [[ "$3" == 1 ]]; then
+    "${G[@]}" config --file "$X310/.git/config" core.fsmonitor ./fsm || { printf 'SCAFFOLD-FAILED: G310 config\n'; exit 1; }
+    s310+=" && git config --file '$N310/config' core.fsmonitor ./fsm"
+  fi
+  FAKE_SESSION="$s310" EXTRA_MOUNTS="$B310" launch "$TMP/app"
+  l310="$(grep -A3 -F 'WARNING: the session made git repositories in a writable mount' "$ERR" | sed 's/^ *//' | grep -F "$N310 (")"
+}
+mk310 pre-commit pre-commit 1
+[[ "$l310" == "$N310 (config: core.fsmonitor; hooks: pre-commit)" ]] \
+  && pass "G310 a key and a hook on both reads are each named once" \
+  || fail "G310 both reads (rc=$LAUNCH_RC; line: '$l310')"
+mk310 pre-commit pre-push 0
+[[ "$l310" == "$N310 (hooks: pre-commit, pre-push)" ]] \
+  && pass "G310 the directory's own hook is named beside the one its commondir leads to" \
+  || fail "G310 a hook of its own (rc=$LAUNCH_RC; line: '$l310')"
+mk310 pre-commit "" 0
+[[ "$l310" == "$N310 (hooks: pre-commit)" ]] \
+  && pass "G310 with no hook of its own nothing is added" \
+  || fail "G310 no hook of its own (rc=$LAUNCH_RC; line: '$l310')"
+rm -rf "$B310" "$O310"
+
+# ── G311: a directory the session makes that runs nothing is not named ───────
+# G169's layout, the directory the outside commondir names not there at launch.
+# The session makes it a bare repository with no HEAD, no key and no hook: on a
+# host where git runs, the check after the session has nothing to name, and
+# never says that git does not run (feature-gaps review GAP-2, the whole-file
+# run, batch 7, item 2).
+B311="$TMP/b311"; O311="$TMP/o311"
+mkdir -p "$B311/node_modules" "$B311/co" "$O311/wt" && printf 'ref: refs/heads/main\n' > "$O311/wt/HEAD" \
+  && printf '%s\n' "$B311/node_modules/ng" > "$O311/wt/commondir" && printf '%s\n' "$B311/co/.git" > "$O311/wt/gitdir" \
+  && printf 'gitdir: %s\n' "$O311/wt" > "$B311/co/.git" || { printf 'SCAFFOLD-FAILED: G311\n'; exit 1; }
+FAKE_SESSION="git init -q --bare '$B311/node_modules/ng' && rm -f '$B311/node_modules/ng/HEAD' '$B311/node_modules/ng/hooks/'*.sample" \
+  EXTRA_MOUNTS="$B311" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && -d "$B311/node_modules/ng/objects" ]] \
+  && grep -qF "WARNING: $O311/wt/commondir names $B311/node_modules/ng, which does not exist" "$ERR" \
+  && ! grep -qF 'WARNING: the session made git repositories in a writable mount' "$ERR" \
+  && ! grep -qF 'git does not run on this host' "$ERR" \
+  && pass "G311 a repository the session makes there that runs nothing is not named" \
+  || fail "G311 runs nothing (rc=$LAUNCH_RC; $(grep -A3 -F -e 'the session made' -e 'does not run' "$ERR" | tr '\n' ' '))"
+rm -rf "$B311" "$O311"
+
+# ── G312: a directory that is no git directory, named from two mounts ───────
+# Two writable mounts, a .git file in each naming one directory in the first
+# that is no git directory: each mount's scan names it, the second reaching it
+# through a mount not its own, and the launch starts (feature-gaps review
+# GAP-2, the whole-file run, batch 7, item 3; the layout is the brief
+# reviewer's). In one mount the scan's own record stops the second call.
+B312a="$TMP/b312a"; B312b="$TMP/b312b"
+mkdir -p "$B312a/n" "$B312a/co1" "$B312b/co2" && printf 'gitdir: %s\n' "$B312a/n" > "$B312a/co1/.git" \
+  && printf 'gitdir: %s\n' "$B312a/n" > "$B312b/co2/.git" || { printf 'SCAFFOLD-FAILED: G312\n'; exit 1; }
+EXTRA_MOUNTS="$B312a $B312b" launch "$TMP/app"
+n312="$(grep -cF "names $B312a/n, which is not a git directory" "$ERR")"
+[[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" && "$n312" == 2 ]] \
+  && pass "G312 a directory no git directory, named from two mounts, is named from each and the launch starts" \
+  || fail "G312 two mounts (rc=$LAUNCH_RC; named $n312 times; $(grep -E 'WARNING|ERROR' "$ERR" | head -3 | tr '\n' ' '))"
+rm -rf "$B312a" "$B312b"
+
+# ── G313: a .git you cannot list in a read-only mount a writable one holds ───
+# What the scan of a read-only mount finds is carried into the writable
+# mount's view: a .git there that can be searched but not listed refuses the
+# launch, as one the writable mount's own scan finds does; one that can be
+# listed but not searched is read-only whole and named (feature-gaps review
+# GAP-2, the whole-file run, batch 7, item 5). Skipped as root.
+if [[ "$(id -u)" != 0 ]]; then
+  B313="$TMP/b313"; R313="$B313/node_modules/ro/r"
+  "${G[@]}" init -q "$R313" && "${G[@]}" -C "$R313" commit -q --allow-empty -m i || { printf 'SCAFFOLD-FAILED: G313\n'; exit 1; }
+  chmod 300 "$R313/.git"
+  EXTRA_MOUNTS="$B313 $B313/node_modules/ro:ro" launch "$TMP/app"
+  if [[ -r "$R313/.git" ]]; then
+    pass "G313 skipped: mode 300 did not take on this filesystem"
+  else
+    [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] \
+      && grep -qF "ERROR: $R313/.git can be searched but not listed by you" "$ERR" \
+      && pass "G313 a .git you can search but not list, found in a read-only mount, refuses the launch" \
+      || fail "G313 mode 300 (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  chmod 400 "$R313/.git"
+  EXTRA_MOUNTS="$B313 $B313/node_modules/ro:ro" launch "$TMP/app"
+  if [[ -x "$R313/.git" ]]; then
+    pass "G313 skipped: mode 400 did not take on this filesystem"
+  else
+    [[ "$LAUNCH_RC" == 0 ]] && has_mount "$R313/.git:/workspace/b313/node_modules/ro/r/.git:ro" \
+      && grep -qF "WARNING: $R313/.git cannot be listed by you" "$ERR" \
+      && pass "G313 one you can list but not search is read-only whole and named" \
+      || fail "G313 mode 400 (rc=$LAUNCH_RC; $(mounts | grep -F 'ro/r/.git' | tr '\n' ' '); $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  chmod 700 "$R313/.git"; rm -rf "$B313"
+else skip_root G313; fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
