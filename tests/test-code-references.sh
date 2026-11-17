@@ -184,8 +184,9 @@ ref_check() {
       printf 'PROBLEM %s:%s: a citation of %s wraps onto the next line — keep the snippet on one line\n' "$f" "$ln" "${BASH_REMATCH[2]}"
     elif [[ "$line" =~ $split_re ]]; then
       p="${BASH_REMATCH[2]}"
-      # Only when the snippet opens the NEXT line; anything else is prose.
-      if [[ "$(sed -n "$((ln + 1))p" "$root/$f")" =~ ^[[:space:]]*(#[[:space:]]*)?\` ]]; then
+      # Only when the snippet opens the NEXT line, with one backtick; anything
+      # else is prose, a Markdown code fence (three) among it.
+      if [[ "$(sed -n "$((ln + 1))p" "$root/$f")" =~ ^[[:space:]]*(#[[:space:]]*)?\`[^\`] ]]; then
         printf 'PROBLEM %s:%s: a citation of %s breaks after its colon — keep the file and its snippet on one line\n' "$f" "$ln" "$p"
       fi
     fi
@@ -198,7 +199,7 @@ ref_check() {
       elif [[ "$line" =~ $split_bt_re ]]; then
         p="${BASH_REMATCH[1]}"
         # Only when the snippet opens the NEXT line; anything else is prose.
-        [[ "$(sed -n "$((ln + 1))p" "$root/$f")" =~ ^[[:space:]]*(#[[:space:]]*)?\` ]] || p=""
+        [[ "$(sed -n "$((ln + 1))p" "$root/$f")" =~ ^[[:space:]]*(#[[:space:]]*)?\`[^\`] ]] || p=""
       fi
       if [[ -n "$p" ]]; then
         _ref_resolve "$f" "$p"
@@ -249,6 +250,10 @@ printf 'y\n' > "$fx/b/x.sh"
   printf '# apart, split: %s%s%s:\n'            "$BT" target.sh "$BT"   # 22 PROBLEM
   printf '# %sfoo_bar()%s\n'                    "$BT" "$BT"             # 23 ok, prose
   printf '# open message: %s%s: no closing\n'   "$BT" ghost.sh          # 24 ok, prose
+  printf '# a fence after %s:\n'                target.sh               # 25 ok: a fence is no snippet
+  printf '# %s%s%sbash\n'                       "$BT" "$BT" "$BT"       # 26 ok
+  printf '# and after %s%s%s:\n'                "$BT" target.sh "$BT"   # 27 ok: the same, backticked
+  printf '# %s%s%s\n'                           "$BT" "$BT" "$BT"       # 28 ok
 } > "$fx/cite.sh"
 mkdir -p "$fx/docs/reviews" || { printf 'SCAFFOLD-FAILED: fixture dirs\n'; exit 1; }
 {

@@ -10,7 +10,7 @@
 - `capture-agent-destinations.sh` helps you discover additional AI-agent-related DNS and TLS destinations in discovery mode.
 - `extract-discovery.sh` is that daemon's host-side companion: after a discovery session it turns the pcap into the two hostname lists, reports which of them this image would still block, and — only when asked — deletes the capture. See [Extracting discovery results](security.md#extracting-discovery-results).
 - `allowlist-domains.d/`, `allowlist-proxy-domains.d/`, `allowlist-cidrs.d/` contain per-component allowlist fragments. `build.sh` assembles the active fragments into the three `allowlist-*.txt` files that the Dockerfile copies into the image. Each directory also contains a `custom.txt` file that is always included regardless of which components are enabled.
-- `sandbox-common.sh` is a shared library (config parsing, container-group helpers, path/volume helpers, the repo registry) sourced by the three entry-point scripts below.
+- `sandbox-common.sh` is a shared library (config parsing, container-group helpers, path/volume helpers, the repo registry) sourced by the entry-point scripts, `build.sh`, `sandbox.sh` and `repo.sh` below among them.
 - `build.sh` builds the image (reads `sandbox.conf`, regenerates the allowlists).
 - `sandbox.sh` runs the container engine (`restricted` / `discovery` / `open`). In a consumer project you normally invoke it indirectly through the generated `runme.sh` launcher (see project-init below).
 - `repo.sh` manages shared, native-speed repo volumes (`add` / `sync` / `reset` / `list` / `rm`).

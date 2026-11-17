@@ -144,19 +144,20 @@ cmd_list() {
   done
 
   local names; names="$(group_names)"
-  if [[ -z "$names" ]]; then
-    printf 'No container groups yet (%s is empty or absent).\n' "$groups_root"
-    return 0
-  fi
-
   # A docker that cannot be reached is not one with no volumes: the groups are
   # still listed, their volumes unknown, and the run says so, rc 1 (review of
   # the PRJ-16 fix).
   local dk=1
   docker volume ls -q >/dev/null 2>&1 || dk=0
-  printf '%-24s  %-40s  %s\n' "GROUP" "RVM VOLUME" "$([[ "$show_sizes" == "1" ]] && echo "SIZE" || echo "STATE")"
+  # With no group directory left, the orphans are all there is to name: deleting
+  # the directories by hand leaves exactly that, and list returned before them.
   local g vol state
-  while IFS= read -r g; do
+  if [[ -z "$names" ]]; then
+    printf 'No container groups yet (%s is empty or absent).\n' "$groups_root"
+  else
+    printf '%-24s  %-40s  %s\n' "GROUP" "RVM VOLUME" "$([[ "$show_sizes" == "1" ]] && echo "SIZE" || echo "STATE")"
+  fi
+  [[ -z "$names" ]] || while IFS= read -r g; do
     [[ -n "$g" ]] || continue
     vol="$(rvm_volume_name "$g")"
     if (( ! dk )); then

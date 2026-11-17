@@ -87,22 +87,31 @@ fi
 # The step's environment is its own env: mapping, rendered as GitHub would, not
 # names this test sets: a mapping that swapped the two, or was lost, must fail
 # here (review of the TST-39 fix).
+# step_env <tag nvm's latest release gives>: the step's env: mapping, one
+# NAME=value per line, with what GitHub would render; comments and blank lines
+# in it skipped, as YAML does.
+step_env() {
+  local kv
+  while IFS= read -r kv; do
+    kv="${kv//'${{ steps.latest.outputs.tag }}'/$1}"
+    kv="${kv//'${{ steps.current.outputs.dockerfile }}'/$current}"
+    printf '%s=%s\n' "${kv%%: *}" "${kv#*: }"
+  done < <(awk -v step="$STEP" '
+    $0 == "      - name: " step { instep = 1; next }
+    instep && /^      - / { exit }
+    instep && /^        env:[[:space:]]*$/ { inenv = 1; next }
+    inenv && /^[[:space:]]*(#.*)?$/ { next }
+    instep && inenv && /^          [A-Za-z_][A-Za-z0-9_]*: / { sub(/^          /, ""); print; next }
+    inenv { inenv = 0 }
+  ' "$WF")
+}
 stepenv=()
-while IFS= read -r kv; do
-  kv="${kv//'${{ steps.latest.outputs.tag }}'/v9.9.9}"
-  kv="${kv//'${{ steps.current.outputs.dockerfile }}'/$current}"
-  stepenv+=("${kv%%: *}=${kv#*: }")
-done < <(awk -v step="$STEP" '
-  $0 == "      - name: " step { instep = 1; next }
-  instep && /^      - / { exit }
-  instep && /^        env:[[:space:]]*$/ { inenv = 1; next }
-  instep && inenv && /^          [A-Za-z_][A-Za-z0-9_]*: / { sub(/^          /, ""); print; next }
-  inenv { inenv = 0 }
-' "$WF")
-if (( ${#stepenv[@]} )) && ! printf '%s\n' "${stepenv[@]}" | grep -q '\${{'; then
-  pass "the step's env: mapping is read and every value in it rendered (${#stepenv[@]} names)"
+while IFS= read -r kv; do stepenv+=("$kv"); done < <(step_env v9.9.9)
+names="$(printf '%s\n' ${stepenv[@]+"${stepenv[@]}"} | sed 's/=.*//' | LC_ALL=C sort | tr '\n' ' ')"
+if [[ "$names" == "CURRENT LATEST " ]] && ! printf '%s\n' "${stepenv[@]}" | grep -q '\${{'; then
+  pass "the step's env: mapping gives LATEST and CURRENT, each rendered"
 else
-  fail "the step's env: mapping is read and every value in it rendered (got: ${stepenv[*]:-nothing})"
+  fail "the step's env: mapping gives LATEST and CURRENT, each rendered (got: ${stepenv[*]:-nothing})"
 fi
 ( cd "$TMP/r" && env -u LATEST -u CURRENT ${stepenv[@]+"${stepenv[@]}"} GITHUB_OUTPUT="$TMP/out" bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
 if [[ "$rc" == 0 ]] && grep -qx 'changed=true' "$TMP/out" 2>/dev/null; then
@@ -111,6 +120,18 @@ else
   fail "the step updates the version and reports changed=true (rc $rc)"
 fi
 changed="$(cd "$TMP/r" && git diff --name-only | LC_ALL=C sort)"
+# Where the latest tag is the Dockerfile's own, the step says so and changes
+# nothing: it takes the current version from CURRENT, which the mapping must
+# give (review of the TST-39 fix).
+upenv=()
+while IFS= read -r kv; do upenv+=("$kv"); done < <(step_env "$current")
+mkdir -p "$TMP/r2" && cp "$TMP/r/sandbox.conf" "$TMP/r2/" && git -C "$TMP/r" show HEAD:Dockerfile > "$TMP/r2/Dockerfile"
+( cd "$TMP/r2" && env -u LATEST -u CURRENT ${upenv[@]+"${upenv[@]}"} GITHUB_OUTPUT="$TMP/out3" bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
+if [[ "$rc" == 0 ]] && grep -qx 'changed=false' "$TMP/out3" 2>/dev/null && cmp -s "$TMP/r2/Dockerfile" <(git -C "$TMP/r" show HEAD:Dockerfile); then
+  pass "the step with the Dockerfile's own version reports changed=false and changes nothing"
+else
+  fail "the step with the Dockerfile's own version reports changed=false and changes nothing (rc $rc; $(cat "$TMP/out3" 2>/dev/null))"
+fi
 
 if [[ -n "$changed" && "$changed" == "$listed" ]]; then
   pass "the PR body lists exactly the files the job changes ($(tr '\n' ' ' <<<"$changed"))"

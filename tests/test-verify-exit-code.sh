@@ -408,7 +408,7 @@ grep -q 'RESULT: FAILED' "$TMP/out.log" \
 # review TST-38). PHASES=0, the banner alone, is documented and still passes.
 r="$(mk_repo 0)"
 expect_rc "TST-38 a PHASES of only whitespace fails, not verifies nothing and exits 0" 1 "$(run_verify "$r" " ")"
-grep -q 'RESULT: FAILED' "$TMP/out.log" && grep -q 'names no phase' "$TMP/out.log" \
+grep -q 'RESULT: FAILED' "$TMP/out.log" && grep -qF 'PHASES=" " names no phase' "$TMP/out.log" \
   && pass "TST-38 PHASES=\" \": verdict line says FAILED, naming why" \
   || fail "TST-38 PHASES=\" \": verdict line says FAILED, naming why"
 r="$(mk_repo 0)"
@@ -423,6 +423,13 @@ for sep in $'\n' $'\t'; do
     && pass "TST-38 PHASES separated by $(printf '%q' "$sep"): phases 5 and 7 both ran" \
     || fail "TST-38 PHASES separated by $(printf '%q' "$sep"): phases 5 and 7 both ran"
 done
+# The message quotes the value as given, its newline shown escaped, not the
+# rewritten one (review of the TST-38 fix).
+r="$(mk_repo 0)"
+expect_rc "TST-38 PHASES with a phase this script lacks after a newline fails" 1 "$(run_verify "$r" $'5\n9')"
+grep -qF 'PHASES="5\n9" names phase 9' "$TMP/out.log" \
+  && pass "TST-38 the refusal quotes PHASES as given, its newline escaped" \
+  || fail "TST-38 the refusal quotes PHASES as given, its newline escaped ($(grep -F 'names phase' "$TMP/out.log" | head -1))"
 # A glob is a word, not this directory's files: a file named 5 beside it does
 # not turn `[5]` into phase 5.
 r="$(mk_repo 0)"

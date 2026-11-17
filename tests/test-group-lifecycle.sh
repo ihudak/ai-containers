@@ -462,6 +462,16 @@ out="$(HOME="$TMP/empty-home" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOL
 [[ "$rc" -eq 0 && "$out" == *"No container groups yet"* ]] \
   && pass "list with no groups root exits zero and says so" \
   || fail "list with no groups root exits zero and says so (rc=$rc; out: $out)"
+# Every group directory deleted by hand leaves only orphans, and list names them
+# still: it returned at "No container groups yet" before its orphan check
+# (review of the PRJ-16 fix).
+VOL_OWNER="" mkvol "ai-containers-rvm-left16" "left16"
+out="$(HOME="$TMP/empty-home" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" \
+  FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" list 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"No container groups yet"* && "$out" == *"ai-containers-rvm-left16  (no owner label"* ]] \
+  && pass "PRJ-16 list with no group directory left still names the orphaned volumes" \
+  || fail "PRJ-16 list with no group directory left (rc=$rc; out: $out)"
+rm -f "$FAKE_VOLUMES_DIR"/ai-containers-rvm-left16*
 
 # ── THE CONFIRMATION, ON A REAL TTY ─────────────────────────────────────────────
 # Everything above runs without a terminal, so confirm()'s interactive branch —

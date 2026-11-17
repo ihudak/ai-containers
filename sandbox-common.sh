@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# sandbox-common.sh — shared library for build.sh, sandbox.sh, and repo.sh.
+# sandbox-common.sh — shared library for the entry-point scripts beside it
+# (build.sh, sandbox.sh, repo.sh, group.sh, project.sh and the rest).
 #
 # This file is meant to be SOURCED, not executed. It provides:
 #   - configuration parsing for sandbox.conf (get_versions / is_enabled / ...)
@@ -7,7 +8,7 @@
 #   - path + docker-volume name helpers
 #   - the global repo-volume registry (~/.ai-containers/repos.conf)
 #
-# All three entry-point scripts live in the same directory as this file.
+# Every entry-point script that sources it lives in the same directory as this file.
 
 # Guard against double-sourcing.
 if [[ -n "${_SANDBOX_COMMON_SOURCED:-}" ]]; then
