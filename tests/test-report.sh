@@ -549,11 +549,17 @@ run "$CTLB/ai-containers-report.sh" --tsv "$CTLB" "$CTLB2"
 ctl_row="$(grep -m1 $'\t.*ctl?\\|ctl?.*\t' <<<"$OUT")"
 ctl_fields="$(awk -F'\t' '{ print NF }' <<<"$ctl_row")"
 hdr_fields="$(grep -m1 $'\t' <<<"$OUT" | awk -F'\t' '{ print NF }')"
+# Its engine_version cell, found by the header's column: the row starts with the base's
+# path, and mktemp's random name in TMPDIR holds "2J" now and then, which a
+# match on the whole row took for the unread engine-version's (a falsify
+# control went red on it, 1 run in 76, on main at c39f18a).
+ctl_ver="$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "engine_version") c = i; next } c { print $c }' \
+  <<<"$(grep -m1 $'\t' <<<"$OUT")"$'\n'"$ctl_row")"
 [[ "$RC" == 0 && -n "$ctl_row" && "$ctl_fields" == "$hdr_fields" ]] && ! ctl_bad "$OUT" \
-  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4?'* && "$ctl_row" == *'8g?[1A'* && "$ctl_row" != *'2J'* ]] \
+  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4?'* && "$ctl_row" == *'8g?[1A'* && -n "$ctl_ver" && "$ctl_ver" != *'2J'* ]] \
   && grep -qF 'proj/.ai-containers/engine-version holds something other than a version; not read.' <<<"$OUT" \
   && pass "PRJ-15 --tsv renders every field's control characters, a tab and a C1 among them, so each row keeps its columns" \
-  || fail "PRJ-15 --tsv (rc=$RC; $ctl_fields fields under $hdr_fields; $(od -c <<<"$ctl_row" | head -3 | tr '\n' ' '))"
+  || fail "PRJ-15 --tsv (rc=$RC; $ctl_fields fields under $hdr_fields; version cell '$ctl_ver'; $(od -c <<<"$ctl_row" | head -3 | tr '\n' ' '))"
 run "$CTLB/ai-containers-report.sh" "$CTLB" "$CTLB2"
 [[ "$RC" == 0 ]] && ! ctl_bad "$(tr -d '\n' <<<"$OUT")" && grep -q 'registered in multiple bases' <<<"$OUT" \
   && grep -q 'stale pre-rename launcher' <<<"$OUT" && grep -q 'ctl?' <<<"$OUT" \
