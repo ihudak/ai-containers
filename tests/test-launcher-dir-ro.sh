@@ -1970,7 +1970,7 @@ fns73="$TMP/fns73.sh"
   printf '_seed_wc_vol="" _seed_wc_name="" _seed_wc_rec="" _seed_wc_pid=""\n'
   awk -v f="resolve_path() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox-common.sh"
   awk '/^_vm_hold_[a-z]*=/ {p = 1} p {print} p && /'\''$/ {p = 0}' "$ENGINE/sandbox.sh"
-  for f73 in _term _q _timeout_prefix _seed_proc _seed_vol_state seed_workcopy_volume _colima_profile _vm_dev_ino_load _bind_read repos_path_in_container launcher_dirs_in; do
+  for f73 in _term _q _timeout_prefix _seed_proc _seed_vol_state _seed_rec_state seed_workcopy_volume _colima_profile _vm_dev_ino_load _bind_read repos_path_in_container launcher_dirs_in; do
     awk -v f="$f73() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
   done; } > "$fns73"
 t73() { bash -c 'set -euo pipefail; source "$1"; shift; eval "$1"' _ "$fns73" "$1" 2>&1; }

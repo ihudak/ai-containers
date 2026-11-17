@@ -70,7 +70,7 @@
   non-regular-file cases, each asserting no `COPILOT_GITHUB_TOKEN` and rc 0.
 
 ### GAP-18: the case/Windows refusal is not tested against the host paths LNCH-27 added to the verify list
-- Status: DONE (2026-11-17, with LNCH-30). `tests/test-launcher-dir-ro.sh` T91 runs the case/Windows refusal against pointers inside a writable mount, with a planted launcher as the control that it still refuses.
+- Status: DONE (2026-11-17, with LNCH-30). `tests/test-launcher-dir-ro.sh` T92 runs the case/Windows refusal against pointers inside a writable mount, with a planted launcher as the control that it still refuses.
 - **Area:** LNCH (verify manifest)
 - **Source:** AGENTS.md, "Mount layout": "a launch that needs any overlay, pin or file bind
   below a writable mount root is refused".

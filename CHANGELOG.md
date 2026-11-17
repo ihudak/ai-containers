@@ -210,15 +210,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   built yet, an interrupt, a full disk), the volume stayed, and every later
   launch mounted it, empty or in part, with no word. The volume is now removed
   when the copy fails or the launcher is stopped during it. A seeding is also
-  recorded on the host before the volume is made, and the record goes only
-  once the copy has finished. So a launcher killed outright, or a VM stopped
-  under it, leaves a record, and the next launch removes that volume, never
-  mounted, and seeds it again. A second launch seeding the same working copy
-  at once is refused, rather than copying into the first one's. An image not
-  built is named before any volume is made (bugs review LNCH-31). A volume an
-  earlier failure left has no record and is still mounted: if the working
-  copy a launch's `REPO:` line names is empty, remove that volume alone,
-  `docker volume rm <name>`, and launch again.
+  recorded on the host, per docker daemon, before the volume is made, and the
+  record goes only once the copy has finished. So a launcher killed outright,
+  or a VM stopped under it, leaves a record, and the next launch removes that
+  volume, never mounted, and seeds it again. A second launch seeding the same
+  working copy at once is refused, rather than copying into the first one's or
+  mounting its half copy. An image not built is named before any volume is
+  made (bugs review LNCH-31). A volume an earlier failure left has no record
+  and is still mounted: if the working copy a launch's `REPO:` line names is
+  empty or incomplete, remove that volume alone, `docker volume rm <name>`, and
+  launch again.
 - **A repo named `ro`, `rw` or `rwcopy` keeps the mode written.** A `REPOS`
   entry with no mode was told by its mode equalling its name, so `rw:rw`
   mounted the repo read-only and `@rw` was refused as a read-only working
@@ -1043,8 +1044,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `~/.config/gh/hosts.yml`, or to another group's, handed the next container
   that token, and a file at mode 000 ended every launch of the group. The file
   is now read only when it is a regular file and not a link, and only through
-  an open that is that very file, under a time bound, so a sibling container
-  swapping a link or a FIFO in at that moment gets nothing and hangs nothing.
+  an open that is that very file, under a time bound where a `timeout(1)` is
+  installed (a Mac needs Homebrew's coreutils), so a sibling container swapping
+  a link or a FIFO in at that moment gets nothing and hangs nothing.
   Anything else is a `WARNING:`, and the launch goes on with no token (bugs
   review LNCH-29).
 - **A program a git config has the host's git run is judged where it lies.**

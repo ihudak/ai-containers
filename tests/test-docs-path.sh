@@ -41,8 +41,12 @@ printf '%s\n' "\$*" >> "$TMP/docker-calls.txt"
 if [[ "\$1" == "run" && "\$*" == *"--entrypoint bash"* ]]; then
   [[ -n "\${FAKE_SEED_FAIL:-}" ]] && exit 125
   if [[ -n "\${FAKE_SEED_TERM:-}" ]]; then kill -TERM "\$PPID"; sleep 0.3; exit 143; fi
+  # FAKE_SEED_HANG: a copy that goes on after the launcher is told to stop.
+  if [[ -n "\${FAKE_SEED_HANG:-}" ]]; then kill -TERM "\$PPID"; sleep 30; exit 0; fi
 fi
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
+# The daemon's id, which a seeding record is kept under (FAKE_DAEMON_ID).
+if [[ "\$1" == info && "\$*" == *'{{.ID}}'* ]]; then printf '%s\n' "\${FAKE_DAEMON_ID:-}"; exit 0; fi
 # The project image is there unless FAKE_NO_IMAGE.
 if [[ "\$1 \$2" == "image inspect" ]]; then [[ -z "\${FAKE_NO_IMAGE:-}" ]]; exit; fi
 # Volume queries succeed with no output: a registered repo's volume counts as
@@ -64,6 +68,18 @@ if [[ "\$1" == "volume" ]]; then
   # FAKE_INSPECT_ERR is the latter for a working copy.
   if [[ "\$2" == inspect && "\$vol" == *--wc-* && -n "\${FAKE_INSPECT_ERR:-}" ]]; then
     echo "Error response from daemon: context deadline exceeded" >&2; exit 1
+  fi
+  # FAKE_WC_SEEDING_NOW=<record>: another launch begins seeding the working
+  # copy as this one looks at it: its record appears (FAKE_WC_SEEDING_ID) and
+  # its half-made volume is there.
+  if [[ "\$2" == inspect && "\$vol" == *--wc-* && -n "\${FAKE_WC_SEEDING_NOW:-}" ]]; then
+    mkdir -p "\${FAKE_WC_SEEDING_NOW%/*}"; printf '%s\n' "\$FAKE_WC_SEEDING_ID" > "\$FAKE_WC_SEEDING_NOW"; exit 0
+  fi
+  # FAKE_WC_APPEARS: the working copy is missing at the first look and there
+  # at the next, as when another launch seeds it in between.
+  if [[ "\$2" == inspect && "\$vol" == *--wc-* && -n "\${FAKE_WC_APPEARS:-}" ]]; then
+    if [[ ! -e "$TMP/looked-\$vol" ]]; then : > "$TMP/looked-\$vol"; echo "Error: get \$vol: no such volume" >&2; exit 1; fi
+    exit 0
   fi
   if [[ "\$2" == inspect && "\$vol" == *--wc-* && -n "\${FAKE_WC_MISSING:-}" && ! -e "$TMP/made-\$vol" ]]; then
     echo "Error response from daemon: get \$vol: no such volume" >&2; exit 1
@@ -664,8 +680,8 @@ seeded ok \
 # only once the copy has finished (review of the LNCH-31 fix): a launcher killed
 # with no chance to clean up (SIGKILL, the VM stopped) left a volume the next
 # launch mounted as seeded.
-wc31="$(grep -o '^volume create .*' "$TMP/docker-calls.txt" | awk '{print $NF}')"; rec31="$HOME/.ai-containers/.seeding/$wc31"
-[[ -n "$wc31" && ! -e "$rec31" && -d "$HOME/.ai-containers/.seeding" ]] \
+wc31="$(grep -o '^volume create .*' "$TMP/docker-calls.txt" | awk '{print $NF}')"; rec31="$HOME/.ai-containers/.seeding/unknown/$wc31"
+[[ -n "$wc31" && ! -e "$rec31" && -d "$HOME/.ai-containers/.seeding/unknown" ]] \
   && pass "LNCH-31 a seeding that finishes leaves no record" || fail "LNCH-31 a record left after a finished seeding ($wc31)"
 # A record whose launcher is gone: the volume was never mounted, so it is
 # removed and seeded again.
@@ -678,8 +694,7 @@ FAKE_WC_MISSING=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$T
   || fail "LNCH-31 a dead launcher's record (rc=$RC; $(grep -E '^(volume|run)' "$TMP/docker-calls.txt" | tr '\n' ';' | cut -c1-300); $(head -2 "$ERR" | tr '\n' ' '))"
 # A record whose launcher still runs: another launch is seeding it now, and
 # this one neither copies into nor removes it. This shell stands in for it.
-if [[ -r "/proc/$$/stat" ]]; then st31="$(head -c 4096 "/proc/$$/stat")"; read -r -a f31 <<< "${st31##*) }"; me31="$$ ${f31[19]}"
-else me31="$$ $(ps -o lstart= -p $$ | tr -s '[:space:]' '_' | sed 's/_$//')"; fi
+me31="$(bash -c 'eval "$(awk "/^_seed_proc\\(\\) \\{/,/^}\$/" "$1")"; _seed_proc "$2"' _ "$REPO_DIR/sandbox.sh" "$$")"
 printf '%s\n' "$me31" > "$rec31"
 : > "$CAPTURE"; : > "$TMP/docker-calls.txt"
 FAKE_WC_MISSING=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
@@ -696,7 +711,58 @@ FAKE_INSPECT_ERR=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$
   && grep -qF 'docker could not say whether the working copy' "$ERR" \
   && pass "LNCH-31 an inspect that fails for another reason than no such volume refuses the launch" \
   || fail "LNCH-31 an inspect error (rc=$RC; $(grep -E '^volume' "$TMP/docker-calls.txt" | tr '\n' ';'); $(head -1 "$ERR"))"
-unset -f seeded
+# A dead launcher's record, and a docker that cannot say whether the volume is
+# there: nothing is removed, and the record stays for the next launch.
+printf '999999999 1\n' > "$rec31"
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_INSPECT_ERR=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -ne 0 && -e "$rec31" ]] && ! grep -qE '^volume (rm|create)' "$TMP/docker-calls.txt" \
+  && pass "LNCH-31 a dead launcher's record with a docker that cannot answer removes nothing and keeps the record" \
+  || fail "LNCH-31 a dead record and an inspect error (rc=$RC; $(grep -E '^volume' "$TMP/docker-calls.txt" | tr '\n' ';'))"
+# A record that holds nothing is no launch's (records are linked into place
+# whole): its volume is removed and seeded again.
+: > "$rec31"; : > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_WC_MISSING=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && ! -e "$rec31" ]] && grep -qx "volume rm $wc31" "$TMP/docker-calls.txt" \
+  && pass "LNCH-31 an empty record is no launch's: its volume is removed and seeded again" \
+  || fail "LNCH-31 an empty record (rc=$RC; $(grep -E '^volume' "$TMP/docker-calls.txt" | tr '\n' ';'))"
+# A record is a daemon's: a dead launcher's record kept for another daemon
+# removes nothing on this one, whose working copy is taken as seeded.
+mkdir -p "$HOME/.ai-containers/.seeding/daemonA"; printf '999999999 1\n' > "$HOME/.ai-containers/.seeding/daemonA/$wc31"
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_DAEMON_ID=daemonB FAKE_WC_MISSING=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && -e "$HOME/.ai-containers/.seeding/daemonA/$wc31" ]] && ! grep -qE '^volume (rm|create)' "$TMP/docker-calls.txt" \
+  && grep -q "^$wc31:/workspace/good13\$" "$CAPTURE" \
+  && pass "LNCH-31 a record of another daemon removes nothing on this one" \
+  || fail "LNCH-31 another daemon's record (rc=$RC; $(grep -E '^volume' "$TMP/docker-calls.txt" | tr '\n' ';'))"
+rm -rf "$HOME/.ai-containers/.seeding/daemonA"
+# Another launch that begins seeding as this one looks at the volume: the
+# record is read after the volume, so its half copy is not taken for a seeded
+# one (review of the LNCH-31 fix: read before, it was mounted).
+docker_rm_made() { rm -f "$TMP/made-$wc31" "$TMP/looked-$wc31"; }
+: > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_WC_SEEDING_NOW="$rec31" FAKE_WC_SEEDING_ID="$me31" FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -ne 0 && ! -s "$CAPTURE" ]] && grep -qF "is being seeded by another launch (pid $$)" "$ERR" && ! grep -qE '^volume (rm|create)' "$TMP/docker-calls.txt" \
+  && pass "LNCH-31 a seeding that begins as the launch looks is seen: its half copy is not mounted" \
+  || fail "LNCH-31 a seeding that begins as the launch looks (rc=$RC; $(head -2 "$ERR" | tr '\n' ' '))"
+rm -f "$rec31"
+# A working copy that another launch seeds between this one's look and its
+# record is that launch's: this one copies nothing and mounts it.
+docker_rm_made; : > "$CAPTURE"; : > "$TMP/docker-calls.txt"
+FAKE_WC_APPEARS=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && ! -e "$rec31" ]] && ! grep -qE '^volume create|--entrypoint bash' "$TMP/docker-calls.txt" \
+  && grep -q "^$wc31:/workspace/good13\$" "$CAPTURE" \
+  && pass "LNCH-31 a working copy seeded by another launch in between is mounted, not copied into" \
+  || fail "LNCH-31 a copy that appears in between (rc=$RC; $(grep -E '^(volume|run)' "$TMP/docker-calls.txt" | tr '\n' ';' | cut -c1-300))"
+# A copy that goes on after the launcher is told to stop: the EXIT trap removes
+# its container first, then stops it, and the launch ends at once.
+docker_rm_made; : > "$CAPTURE"; : > "$TMP/docker-calls.txt"; t31=$SECONDS
+FAKE_WC_MISSING=1 FAKE_SEED_HANG=1 FAKE_LABELS="ai-containers-repo-good13=good13" run_sandbox "$TMP/app"
+[[ "$RC" -ne 0 && $(( SECONDS - t31 )) -lt 15 && ! -e "$rec31" ]] && grep -q "^rm -f $wc31-seed-" "$TMP/docker-calls.txt" \
+  && grep -qx "volume rm $wc31" "$TMP/docker-calls.txt" \
+  && pass "LNCH-31 a copy that goes on after the launcher stops is ended, and its working copy removed" \
+  || fail "LNCH-31 a copy that goes on (rc=$RC; $(( SECONDS - t31 )) s; $(grep -E '^(volume|rm)' "$TMP/docker-calls.txt" | tr '\n' ';'))"
+unset -f seeded docker_rm_made
 # A repo whose name is a mode keeps the mode written (bugs review LNCH-34): "no
 # mode given" was told by the mode equalling the name, so `rw:rw` mounted :ro and
 # `@rw` was refused as a read-only working directory.
