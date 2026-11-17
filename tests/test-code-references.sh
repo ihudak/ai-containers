@@ -198,7 +198,7 @@ ref_check() {
         p="${BASH_REMATCH[1]}"
       elif [[ "$line" =~ $split_bt_re ]]; then
         p="${BASH_REMATCH[1]}"
-        # Only when the snippet opens the NEXT line; anything else is prose.
+        # Only when the snippet opens the NEXT line, with one backtick; a fence is prose.
         [[ "$(sed -n "$((ln + 1))p" "$root/$f")" =~ ^[[:space:]]*(#[[:space:]]*)?\`[^\`] ]] || p=""
       fi
       if [[ -n "$p" ]]; then

@@ -188,7 +188,7 @@ fixture written at run time or nvm's own source, is skipped), unless the line
 carries `ref-lint: allow: <reason>`; and it refuses a citation split across two
 lines. A sentence that ends in a file name and a colon and carries on in words
 is left alone: the split rule fires only when the next line opens with a
-backtick. The test proves each rule can fail on a fixture tree before it checks
+single backtick, not a code fence. The test proves each rule can fail on a fixture tree before it checks
 the real one.
 
 **Two more spellings, checked since GAP-25.** File and snippet inside one pair

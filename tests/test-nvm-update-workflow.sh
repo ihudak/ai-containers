@@ -88,14 +88,18 @@ fi
 # names this test sets: a mapping that swapped the two, or was lost, must fail
 # here (review of the TST-39 fix).
 # step_env <tag nvm's latest release gives>: the step's env: mapping, one
-# NAME=value per line, with what GitHub would render; comments and blank lines
-# in it skipped, as YAML does.
+# NAME=value per line, with what GitHub would render. Read as YAML reads it:
+# comment and blank lines skipped, a trailing comment cut, a quoted value
+# unquoted, and an expression however it is spaced.
 step_env() {
-  local kv
+  local kv v
   while IFS= read -r kv; do
-    kv="${kv//'${{ steps.latest.outputs.tag }}'/$1}"
-    kv="${kv//'${{ steps.current.outputs.dockerfile }}'/$current}"
-    printf '%s=%s\n' "${kv%%: *}" "${kv#*: }"
+    v="$(sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+#.*$//' -e 's/[[:space:]]+$//' \
+               -e 's/^"(.*)"$/\1/' -e "s/^'(.*)'\$/\\1/" \
+               -e 's/\$\{\{[[:space:]]*([^[:space:]}]+)[[:space:]]*\}\}/${{ \1 }}/g' <<<"${kv#*:}")"
+    v="${v//'${{ steps.latest.outputs.tag }}'/$1}"
+    v="${v//'${{ steps.current.outputs.dockerfile }}'/$current}"
+    printf '%s=%s\n' "${kv%%:*}" "$v"
   done < <(awk -v step="$STEP" '
     $0 == "      - name: " step { instep = 1; next }
     instep && /^      - / { exit }
@@ -108,10 +112,10 @@ step_env() {
 stepenv=()
 while IFS= read -r kv; do stepenv+=("$kv"); done < <(step_env v9.9.9)
 names="$(printf '%s\n' ${stepenv[@]+"${stepenv[@]}"} | sed 's/=.*//' | LC_ALL=C sort | tr '\n' ' ')"
-if [[ "$names" == "CURRENT LATEST " ]] && ! printf '%s\n' "${stepenv[@]}" | grep -q '\${{'; then
+if [[ " $names" == *" CURRENT "* && " $names" == *" LATEST "* ]] && ! printf '%s\n' "${stepenv[@]}" | grep -q '\${{'; then
   pass "the step's env: mapping gives LATEST and CURRENT, each rendered"
 else
-  fail "the step's env: mapping gives LATEST and CURRENT, each rendered (got: ${stepenv[*]:-nothing})"
+  fail "the step's env: mapping gives LATEST and CURRENT, each rendered (got: ${stepenv[*]:-nothing}; if the workflow reads fine, this test's step_env() is what to fix)"
 fi
 ( cd "$TMP/r" && env -u LATEST -u CURRENT ${stepenv[@]+"${stepenv[@]}"} GITHUB_OUTPUT="$TMP/out" bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
 if [[ "$rc" == 0 ]] && grep -qx 'changed=true' "$TMP/out" 2>/dev/null; then

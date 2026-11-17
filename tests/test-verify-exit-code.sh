@@ -423,13 +423,17 @@ for sep in $'\n' $'\t'; do
     && pass "TST-38 PHASES separated by $(printf '%q' "$sep"): phases 5 and 7 both ran" \
     || fail "TST-38 PHASES separated by $(printf '%q' "$sep"): phases 5 and 7 both ran"
 done
-# The message quotes the value as given, its newline shown escaped, not the
-# rewritten one (review of the TST-38 fix).
-r="$(mk_repo 0)"
-expect_rc "TST-38 PHASES with a phase this script lacks after a newline fails" 1 "$(run_verify "$r" $'5\n9')"
-grep -qF 'PHASES="5\n9" names phase 9' "$TMP/out.log" \
-  && pass "TST-38 the refusal quotes PHASES as given, its newline escaped" \
-  || fail "TST-38 the refusal quotes PHASES as given, its newline escaped ($(grep -F 'names phase' "$TMP/out.log" | head -1))"
+# The message quotes the value as given, not the rewritten one: as $'...'
+# where it holds a newline or a tab, and a typed backslash-n stays itself
+# (review of the TST-38 fix).
+for v in $'5\n9' $'5\t9' '5\n9'; do
+  if [[ "$v" == *[[:cntrl:]]* ]]; then w="PHASES=$(printf '%q' "$v") names phase"; else w="PHASES=\"$v\" names phase"; fi
+  r="$(mk_repo 0)"
+  expect_rc "TST-38 PHASES=$(printf '%q' "$v") fails" 1 "$(run_verify "$r" "$v")"
+  grep -qF -- "$w" "$TMP/out.log" \
+    && pass "TST-38 the refusal quotes PHASES=$(printf '%q' "$v") as given" \
+    || fail "TST-38 the refusal quotes PHASES=$(printf '%q' "$v") as given ($(grep -F 'names phase' "$TMP/out.log" | head -1))"
+done
 # A glob is a word, not this directory's files: a file named 5 beside it does
 # not turn `[5]` into phase 5.
 r="$(mk_repo 0)"

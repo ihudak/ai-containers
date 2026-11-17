@@ -281,9 +281,10 @@ PHASES="${PHASES:-4 5 6 7}"
 # want_phase() matches space-separated words only, so `$'5\n7'` passed the check
 # below and then ran no phase but 0, and `*` named this directory's files
 # (review of the TST-38 fix). Rejoined with single spaces for want_phase();
-# the messages below quote the value as given, a newline or tab shown escaped,
-# since a failure record is one line.
-_phases_shown="${PHASES//$'\n'/\\n}"; _phases_shown="${_phases_shown//$'\t'/\\t}"
+# the messages below quote the value as given: in double quotes, or as bash's
+# $'...' where it holds a control character, since a failure record is one line
+# and a typed \n must not look like a newline.
+if [[ "$PHASES" == *[[:cntrl:]]* ]]; then _phases_shown="$(printf '%q' "$PHASES")"; else _phases_shown="\"$PHASES\""; fi
 _phase_words=()
 read -r -d '' -a _phase_words < <(printf '%s' "$PHASES") || true
 PHASES="${_phase_words[*]}"
@@ -309,14 +310,14 @@ for _requested_phase in ${_phase_words[@]+"${_phase_words[@]}"}; do
   case " $VALID_PHASES " in
     (*" $_requested_phase "*) : ;;
     (*) phase_fail "$_requested_phase" \
-          "PHASES=\"$_phases_shown\" names phase $_requested_phase, which this script does not have (valid: $VALID_PHASES)" ;;
+          "PHASES=$_phases_shown names phase $_requested_phase, which this script does not have (valid: $VALID_PHASES)" ;;
   esac
 done
 # A PHASES of nothing but whitespace is set, so it is not defaulted, and names
 # no phase: the loop above had no word to reject, and the run verified nothing
 # and passed (bugs review TST-38). PHASES=0, the banner alone, names one.
 if (( _named_phases == 0 )); then
-  phase_fail "-" "PHASES=\"$_phases_shown\" names no phase (valid: $VALID_PHASES; unset for the default)"
+  phase_fail "-" "PHASES=$_phases_shown names no phase (valid: $VALID_PHASES; unset for the default)"
 fi
 
 # ── Phase 0: environment ────────────────────────────────────────────────────────

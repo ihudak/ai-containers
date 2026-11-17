@@ -472,6 +472,13 @@ out="$(HOME="$TMP/empty-home" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOL
   && pass "PRJ-16 list with no group directory left still names the orphaned volumes" \
   || fail "PRJ-16 list with no group directory left (rc=$rc; out: $out)"
 rm -f "$FAKE_VOLUMES_DIR"/ai-containers-rvm-left16*
+# ... and with docker unreachable it cannot tell whether there are any: it says
+# so, rc 1, rather than "no groups" and success.
+out="$(HOME="$TMP/empty-home" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_DOCKER_DOWN=1 \
+  FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" list 2>&1)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"No container groups yet"* && "$out" == *"docker could not list its volumes"* ]] \
+  && pass "PRJ-16 list with no group directory and docker unreachable says the orphans cannot be told, rc 1" \
+  || fail "PRJ-16 list with no group directory and docker unreachable (rc=$rc; out: $out)"
 
 # ── THE CONFIRMATION, ON A REAL TTY ─────────────────────────────────────────────
 # Everything above runs without a terminal, so confirm()'s interactive branch —

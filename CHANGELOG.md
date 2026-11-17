@@ -255,7 +255,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that cannot list its containers as one none uses, nor one that cannot be
   reached as one with no volume, and `gc` exits 1 when it skipped a volume it
   could not judge. `group.sh list` names orphaned volumes when no group
-  directory is left, where it said only that there were no groups. A launch that mounts another home's volume says so, and
+  directory is left, where it said only that there were no groups; with docker
+  unreachable it says that it cannot tell, and exits 1. A launch that mounts another home's volume says so, and
   `docs/troubleshooting.md` says how to keep homes apart with
   `REPO_VOLUME_PREFIX`. The limit: a group of the same name in two homes still
   shares one volume, which the home that made it can remove from under the
