@@ -1770,10 +1770,23 @@ if [[ -d "$W/.git/modules/sub" && ! -e "$W/sub/.git" && -n "$sm" ]]; then
     fail "sync over .git/modules (rc=$RC; out: $OUT)"
   fi
   run_script inspect "$W"
-  if [[ "$RC" == 0 ]] && grep -qx 'MODULE|sub' <<<"$OUT"; then pass "inspect lists a submodule's repository in .git/modules (REPO-20)"
+  if [[ "$RC" == 0 ]] && grep -qx 'MODULE|sub' <<<"$OUT" && ! grep -q '^MODULE-MORE|' <<<"$OUT"; then
+    pass "inspect lists a submodule's repository in .git/modules, with no MODULE-MORE under the cap (REPO-20)"
   else fail "inspect's MODULE record (rc=$RC; out: $OUT)"; fi
 else
   fail "SCAFFOLD: no deinitialised submodule repository to test with (modules: $(ls "$W/.git/modules" 2>&1))"
+fi
+
+# The MODULE records stop at 50, and one MODULE-MORE counts the rest: an agent
+# can make any number of entries in .git/modules, and each is a line of the
+# confirmation. An entry that is no repository is listed too.
+W="$(mk_repo manymods)"; mkdir -p "$W/.git/modules"
+for i in $(seq 1 51); do mkdir "$W/.git/modules/m$i"; done
+run_script inspect "$W"
+if [[ "$RC" == 0 && "$(grep -c '^MODULE|' <<<"$OUT")" == 50 ]] && grep -qx 'MODULE-MORE|1' <<<"$OUT"; then
+  pass "inspect lists 50 entries of .git/modules and counts the rest in MODULE-MORE (REPO-20)"
+else
+  fail "inspect over 51 entries in .git/modules (rc=$RC; out: $(grep '^MODULE' <<<"$OUT" | tail -n 3))"
 fi
 
 # REPO-21 (GAP-23): commits made on a detached HEAD are on no branch, so the
