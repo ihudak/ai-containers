@@ -2610,11 +2610,11 @@ mkdir -p "$W92/data/docs" "$W92/data/notes" "$TMP/l92" && cp -R "$LAUNCHER" "$L9
        "$LAUNCHER/sandbox.sh" > "$L92/sandbox.sh" && grep -q '^_win_fs() { \[\[ "\$1" == "' "$L92/sandbox.sh" \
   || { printf 'SCAFFOLD-FAILED: T92\n'; exit 1; }
 EXTRA_MOUNTS="$W92/data" DOCS_PATH="$W92/data/docs" launch "$L92" "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && mounts | grep -qxF "$W92/data/docs:/workspace/docs:ro" \
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF "$W92/data/docs:/workspace/docs:ro" <<<"$(mounts)" \
   && pass "T92 a :ro pointer inside a writable mount on a Windows filesystem is mounted, not refused" \
   || fail "T92 DOCS_PATH inside a writable Windows mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 EXTRA_MOUNTS="$W92/data" VAULT_PATH="$W92/data/notes" launch "$L92" "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && mounts | grep -qxF "$W92/data/notes:/workspace/vault:rw" \
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF "$W92/data/notes:/workspace/vault:rw" <<<"$(mounts)" \
   && pass "T92 a writable pointer inside a writable mount on a Windows filesystem is mounted, not refused" \
   || fail "T92 VAULT_PATH inside a writable Windows mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 # The control: a launcher planted there still needs a read-only overlay below

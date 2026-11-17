@@ -112,7 +112,7 @@ step_env() {
 stepenv=()
 while IFS= read -r kv; do stepenv+=("$kv"); done < <(step_env v9.9.9)
 names="$(printf '%s\n' ${stepenv[@]+"${stepenv[@]}"} | sed 's/=.*//' | LC_ALL=C sort | tr '\n' ' ')"
-if [[ " $names" == *" CURRENT "* && " $names" == *" LATEST "* ]] && ! printf '%s\n' "${stepenv[@]}" | grep -q '\${{'; then
+if [[ " $names" == *" CURRENT "* && " $names" == *" LATEST "* ]] && [[ "${stepenv[*]}" != *'${{'* ]]; then
   pass "the step's env: mapping gives LATEST and CURRENT, each rendered"
 else
   fail "the step's env: mapping gives LATEST and CURRENT, each rendered (got: ${stepenv[*]:-nothing}; if the workflow reads fine, this test's step_env() is what to fix)"
