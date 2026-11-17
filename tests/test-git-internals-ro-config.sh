@@ -1709,14 +1709,16 @@ fi
 # agent's to make, and one with 64000 leading spaces took 17 s a call, stalling
 # every launch in silence (second review of the fix). An option's argument is
 # not taken for the script, `-m mod` runs ./mod.py first, inline code and
-# functions are named by the command, never by `-c` or `f()`.
+# functions are named by the command, never by `-c` or `f()`. What an option
+# loads is judged (perl -I's directory), and a wrapper that changes the
+# directory the program is found from is not followed (GIT-106).
 fns134="$TMP/fns134.sh"
-awk 'index($0, "_git_prog() {") == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh" > "$fns134"
+awk 'index($0, "_git_prog() {") == 1 || index($0, "_git_prog_wopt() {") == 1 || index($0, "_git_prog_iopt() {") == 1 {p = 1} p {print} p && /^}/ {p = 0}' "$ENGINE/sandbox.sh" > "$fns134"
 o134="$(bash -c 'source "$1"; for kv in "alias.p|!python3 -W ignore -m nbstripout --x" "alias.q|!perl -I lib t.pl" \
   "alias.r|!node -pe 1" "alias.s|!nice -n 10 ./n.sh" "alias.t|!timeout 10 ./t.sh" "alias.u|!env -u FOO -C /tmp ./e.sh" \
   "diff.d.textconv|sh -c '"'"'pdftotext \$1 -'"'"' -" "alias.f|!f() { ./x; }; f"; do
     o=(); if _git_prog "${kv%%|*}" "${kv#*|}" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns134" 2>&1)"
-want134="p:nbstripout.py;|p:t.pl;|u:inline code;|p:./n.sh;|p:./t.sh;|p:./e.sh;|u:inline code;|u:a shell expansion, quoting or an operator;|"
+want134="p:nbstripout.py;|p:lib;p:t.pl;|u:inline code;|p:./n.sh;|p:./t.sh;|u:a wrapper that changes the directory the program is found from;|u:inline code;|u:a shell expansion, quoting or an operator;|"
 [[ "$o134" == "$want134" ]] \
   && pass "G134 options and their arguments, -m, inline code and functions are read as a shell reads them" \
   || fail "G134 reading (got: $o134)"
@@ -1734,17 +1736,19 @@ o134="$(bash -c 'source "$1"; for kv in "alias.a|!git status; ./evil.sh" "alias.
   "alias.c|!A=1 B=2 C=3 D=4 E=5 F=6 G=7 H=8 ./x" "alias.d|!./tools/*.sh" "alias.e|!taskset 0x3 ./x" "alias.f|!sudo -u root ./y" \
   "alias.g|!./a \$(./b)"; do
     o=(); if _git_prog "${kv%%|*}" "${kv#*|}" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns134" 2>&1)"
-[[ "$o134" == "u:another command after it;|u:another command after it;|u:more than eight words before the program;|u:a shell expansion, quoting or an operator;|p:./x;|p:./y;|p:./a;u:another command after it;|" ]] \
+[[ "$o134" == "u:another command after it;|u:another command after it;|u:an assignment before the program;u:more than eight words before the program;|u:a shell expansion, quoting or an operator;|p:./x;|p:./y;|p:./a;u:another command after it;|" ]] \
   && pass "G134 another command after the program, too many words and a glob are not followed; a wrapper's arguments are skipped" \
   || fail "G134 fail closed (got: $o134)"
 # After a wrapper, a word with no / is the program found on PATH, its path
-# arguments never taken for the program; only taskset's and chrt's positional
-# arguments are skipped. Words that run out after an interpreter, before its
-# script, are not followed (final review of the fix).
+# arguments never taken for the program; only timeout's, taskset's and chrt's
+# positional arguments are skipped. Words that run out after an interpreter,
+# before its script, are not followed (final review of the fix). An assignment
+# is named, since it can change the program found (GIT-106); sudo -D changes
+# the directory, and sudo -n takes no argument.
 o134="$(bash -c 'source "$1"; for kv in "alias.a|!env GIT_PAGER=cat git log -- ./src" "alias.b|!nice git diff ./file" \
   "alias.c|!sudo -D /srv ./y" "alias.d|!chrt 10 ./c" "alias.e|!/usr/bin/python3 -u -O -B -s -E -I -q x.py" "alias.f|!sudo -n ./x"; do
     o=(); if _git_prog "${kv%%|*}" "${kv#*|}" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns134" 2>&1)"
-[[ "$o134" == "none;|none;|p:./y;|p:./c;|p:/usr/bin/python3;u:more than eight words before the program;|u:a wrapper whose program was not found;|" ]] \
+[[ "$o134" == "u:an assignment before the program;|none;|u:a wrapper that changes the directory the program is found from;|p:./c;|p:/usr/bin/python3;u:more than eight words before the program;|p:./x;|" ]] \
   && pass "G134 a wrapper's PATH program ends the reading; interpreter words that run out are not followed" \
   || fail "G134 wrappers (got: $o134)"
 # Words split where the shell splits them, on space and tab, a newline ending
@@ -2028,7 +2032,7 @@ rm -rf "$R208"
 # status of 1 would have the one caller drop what is named (feature-gaps
 # review GAP-2, the whole-file run, batch 6, item 1).
 fns300="$TMP/fns300.sh"
-awk 'index($0, "_git_prog() {") == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh" > "$fns300"
+awk 'index($0, "_git_prog() {") == 1 || index($0, "_git_prog_wopt() {") == 1 || index($0, "_git_prog_iopt() {") == 1 {p = 1} p {print} p && /^}/ {p = 0}' "$ENGINE/sandbox.sh" > "$fns300"
 o300="$(bash -c 'source "$1"; for v in "!\"./my tools/x.sh\" arg" "!'"'"'./my tools/y.sh'"'"'" "!\"./x\"y" "!\"./unterminated" \
     "!env -S \"./x a\"" "!'"'"'./x'"'"'y" "!'"'"'./unterminated" "!\"./x\""$'"'"'\t'"'"'"a"; do
     o=(); if _git_prog alias.x "$v" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns300" 2>&1)"
@@ -2038,6 +2042,161 @@ want300="p:./my tools/x.sh;|p:./my tools/y.sh;|$u300|$u300|u:env -S;|$u300|$u300
   && pass "G300 a quoted word is the program whole; an open quote, a word after one and env -S are named" \
   || fail "G300 quoting (got: $(printf '%q' "$o300"))"
 rm -f "$fns300"
+
+# ── G327: what the shell itself runs, an assignment, and what an option loads ─
+# _git_prog() said nothing for a value the shell reaches a file through
+# without naming it as the program: a builtin or keyword that runs or reads
+# its argument (`. ./x`, eval, time, trap, if), an assignment that changes the
+# program found or what it loads first (PATH=, BASH_ENV=), and an interpreter's
+# option that loads code (node -r, perl -I, ruby -r, php -d), whose argument
+# was skipped. The host's `git status` ran the file in each case (bugs review
+# GIT-106). Each is judged, or named as not followed; and on the way: a wrapper
+# named by a path is a file like any other, a wrapper's option nobody listed
+# no longer has its argument taken for the program, one that changes the
+# directory is not followed, and an interpreter given no script runs what git
+# hands it.
+fns327="$TMP/fns327.sh"
+awk 'index($0, "_git_prog() {") == 1 || index($0, "_git_prog_wopt() {") == 1 || index($0, "_git_prog_iopt() {") == 1 {p = 1} p {print} p && /^}/ {p = 0}' "$ENGINE/sandbox.sh" > "$fns327"
+run327() {  # stdin: `key|value` lines; prints each one's entries, `|` after each
+  bash -c 'source "$1"; while IFS= read -r kv; do o=(); if _git_prog "${kv%%|*}" "${kv#*|}" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns327" 2>&1
+}
+bk327='u:a shell builtin or keyword that runs or reads its arguments;'
+o327="$(run327 <<'CASES'
+core.fsmonitor|. ./evil.sh
+core.fsmonitor|source ./evil.sh
+core.fsmonitor|eval ./evil.sh
+core.fsmonitor|time ./evil.sh
+core.fsmonitor|if ./x
+core.fsmonitor|trap ./evil EXIT
+core.fsmonitor|builtin eval ./x
+core.fsmonitor|- ./x
+CASES
+)"
+[[ "$o327" == "$bk327|$bk327|$bk327|$bk327|$bk327|$bk327|$bk327|$bk327|" ]] \
+  && pass "G327 a builtin or keyword that runs or reads its argument is named as not followed" \
+  || fail "G327 builtins and keywords (got: $o327)"
+as327='u:an assignment before the program;'
+o327="$(run327 <<'CASES'
+core.fsmonitor|PATH=./bin tool
+core.fsmonitor|env PATH=./bin tool
+core.fsmonitor|BASH_ENV=./evil.sh bash /dev/null
+alias.e|!FOO=1 exec ./scripts/e.sh
+core.fsmonitor|PATH+=:./bin tool
+CASES
+)"
+[[ "$o327" == "$as327|$as327|p:/dev/null;$as327|p:./scripts/e.sh;$as327|$as327|" ]] \
+  && pass "G327 an assignment before the program is named, and the program after it still read" \
+  || fail "G327 assignments (got: $o327)"
+mo327='u:a module loaded by name;'; op327='u:an option of the interpreter that is not followed;'
+o327="$(run327 <<'CASES'
+core.fsmonitor|node -r ./evil.js /usr/lib/x.js
+core.fsmonitor|node --require=./evil.js /usr/lib/x.js
+core.fsmonitor|node -r dotenv/config /usr/lib/x.js
+core.fsmonitor|perl -I ./lib -MEvil /usr/bin/x.pl
+core.fsmonitor|perl -Mblib /usr/bin/x.pl
+core.fsmonitor|ruby -r ./evil /usr/bin/x.rb
+core.fsmonitor|ruby -rbundler/setup /usr/bin/x.rb
+core.fsmonitor|php -d auto_prepend_file=./evil.php /usr/bin/x.php
+core.fsmonitor|lua -l evil /usr/bin/x.lua
+core.fsmonitor|bash --rcfile ./rc /usr/bin/x.sh
+core.fsmonitor|python3 -X pycache_prefix=./pc /usr/bin/x.py
+core.fsmonitor|python3 -W error::evil.Cat -m tool
+core.fsmonitor|node --inspect x.js
+core.fsmonitor|sh -s ./x
+CASES
+)"
+[[ "$o327" == "p:./evil.js;p:/usr/lib/x.js;|p:./evil.js;p:/usr/lib/x.js;|$mo327|p:./lib;$mo327|$mo327|p:./evil;p:/usr/bin/x.rb;|$mo327|$op327|$mo327|p:./rc;p:/usr/bin/x.sh;|$op327|$op327|$op327|$op327|" ]] \
+  && pass "G327 what an interpreter's option loads is judged, a module by name and an unknown option named" \
+  || fail "G327 interpreter options (got: $o327)"
+cd327='u:a wrapper that changes the directory the program is found from;'
+o327="$(run327 <<'CASES'
+core.fsmonitor|./env true
+core.fsmonitor|bin/nice git status
+core.fsmonitor|ionice -c 3 ./evil
+core.fsmonitor|stdbuf -o L ./evil
+core.fsmonitor|xargs -L 1 ./evil
+core.fsmonitor|watch -t ./evil
+core.fsmonitor|timeout inf ./evil
+core.fsmonitor|chrt -o ./evil git
+core.fsmonitor|env -C sub ./tool
+core.fsmonitor|env --chdir=sub ./tool
+core.fsmonitor|nice -x ./evil
+core.fsmonitor|nice nice nice nice nice nice nice nice ./x
+CASES
+)"
+[[ "$o327" == "p:./env;|p:bin/nice;|p:./evil;|p:./evil;|p:./evil;|p:./evil;|p:./evil;|p:./evil;|$cd327|$cd327|u:an option of a wrapper that is not followed;|u:more than eight words before the program;|" ]] \
+  && pass "G327 a wrapper named by a path is judged; its own options are read, or it is not followed" \
+  || fail "G327 wrappers (got: $o327)"
+o327="$(run327 <<'CASES'
+diff.x.textconv|sh
+filter.x.clean|python3 -u
+core.fsmonitor|perl5.36 ./evil.pl
+core.fsmonitor|git diff <(./evil)
+core.fsmonitor|pwsh -ExecutionPolicy Bypass -File x.ps1
+CASES
+)"
+[[ "$o327" == "u:an interpreter given no script;|u:an interpreter given no script;|p:./evil.pl;|u:another command after it;|p:x.ps1;|" ]] \
+  && pass "G327 an interpreter given no script, one named with its version, and a process substitution" \
+  || fail "G327 no script (got: $o327)"
+# Still silent: a program found on PATH, whose arguments are not read (a
+# stated limit: `ssh -F ./cfg` is not judged); and still followed.
+o327="$(run327 <<'CASES'
+filter.lfs.process|git-lfs filter-process
+alias.b|!nice git diff ./file
+core.sshcommand|ssh -i ~/.ssh/key -F ./cfg
+alias.s|!sudo -E -u me nice -n 5 ./x
+alias.t|!taskset -c 0-3 ./x
+CASES
+)"
+[[ "$o327" == "none;|none;|none;|p:./x;|p:./x;|" ]] \
+  && pass "G327 a program found on PATH is still not judged, nor its arguments read; known options are still followed" \
+  || fail "G327 unchanged (got: $o327)"
+rm -f "$fns327"
+# End to end, as the review ran it: the NOTE the launch gave for
+# `fsmonitor = ./evil.sh` it did not give for `. ./evil.sh`.
+H327="$TMP/h327"
+mkdir -p "$H327" && "${G[@]}" init -q "$H327/r" && "${G[@]}" -C "$H327/r" config core.fsmonitor '. ./evil.sh' \
+  && "${G[@]}" -C "$H327/r" config core.sshCommand 'PATH=./bin ssh' || { printf 'SCAFFOLD-FAILED: G327 launch\n'; exit 1; }
+EXTRA_MOUNTS="$H327" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] \
+  && grep -qF '(a shell builtin or keyword that runs or reads its arguments)' <<<"$(grep -A1 -F "has your host's git run a command (core.fsmonitor) the launcher does not follow" "$ERR")" \
+  && grep -qF '(an assignment before the program)' <<<"$(grep -A1 -F "has your host's git run a command (core.sshcommand) the launcher does not follow" "$ERR")" \
+  && pass "G327 a launch names a command the shell reaches through a builtin, and one behind an assignment" \
+  || fail "G327 the launch (rc=$LAUNCH_RC; $(grep -A1 -F "has your host's git run" "$ERR" | head -4 | tr '\n' ' '))"
+rm -rf "$H327"
+
+# ── G329: git-lfs's keys that run a program are named and judged ─────────────
+# git-lfs reads lfs.customtransfer.<name>.path from the repository's config and
+# runs it when a smudge has to fetch an object, on a host whose global config
+# holds the lfs filter; lfs.standalonetransferagent chooses it, .args are its
+# arguments, and an lfs.extension's clean and smudge are commands too. None was
+# among the keys named at a first protection, judged at a launch, or taken for
+# a reason to name a repository the session made (feature-gaps review GAP-16).
+H329="$TMP/h329"
+mkdir -p "$H329/my tools" && "${G[@]}" init -q "$H329/r" && "${G[@]}" -C "$H329/r" config lfs.customtransfer.agent.path "$H329/my tools/agent.sh" \
+  && "${G[@]}" -C "$H329/r" config lfs.customtransfer.agent.args '--fast ./x' \
+  && "${G[@]}" -C "$H329/r" config lfs.standalonetransferagent agent \
+  && "${G[@]}" -C "$H329/r" config lfs.extension.z.clean './ext.sh clean %f' || { printf 'SCAFFOLD-FAILED: G329\n'; exit 1; }
+EXTRA_MOUNTS="$H329" launch "$TMP/app"
+n329="$(grep -A1 -F 'NOTE: /workspace/h329/r/.git is protected for the first time, and its config already sets' "$ERR" | tail -1)"
+[[ "$LAUNCH_RC" == 0 && "$n329" == *lfs.customtransfer.agent.path* && "$n329" == *lfs.customtransfer.agent.args* \
+   && "$n329" == *lfs.standalonetransferagent* && "$n329" == *lfs.extension.z.clean* ]] \
+  && pass "G329 a first protection names git-lfs's transfer program, the keys that choose and feed it, and an extension" \
+  || fail "G329 not named (rc=$LAUNCH_RC; $n329)"
+grep -qF "it can change $H329/my tools/agent.sh (at /workspace/h329/my tools/agent.sh)." \
+     <<<"$(grep -A2 -F "has your host's git run /workspace/h329/my tools/agent.sh (lfs.customtransfer.agent.path), which leads somewhere the agent can change:" "$ERR")" \
+  && grep -qF "has your host's git run /workspace/h329/r/ext.sh (lfs.extension.z.clean), which leads somewhere the agent can change:" "$ERR" \
+  && ! grep -qF '(lfs.customtransfer.agent.args)' "$ERR" && ! grep -qF '(lfs.standalonetransferagent)' "$ERR" \
+  && pass "G329 the transfer program, a path whole with its space, and the extension's command are judged; arguments and the agent's name are no program" \
+  || fail "G329 not judged ($(grep -F "has your host's git run" "$ERR" | head -3 | tr '\n' ' '))"
+# A repository the session makes with them is named when the container exits.
+export H329
+FAKE_SESSION='git init -q "$H329/made" && git -C "$H329/made" config lfs.customtransfer.a.path /tmp/x && git -C "$H329/made" config lfs.standalonetransferagent a' \
+  EXTRA_MOUNTS="$H329" launch "$TMP/app"
+grep -qF 'lfs.customtransfer.a.path' <<<"$(grep -A3 -F 'the session made git repositories in a writable mount' "$ERR" | grep -F "$H329/made/.git")" \
+  && pass "G329 a repository the session made with git-lfs's transfer keys is named on exit" \
+  || fail "G329 the session's repository ($(grep -A3 -F 'the session made' "$ERR" | tr '\n' ' '))"
+rm -rf "$H329"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

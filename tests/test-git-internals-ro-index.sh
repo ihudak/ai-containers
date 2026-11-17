@@ -1190,7 +1190,16 @@ has_mount "$PROJ/node_modules/aw146/.git:/workspace/proj/node_modules/aw146/.git
   || fail "G146 checkout .git file left writable (rc=$LAUNCH_RC; $(mounts | grep -F 'aw146/.git:' | tr '\n' ' '))"
 # A gitdir rewritten to name a directory in the mount whose .git does not point
 # back is no checkout: the real one is not reached, and that is said (GIT-57).
+# Rewritten before any launch bound the real checkout's .git file, that is: one
+# a launch bound is in its record, and found again from there (GIT-105).
 cp "$PROJ/.git/worktrees/aw146/gitdir" "$TMP/gitdir146" && printf '%s/.git/worktrees/.git\n' "$PROJ" > "$PROJ/.git/worktrees/aw146/gitdir"
+launch ..
+has_mount "$PROJ/node_modules/aw146/.git:/workspace/proj/node_modules/aw146/.git:ro" \
+  && ! grep -qF "no worktree is known for $PROJ/.git/worktrees/aw146" "$ERR" \
+  && pass "G146 the checkout's .git file a launch bound is found again from the record, whatever gitdir says" \
+  || fail "G146 the recorded .git file (rc=$LAUNCH_RC; $(mounts | grep -cF 'aw146/.git:') binds; $(grep -F WARNING "$ERR" | head -1))"
+rec146="$HOME/.ai-containers/git-reported.conf"
+grep -vF " file:$PROJ/node_modules/aw146/.git" "$rec146" > "$rec146.146"; mv "$rec146.146" "$rec146"
 launch ..
 grep -qF "no worktree is known for $PROJ/.git/worktrees/aw146" "$ERR" \
   && pass "G146 a gitdir naming a directory that does not point back silences nothing" \
@@ -2959,6 +2968,221 @@ if [[ "$(id -u)" != 0 ]]; then
   fi
   chmod 700 "$R313/.git"; rm -rf "$B313"
 else skip_root G313; fi
+
+# ── G320: a git directory a launch protected stays protected once a session ──
+# ── drops what led to it from the index (bugs review GIT-105) ────────────────
+# The scan reaches a submodule under a pruned vendor/ only through its
+# repository's index, which the launch leaves writable. A session that dropped
+# the gitlink left the submodule's config and hooks writable at the next
+# launch, with no bind and no warning; put back on the host, `git status` ran
+# the core.fsmonitor the session wrote. The launcher's record of what it
+# protected (git-reported.conf) now leads the scan to it.
+B320="$TMP/b320"; P320="$B320/p"; rec320="$HOME/.ai-containers/git-reported.conf"
+mk320() {
+  rm -rf "$B320"; mkdir -p "$P320/vendor/lib" && "${G[@]}" init -q "$P320" && "${G[@]}" init -q "$P320/vendor/lib" \
+    && : > "$P320/vendor/lib/f" && "${G[@]}" -C "$P320/vendor/lib" add f && "${G[@]}" -C "$P320/vendor/lib" commit -qm x \
+    && "${G[@]}" -C "$P320" add vendor/lib 2>/dev/null && "${G[@]}" -C "$P320" commit -qm sub \
+    && "${G[@]}" -C "$P320/vendor/lib" config core.fsmonitor /bin/true \
+    || { printf 'SCAFFOLD-FAILED: G320\n'; exit 1; }
+}
+n320() { mounts | grep -cF "$P320/vendor/lib/.git/" || true; }
+mk320
+export P320
+FAKE_SESSION='git -C "$P320" update-index --force-remove vendor/lib' EXTRA_MOUNTS="$B320" launch "$TMP/app"
+first320="$(n320)"
+[[ "$LAUNCH_RC" == 0 && "$first320" -ge 4 ]] && has_mount "$P320/vendor/lib/.git/config:/workspace/b320/p/vendor/lib/.git/config:ro" \
+  && [[ -z "$("${G[@]}" -C "$P320" ls-files -s vendor/lib)" ]] \
+  && grep -qF 'NOTE: /workspace/b320/p/vendor/lib/.git is protected for the first time, and its config already sets' "$ERR" \
+  || fail "G320 the first launch did not protect and report the submodule, or the session did not drop it (rc=$LAUNCH_RC, $first320 binds)"
+EXTRA_MOUNTS="$B320" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(n320)" == "$first320" ]] \
+  && has_mount "$P320/vendor/lib/.git/config:/workspace/b320/p/vendor/lib/.git/config:ro" \
+  && has_mount "$P320/vendor/lib/.git/hooks:/workspace/b320/p/vendor/lib/.git/hooks:ro" \
+  && ! grep -qF "$PROJ/.git" <<<"$(mounts)" \
+  && pass "G320 a submodule dropped from the index is still protected by the next launch ($first320 binds)" \
+  || fail "G320 dropped from the index, and unprotected (rc=$LAUNCH_RC; $(n320) binds, $first320 before; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+# …with its key, which the first launch named, not named again: it is the
+# directory the record holds.
+! grep -qF '/workspace/b320/p/vendor/lib/.git is protected for the first time' "$ERR" \
+  && ! grep -qF '/workspace/b320/p/vendor/lib/.git was protected by an earlier launch' "$ERR" \
+  && pass "G320 it is not reported again" \
+  || fail "G320 reported again ($(grep -F 'vendor/lib' "$ERR" | head -2 | tr '\n' ' '))"
+# The check after the session finds it too, so it is not taken for one the
+# session made, though its config runs a program.
+EXTRA_MOUNTS="$B320" launch "$TMP/app"
+! grep -qF 'the session made git repositories' "$ERR" \
+  && pass "G320 the check after the session does not take it for a new repository" \
+  || fail "G320 taken for new ($(grep -A2 -F 'the session made' "$ERR" | tr '\n' ' '))"
+# Its device is not part of what it is known by: a reboot gives a disk another
+# number on some hosts (a WSL disk, LVM, btrfs, APFS), and every record there
+# would go stale together.
+sed 's/^[0-9][0-9]* /999999 /' "$rec320" > "$rec320.dev" && mv "$rec320.dev" "$rec320" || { printf 'SCAFFOLD-FAILED: G320 record\n'; exit 1; }
+EXTRA_MOUNTS="$B320" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(n320)" == "$first320" ]] \
+  && pass "G320 it is known by its inode and birth time, whatever number its device has" \
+  || fail "G320 another device number lost it (rc=$LAUNCH_RC; $(n320) binds, $first320 before)"
+# A directory made again at the path is another one, which no launch protected:
+# it is found, like any other under vendor/, by what leads to it, and only so.
+# Made beside the old one before it goes, so that it cannot get its inode back.
+"${G[@]}" init -q "$P320/vendor/lib.new" && mv "$P320/vendor/lib" "$P320/vendor/lib.old" && mv "$P320/vendor/lib.new" "$P320/vendor/lib" \
+  && rm -rf "$P320/vendor/lib.old" || { printf 'SCAFFOLD-FAILED: G320 again\n'; exit 1; }
+EXTRA_MOUNTS="$B320" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(n320)" == 0 ]] \
+  && pass "G320 a repository made again at the path is not the one the record holds" \
+  || fail "G320 the path alone was taken (rc=$LAUNCH_RC; $(n320) binds)"
+"${G[@]}" -C "$P320/vendor/lib" commit -q --allow-empty -m y && "${G[@]}" -C "$P320" add vendor/lib 2>/dev/null
+EXTRA_MOUNTS="$B320" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(n320)" -ge 4 && "$(grep -cE " $P320/vendor/lib/\.git\$" "$rec320")" -ge 2 ]] \
+  && pass "G320 …and is protected, and recorded as another, once its index leads to it" \
+  || fail "G320 the new one, recorded in the index (rc=$LAUNCH_RC; $(n320) binds; $(grep -cE " $P320/vendor/lib/\.git\$" "$rec320") record lines)"
+rm -rf "$B320"
+
+# ── G325: a recorded git directory now reached through a link is not taken ───
+# The record holds the path a directory was protected at. Moved on the host,
+# with a link left where it was, it is the same directory at another path: the
+# scan protects it where it lies, and nothing is bound through the link, which
+# docker would resolve when the container starts (GIT-105).
+B325="$TMP/b325"; P325="$B325/p"
+mkdir -p "$P325/vendor/lib" && "${G[@]}" init -q "$P325" && "${G[@]}" init -q "$P325/vendor/lib" \
+  && "${G[@]}" -C "$P325/vendor/lib" commit -q --allow-empty -m x \
+  && "${G[@]}" -C "$P325" add vendor/lib 2>/dev/null && "${G[@]}" -C "$P325" commit -qm sub \
+  || { printf 'SCAFFOLD-FAILED: G325\n'; exit 1; }
+export P325
+FAKE_SESSION='git -C "$P325" update-index --force-remove vendor/lib' EXTRA_MOUNTS="$B325" launch "$TMP/app"
+mv "$P325/vendor" "$P325/v2" && ln -s v2 "$P325/vendor" || { printf 'SCAFFOLD-FAILED: G325 link\n'; exit 1; }
+EXTRA_MOUNTS="$B325" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$P325/v2/lib/.git/config:/workspace/b325/p/v2/lib/.git/config:ro" \
+  && ! grep -qF "$P325/vendor/lib/.git" <<<"$(mounts)" \
+  && pass "G325 moved, with a link left behind, it is protected where it lies and nothing is bound through the link" \
+  || fail "G325 bound through a link (rc=$LAUNCH_RC; $(mounts | grep -F '/lib/.git/config' | tr '\n' ' '))"
+rm -rf "$B325"
+
+# ── G321: a .git file a launch bound stays bound once the index drops it ─────
+# A submodule whose git directory lies elsewhere has a .git FILE in its
+# checkout, and under vendor/ only the index leads to that file. Left writable,
+# the session points it at a git directory of its own, whose config and hooks
+# the host's git then runs there. The record holds each file a launch bound
+# (`file:`), and the next scan takes it (GIT-105).
+B321="$TMP/b321"; P321="$B321/p"
+mkdir -p "$P321/vendor" "$P321/gd" && "${G[@]}" init -q "$P321" \
+  && "${G[@]}" init -q --separate-git-dir "$P321/gd/lib" "$P321/vendor/lib" \
+  && : > "$P321/vendor/lib/f" && "${G[@]}" -C "$P321/vendor/lib" add f && "${G[@]}" -C "$P321/vendor/lib" commit -qm x \
+  && "${G[@]}" -C "$P321" add vendor/lib 2>/dev/null && "${G[@]}" -C "$P321" commit -qm sub \
+  && [[ -f "$P321/vendor/lib/.git" ]] || { printf 'SCAFFOLD-FAILED: G321\n'; exit 1; }
+export P321
+FAKE_SESSION='git -C "$P321" update-index --force-remove vendor/lib' EXTRA_MOUNTS="$B321" launch "$TMP/app"
+has_mount "$P321/vendor/lib/.git:/workspace/b321/p/vendor/lib/.git:ro" && grep -qF " file:$P321/vendor/lib/.git" "$HOME/.ai-containers/git-reported.conf" \
+  || fail "G321 the first launch did not bind and record the .git file (rc=$LAUNCH_RC; $(grep -cF 'file:' "$HOME/.ai-containers/git-reported.conf") file lines in the record)"
+EXTRA_MOUNTS="$B321" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$P321/vendor/lib/.git:/workspace/b321/p/vendor/lib/.git:ro" \
+  && pass "G321 a .git file dropped from the index is still bound read-only by the next launch" \
+  || fail "G321 the .git file is writable again (rc=$LAUNCH_RC; $(mounts | grep -cF 'vendor/lib/.git') binds; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$B321"
+
+# ── G322: the record's path with a newline is read back, and with no eval ────
+# A path holding a newline is recorded as bash's %q writes it in the C locale
+# (GIT-90), and the agent names the directories: one the scan could not read
+# back was one it could hide under (GIT-105). _git_unq reads every escape that
+# quoting writes and nothing else; the record is data, never run.
+load_fn _git_unq; load_fn _git_rec_add
+ok322=1
+for v322 in $'/a/b\nc' $'/x/q\'uo\\te\ty\x01\x7f\xc3\xa9\n' $'/p/"dq"?\e[0m\r\a\b\f\v\n' $'/t/\n123' $'/t/\n\\101' $'/s p/\n$x `y` $(z)'; do
+  LC_ALL=C printf -v q322 '%q' "$v322"; o322=""
+  _git_unq "$q322" o322 && [[ "$o322" == "$v322" ]] || { ok322=""; printf '  not read back: %s\n' "$q322"; }
+done
+[[ -n "$ok322" ]] && pass "G322 a path %q wrote is read back as it was" || fail "G322 round trip"
+ok322=1
+for q322 in "\$'a\\zb'" "\$'a'b'" plain "\$'a\\0b'" "\$'" "\$'a\\400b'" "\$'a\\" "\$'\$(touch $TMP/ran322)'x"; do
+  o322=kept; if _git_unq "$q322" o322; then ok322=""; printf '  taken: %s\n' "$q322"; fi
+done
+[[ -n "$ok322" && ! -e "$TMP/ran322" ]] && pass "G322 anything %q does not write is refused, and nothing in it runs" || fail "G322 refusals"
+_git_rec_p=(); _git_rec_i=(); _git_rec_k=()
+_git_rec_add "2128 33 1794925040 /a/b c/.git"; _git_rec_add "2128 34 0.5 hooks:/h/.git"; _git_rec_add "2128 35 1 wt:/w/.git"
+_git_rec_add "2128 36 1 push:/w/.git/x"; _git_rec_add "? /q/.git"; _git_rec_add "2128 37 1 file:/f/.git"
+_git_rec_add "2128 38 1 hooks:\$'/n/a\\nb/.git'"; _git_rec_add "1 2 3 relative"; _git_rec_add "1 2 /only/two"
+got322="$(for i in "${!_git_rec_p[@]}"; do printf '%s|%s|%q;' "${_git_rec_k[i]}" "${_git_rec_i[i]}" "${_git_rec_p[i]}"; done)"
+[[ "$got322" == "dir|2128 33 1794925040|/a/b\\ c/.git;dir|2128 34 0.5|/h/.git;file|2128 37 1|/f/.git;dir|2128 38 1|\$'/n/a\\nb/.git';" ]] \
+  && pass "G322 the record's git directories and .git files are taken, wt:, push: and an unread identity are not" \
+  || fail "G322 record lines (got: $got322)"
+# End to end: a submodule under a directory with a newline in its name.
+B322="$TMP/b322"; P322="$B322/p"; d322=$'ven\ndor'
+mkdir -p "$P322/vendor/$d322/lib" && "${G[@]}" init -q "$P322" && "${G[@]}" init -q "$P322/vendor/$d322/lib" \
+  && "${G[@]}" -C "$P322/vendor/$d322/lib" commit -q --allow-empty -m x \
+  && "${G[@]}" -C "$P322" add "vendor/$d322/lib" 2>/dev/null && "${G[@]}" -C "$P322" commit -qm sub \
+  || { printf 'SCAFFOLD-FAILED: G322 newline\n'; exit 1; }
+export P322
+FAKE_SESSION='git -C "$P322" rm -q --cached -r vendor' EXTRA_MOUNTS="$B322" launch "$TMP/app"
+# docker's arguments are captured a line each, so this bind's last line is its own.
+n322() { grep -cxF 'dor/lib/.git/config:ro' "$CAPTURE" || true; }
+c322="$(n322)"
+[[ "$LAUNCH_RC" == 0 && "$c322" == 1 && -z "$("${G[@]}" -C "$P322" ls-files -s)" ]] \
+  || fail "G322 the first launch did not protect the submodule, or the session did not drop it (rc=$LAUNCH_RC, $c322 config binds)"
+EXTRA_MOUNTS="$B322" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(n322)" == 1 ]] \
+  && pass "G322 a recorded path with a newline still leads the scan to its git directory" \
+  || fail "G322 newline path, end to end (rc=$LAUNCH_RC; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$B322"
+
+# ── G323: a record that cannot be kept is said ───────────────────────────────
+# The record is what the next scan finds such a directory by; where it cannot
+# be written the launch says so, once, instead of losing it in silence.
+B323="$TMP/b323"; rec323="$HOME/.ai-containers/git-reported.conf"
+mkdir -p "$B323" && "${G[@]}" init -q "$B323/r" || { printf 'SCAFFOLD-FAILED: G323\n'; exit 1; }
+mv "$rec323" "$rec323.kept" && mkdir "$rec323" || { printf 'SCAFFOLD-FAILED: G323 record\n'; exit 1; }
+EXTRA_MOUNTS="$B323" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(grep -cF 'the record of what launches protect, cannot be kept' "$ERR")" == 1 ]] \
+  && grep -qF '(it is not a regular file you can read and write)' "$ERR" \
+  && pass "G323 a record that cannot be written is said once, with why" \
+  || fail "G323 the lost record (rc=$LAUNCH_RC; $(grep -c 'cannot be kept' "$ERR") warnings)"
+rmdir "$rec323" && mv "$rec323.kept" "$rec323"
+EXTRA_MOUNTS="$B323" launch "$TMP/app"
+! grep -qF 'cannot be kept' "$ERR" && pass "G323 a record that can be written says nothing" \
+  || fail "G323 a false warning ($(grep -F 'cannot be kept' "$ERR" | head -1))"
+rm -rf "$B323"
+
+# ── G324: a recorded git directory the session made unlistable is bound whole ─
+# The agent owns the directory: in the session that drops it from the index it
+# can also make it unlistable. Taken from the record, it is bound read-only
+# whole, as the scan binds one it finds so, with the chmod that restores it
+# (GIT-105). Skipped as root.
+if [[ "$(id -u)" != 0 ]]; then
+  B324="$TMP/b324"; P324="$B324/p"
+  mkdir -p "$P324/vendor/lib" && "${G[@]}" init -q "$P324" && "${G[@]}" init -q "$P324/vendor/lib" \
+    && "${G[@]}" -C "$P324/vendor/lib" commit -q --allow-empty -m x \
+    && "${G[@]}" -C "$P324" add vendor/lib 2>/dev/null && "${G[@]}" -C "$P324" commit -qm sub \
+    || { printf 'SCAFFOLD-FAILED: G324\n'; exit 1; }
+  export P324
+  FAKE_SESSION='git -C "$P324" update-index --force-remove vendor/lib; chmod 000 "$P324/vendor/lib/.git"' EXTRA_MOUNTS="$B324" launch "$TMP/app"
+  if [[ -r "$P324/vendor/lib/.git" ]]; then
+    pass "G324 skipped: mode 000 did not take on this filesystem"
+  else
+    has_mount "$P324/vendor/lib/.git/config:/workspace/b324/p/vendor/lib/.git/config:ro" \
+      || fail "G324 the first launch did not protect the submodule (rc=$LAUNCH_RC)"
+    EXTRA_MOUNTS="$B324" launch "$TMP/app"
+    [[ "$LAUNCH_RC" == 0 ]] && has_mount "$P324/vendor/lib/.git:/workspace/b324/p/vendor/lib/.git:ro" \
+      && grep -qF "WARNING: $P324/vendor/lib/.git cannot be listed by you" "$ERR" \
+      && pass "G324 a recorded git directory, dropped from the index and made unlistable, is bound read-only whole" \
+      || fail "G324 not bound whole (rc=$LAUNCH_RC; $(mounts | grep -cF 'vendor/lib/.git') binds; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  chmod 700 "$P324/vendor/lib/.git"; rm -rf "$B324"
+  # …and one hidden behind a directory the session made unsearchable: the
+  # recorded path is not there to look at, so the directory in the way is
+  # bound whole, as for a checkout an index names (_gdi_blocked).
+  mkdir -p "$P324/vendor/lib" && "${G[@]}" init -q "$P324" && "${G[@]}" init -q "$P324/vendor/lib" \
+    && "${G[@]}" -C "$P324/vendor/lib" commit -q --allow-empty -m x \
+    && "${G[@]}" -C "$P324" add vendor/lib 2>/dev/null && "${G[@]}" -C "$P324" commit -qm sub \
+    || { printf 'SCAFFOLD-FAILED: G324 hidden\n'; exit 1; }
+  FAKE_SESSION='git -C "$P324" update-index --force-remove vendor/lib; chmod 000 "$P324/vendor"' EXTRA_MOUNTS="$B324" launch "$TMP/app"
+  if [[ -x "$P324/vendor" ]]; then
+    pass "G324 skipped: mode 000 did not take on this filesystem"
+  else
+    EXTRA_MOUNTS="$B324" launch "$TMP/app"
+    [[ "$LAUNCH_RC" == 0 ]] && has_mount "$P324/vendor:/workspace/b324/p/vendor:ro" \
+      && pass "G324 a recorded git directory hidden behind an unsearchable directory has that directory bound whole" \
+      || fail "G324 hidden, and nothing bound (rc=$LAUNCH_RC; $(mounts | grep -cF "$P324/vendor") binds; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  chmod 700 "$P324/vendor"; rm -rf "$B324"
+else skip_root G324; fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

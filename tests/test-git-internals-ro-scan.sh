@@ -2161,5 +2161,53 @@ mk203; mkdir -p "$D203/r/.git/modules/lfs/objects"
 guard203 "the name of a submodule (.git/modules/lfs)" "$D203/r/.git/modules/lfs"
 rm -rf "$D203"
 
+# ── G326: .git files count toward the limit the scan stops at ────────────────
+# The scan stopped following past SANDBOX_GIT_MAX git directories, and counted
+# no .git file: 3000 planted ones, each naming a directory that is not there,
+# were all read and resolved before the launch was refused, 43 s later (bugs
+# review GIT-107). Counted with the directories, none is read once they pass
+# the limit. By the reads made (`head`, as _rd reads each file), not by a clock.
+D326="$TMP/d326"; mkdir -p "$D326" "$TMP/bin326" || { printf 'SCAFFOLD-FAILED: G326\n'; exit 1; }
+for i326 in $(seq 1 40); do
+  mkdir -p "$D326/p$i326" && printf 'gitdir: /nonexistent/x%s\n' "$i326" > "$D326/p$i326/.git" || { printf 'SCAFFOLD-FAILED: G326 files\n'; exit 1; }
+done
+h326="$(command -v head)"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$TMP/head326.log" "$h326" > "$TMP/bin326/head" && chmod +x "$TMP/bin326/head"
+: > "$TMP/head326.log"
+PATH="$TMP/bin326:$PATH" SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$D326" launch "$TMP/app"
+n326="$(grep -cE -- " $D326/p[0-9]+/\.git\$" "$TMP/head326.log" || true)"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'more than 5 git directories and .git files to protect' "$ERR" && [[ "$n326" == 0 ]] \
+  && [[ "$(grep -cE "^ +$D326/p[0-9]+/\.git\$" "$ERR")" == 5 ]] \
+  && pass "G326 past SANDBOX_GIT_MAX in .git files the launch refuses, naming five, and reads none" \
+  || fail "G326 .git files past the limit (rc=$LAUNCH_RC; $n326 of 40 read; $(grep -F ERROR "$ERR" | head -1))"
+# Within the limit they are read and bound as before.
+rm -rf "$D326"/p{5..40}; : > "$TMP/head326.log"
+PATH="$TMP/bin326:$PATH" SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$D326" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(grep -cE -- " $D326/p[0-9]+/\.git\$" "$TMP/head326.log" || true)" -ge 4 ]] \
+  && has_mount "$D326/p1/.git:/workspace/d326/p1/.git:ro" \
+  && pass "G326 within the limit each .git file is read and bound" \
+  || fail "G326 within the limit (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+# Under a read-only overlay they count toward no limit, as the protection
+# counts none there (G126), so a launcher directory that holds many still
+# launches; each is read all the same, and past the limit the launch says where
+# they are.
+rm -rf "$D326"; mkdir -p "$D326/L" && : > "$D326/L/sandbox.sh" && : > "$D326/L/sandbox-common.sh" || { printf 'SCAFFOLD-FAILED: G326 launcher\n'; exit 1; }
+for i326 in $(seq 1 8); do
+  mkdir -p "$D326/L/q$i326" && printf 'gitdir: /nonexistent/y%s\n' "$i326" > "$D326/L/q$i326/.git" || { printf 'SCAFFOLD-FAILED: G326 overlay files\n'; exit 1; }
+done
+SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$D326" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$D326/L:/workspace/d326/L:ro" \
+  && grep -qF 'NOTE: 8 .git files lie under read-only overlays here' "$ERR" \
+  && [[ "$(grep -cE "^ +$D326/L/q[0-9]+/\.git\$" "$ERR")" == 5 ]] \
+  && ! grep -qF 'could not all be searched' "$ERR" \
+  && pass "G326 .git files under a read-only overlay count toward no limit, at launch and after the session; past it they are named, five of them" \
+  || fail "G326 under an overlay (rc=$LAUNCH_RC; $(grep -E 'ERROR|NOTE: [0-9]' "$ERR" | head -2 | tr '\n' ' '))"
+rm -rf "$D326"/L/q{6..8}
+SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$D326" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF '.git files lie under read-only overlays' "$ERR" \
+  && pass "G326 within the limit nothing is said of them" \
+  || fail "G326 a false note ($(grep -F 'lie under read-only overlays' "$ERR" | head -1))"
+rm -rf "$D326" "$TMP/bin326"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
