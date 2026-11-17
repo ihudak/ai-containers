@@ -1040,6 +1040,9 @@ launcher_ro_overlay() {
             fi
           fi
           if [[ -n "$rep" ]]; then _git_report_once "$g" "$at" "$rep" "" "$hk"; fi
+          # One an earlier engine reported had no alias named but a shell
+          # command (_git_alias_once).
+          _git_alias_once "$g" "$at" "$gown"
           # gitdir too, which names a linked worktree's checkout (final review of
           # the GIT-46 fix).
           for f in config config.worktree commondir gitdir; do
@@ -1219,6 +1222,10 @@ launcher_ro_overlay() {
         if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
           ( set -C; : > "$g/config.worktree" ) 2>/dev/null || _git_cant_make "$g" config.worktree
         fi
+        # The aliases that are no shell command, in a directory an earlier engine
+        # reported and named none of (_git_alias_once). Before config.worktree's
+        # keys are named below, which names its aliases with them.
+        if [[ -n "$cfg" ]]; then _git_alias_once "$g" "$at" "$gown"; fi
         # One that holds something no launch has named: an earlier engine made
         # none while the extension was off, so a session could write it. Its keys
         # are named once, where git runs (_git_exec_keys reads none where it does
@@ -5903,7 +5910,9 @@ _git_prog_iopt() {
 # given no script, which runs what git hands it. A key git runs with no shell
 # is read as git reads it (core.askpass, core.gitproxy,
 # gpg.ssh.defaultKeyCommand, a credential helper it prefixes). Not: a boolean
-# core.fsmonitor, an alias or submodule update that is not a shell command.
+# core.fsmonitor, an alias or submodule update that is not a shell command
+# (such an alias is named once, by _git_exec_keys, and what the git command it
+# stands for may run is not judged here).
 # Bytes, in the C locale, and every step linear in the value, which the agent
 # writes: a strip by pattern took 17 s for one with 64000 leading spaces
 # (review of the fix).
@@ -6145,8 +6154,14 @@ _git_prog() {
 # git run a program, or read another file of keys (an include), NUL-separated,
 # each once, values never printed. Read with git, which runs nothing from a
 # file it only lists; with no git on this host, none. A boolean core.fsmonitor
-# is git's own daemon, and an alias or a submodule's update runs a program only
-# when it starts with '!'. A file that does not exist sets nothing. git lists
+# is git's own daemon, and a submodule's update runs a program only when it
+# starts with '!'. An alias that does not is a git command with arguments, and
+# some git commands run a program an argument names (`rebase --exec ./x`); a
+# repository's alias is used over one of the same name in your own config, so
+# `git st` there ran ./x (measured, git 2.53). Each is named too, as what it is,
+# after the keys that run a program for certain, so that ten of them cannot
+# push one of those out of the ten a NOTE shows. With _gek_plain set, only
+# those aliases (_git_alias_once). A file that does not exist sets nothing. git lists
 # only the keys that count (--get-regexp, as _git_walk_keys does, in the C
 # locale, GIT-91), at most 1200
 # of them a file, and a file cut there is named first: read whole, in this
@@ -6159,8 +6174,8 @@ _git_prog() {
 _git_exec_keys() {
   local f rec k v n ks
   local re="^(core\\.hookspath|core\\.worktree|include\\.path|includeif\\..+\\.path|protocol\\.(ext\\.)?allow|${_git_prog_keys})\$"
-  local -A had=()
-  local -a out=() cut=()
+  local -A had=() hadp=()
+  local -a out=() cut=() pa=()
   _git_usable || return 0
   for f in "$@"; do
     if [[ ! -f "$f" ]]; then continue; fi
@@ -6177,7 +6192,12 @@ _git_exec_keys() {
       if [[ -n "${had[$k]:-}" ]]; then continue; fi
       case "$k" in
         core.fsmonitor) if [[ "${v,,}" =~ ^(true|false|yes|no|on|off|-?[0-9]+)?$ ]]; then continue; fi ;;
-        alias.*|submodule.*.update) if [[ "$v" != '!'* ]]; then continue; fi ;;
+        alias.*)
+          if [[ "$v" != '!'* ]]; then
+            if [[ -z "${hadp[$k]:-}" ]]; then hadp[$k]=1; pa+=("$k"); fi
+            continue
+          fi ;;
+        submodule.*.update) if [[ "$v" != '!'* ]]; then continue; fi ;;
         # A path runs a program; a host name does not (review of the batch 10 branch).
         sendemail.smtpserver|sendemail.*.smtpserver) if [[ "$v" != /* ]]; then continue; fi ;;
         core.worktree)
@@ -6188,7 +6208,52 @@ _git_exec_keys() {
       _git_key_shown "$k" ks; out+=("$ks")
     done < <(LC_ALL=C _git_file_config "$f" --null --get-regexp "$re" 2>/dev/null)
   done
+  if [[ -n "${_gek_plain:-}" ]]; then out=(); fi
   for k in ${cut[@]+"${cut[@]}"} ${out[@]+"${out[@]}"}; do printf '%s\0' "$k"; done
+  # One set both ways (the last wins for git) is named above, as a program.
+  for k in ${pa[@]+"${pa[@]}"}; do
+    if [[ -n "${had[$k]:-}" ]]; then continue; fi
+    _git_key_shown "$k" ks; printf '%s (a git command, which may run one itself)\0' "$ks"
+  done
+}
+
+# _git_alias_once <git dir> <where the agent sees it> <own>: name, once, the
+# aliases a git directory's config sets that are no shell command, where an
+# earlier engine reported the directory and named none of them: a launch names
+# them with the keys that run programs (_git_exec_keys) only since they were
+# found to reach one (`alias.st = rebase --exec ./x`), and a config reported
+# before that is frozen as it was. Recorded (`al:`) whether it sets any or not:
+# the agent cannot write a config a launch has bound. With <own> empty the
+# directory reads another's config (a linked worktree's), and only its
+# config.worktree is read; that file only where a launch has named its keys
+# (`wt:`), since one not yet named is named whole, aliases too, where that is
+# decided. Where git does not run nothing is read and nothing recorded.
+_git_alias_once() {
+  local g="$1" at="$2" own="$3" id rk="" e f
+  local -a ek=() cf=()
+  _git_usable || return 0
+  id="$(_git_ident "$g")"
+  ! _git_reported "$g" al "$id" || return 0
+  if [[ -n "$own" ]]; then cf+=("$g/config"); fi
+  if _git_reported "$g" wt "$id"; then cf+=("$g/config.worktree"); fi
+  if (( ${#cf[@]} )); then mapfile -d '' -t ek < <(_gek_plain=1 _git_exec_keys "${cf[@]}"); fi
+  if (( ${#ek[@]} )); then
+    for e in "${ek[@]:0:10}"; do rk+="${rk:+, }$e"; done
+    if (( ${#ek[@]} > 10 )); then rk+=", and $(( ${#ek[@]} - 10 )) more"; fi
+    printf 'NOTE: %s was reported by an earlier launch, which named no alias but a shell
+' "$(_term "$at")" >&2
+    printf '      command. Its config sets: %s.
+' "$(_term "$rk")" >&2
+    printf '      Some git commands run a program an argument names (rebase --exec), and git uses a
+' >&2
+    printf '      repository'\''s alias over one of the same name in your own config.
+' >&2
+    printf '      If you did not set them yourself, review them on the host:\n' >&2
+    for f in "${cf[@]}"; do
+      if [[ -f "$f" ]]; then printf '        git config --file %s --get-regexp '\''^alias\\.'\''\n' "$(_q "$f")" >&2; fi
+    done
+  fi
+  _git_report_record "$g" al "$id"
 }
 
 # _git_report_once <git dir> <where the agent sees it> <what happened> <al> [hooks-named]:
@@ -6226,8 +6291,10 @@ _git_report_once() {
   # A config.worktree whose keys that read named is recorded too (`wt:`);
   # one that named none is not, so what is written into it later is named
   # by the launch that finds it (final review of the GIT-81 fix).
+  # The keys named above have every alias among them (`al:`, _git_alias_once).
   if _git_usable; then
     _git_report_record "$g"
+    _git_report_record "$g" al
     ek=(); mapfile -d '' -t ek < <(_git_exec_keys "$g/config.worktree")
     if (( ${#ek[@]} )); then _git_report_record "$g" wt; fi
   else _git_report_record "$g" hooks; fi
@@ -6401,7 +6468,8 @@ _git_reported_load() {
 # A second argument, `hooks`, is the record of a launch where git did not run,
 # which named the hooks and read no key: `<identity> hooks:<path>`, a line no
 # physical path can make, so an older engine matches it to nothing.
-_git_reported() {    # <git dir, physical> [hooks]: rc 0 when it is in the record
+# A third argument is the identity, where the caller has it (_git_ident forks).
+_git_reported() {    # <git dir, physical> [hooks] [identity]: rc 0 when it is in the record
   local p="$1"
   # A path with a newline as %q writes it in the C locale ($'…'), which no
   # physical path starts with: one line was all it could not be, and it was
@@ -6409,7 +6477,7 @@ _git_reported() {    # <git dir, physical> [hooks]: rc 0 when it is in the recor
   # byte past ASCII otherwise in another (review of the plan).
   if [[ "$p" == *$'\n'* ]]; then LC_ALL=C printf -v p '%q' "$p"; fi
   _git_reported_load
-  [[ -n "${_git_reported_set["$(_git_ident "$1") ${2:+$2:}$p"]:-}" ]]
+  [[ -n "${_git_reported_set["${3:-$(_git_ident "$1")} ${2:+$2:}$p"]:-}" ]]
 }
 # A third argument is the identity, where the caller has it (_git_ident forks).
 # A line that cannot be written is said by the launch, once (_git_rec_lost):

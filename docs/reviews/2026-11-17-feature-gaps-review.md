@@ -9,12 +9,13 @@
 
 ## Summary
 
-15 gaps, by the priority each reviewer gave:
+16 gaps, by the priority each reviewer gave (GAP-30 was found while GIT-106 was fixed):
 
 | ID | Area | Priority | Gap |
 |---|---|---|---|
 | GAP-15 | GIT | MEDIUM | a rebase the session leaves stopped runs `exec` lines on the host at `git rebase --continue`, and nothing names it |
 | GAP-16 | GIT | LOW | git-lfs keys that run a program are not among the keys named or judged |
+| GAP-30 | GIT | LOW | an alias that is not a shell command is named by no launch, though its git command can run a program |
 | GAP-17 | LNCH | MEDIUM | nothing tests what the launcher reads from inside a group directory the agent writes |
 | GAP-18 | LNCH | LOW | the case/Windows refusal is not tested against the host paths LNCH-27 added to the verify list |
 | GAP-19 | PRJ | MEDIUM | no test interrupts `mv` after the checked copy has landed |
@@ -48,6 +49,14 @@
 - **Current state:** the list covers git's own keys (and `guitool`, `instaweb`, `sendemail`, p4 hooks) but not git-lfs's `lfs.customtransfer.<name>.path` (with `lfs.standalonetransferagent` / `lfs.<url>.standalonetransferagent`), which git-lfs reads from the repository's config and runs as the transfer program whenever a smudge has to fetch an object (checkout, pull, stash, restore) on a host where `git lfs install` put the lfs filter in the global config. A repository the session makes with those keys is "plain" to `_git_after_session()`, and the first protection lists nothing. Not run here: git-lfs is not installed on this host; from git-lfs's documented custom-transfer configuration. PLAUSIBLE.
 - **Value / priority:** LOW. A third-party tool, but a very common one, and its smudge runs on ordinary git commands.
 - **Suggested approach:** add `lfs\.customtransfer\..+\.(path|args)` and `lfs\.(.+\.)?standalonetransferagent` to `_git_prog_keys`, the `path` one judged as a whole path like `gpg.program`.
+
+### GAP-30: an alias that is not a shell command is named by no launch, though its git command can run a program
+- Status: DONE (2026-11-17, Fable 5.2 session; the user chose to name every such alias once). `_git_exec_keys()` names each, after the keys that run a program for certain, as "a git command, which may run one itself"; `_git_alias_once()` names them once for a repository an earlier engine reported (`al:` in `git-reported.conf`). G332 in `tests/test-git-internals-ro-reports.sh`; G26 there pinned the opposite and now asserts this.
+- **Area:** `_git_exec_keys()`, `_git_runs()`, the record of reported repositories
+- **Source:** AGENTS.md: the first protection "names, once, the keys its config already sets that make git run a program". Found while GIT-106 was fixed; left for the user, since a test pinned that a plain alias is not named.
+- **Current state:** only an alias starting with `!` was named. `alias.st = rebase --exec ./x` has none, and `git st` on the host runs `./x` from the checkout, a file the agent writes (`difftool --extcmd=`, `bisect run` likewise). Measured, git 2.53: a repository's alias is used over one of the same name in the global config, so a shorthand the user already types is enough; an alias cannot stand in for a built-in command (`alias.status` ran nothing).
+- **Value / priority:** LOW. The alias must be in a config the agent could write before its first protection, or in a repository it made.
+- **Suggested approach:** name every alias of a repository's own config once; a list of the git options that run a program would miss some. Not judged at each launch: after the first protection the agent cannot write the config.
 
 
 ---
