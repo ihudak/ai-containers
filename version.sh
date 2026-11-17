@@ -159,11 +159,15 @@ _ver_id() {
 # bound. A `! -L` test before the open leaves the time between the two to
 # swap a link in and out again; the identity of the open descriptor, compared
 # after the open with that of the name itself (stat without -L: a link's own),
-# leaves none (bugs review ENV-10).
+# leaves none (bugs review ENV-10). The descriptor is asked by fstat, through
+# stdin (GNU's `-`, BSD's no operand), never by a stat of /dev/fd/3: macOS's
+# fdescfs reports its own device there, with the open file's inode, so the
+# identity never matched and every recorded version read as unknown.
 _ver_cat_own() {
   local f="$1" a b
   exec 3< "$f" || return 1
-  a="$(_ver_id -L /dev/fd/3)" && b="$(_ver_id -- "$f")" && [[ -n "$a" && "$a" == "$b" ]] || return 1
+  if (( _ver_stat_gnu )); then a="$(_ver_id - <&3)"; else a="$(_ver_id <&3)"; fi
+  b="$(_ver_id -- "$f")" && [[ -n "$a" && "$a" == "$b" ]] || return 1
   head -c 4096 <&3
 }
 
