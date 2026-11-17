@@ -32,6 +32,8 @@ FAKE_RUNNING_VOL="$TMP/fake-running-vol"; : > "$FAKE_RUNNING_VOL"
 FAKE_BIN="$TMP/bin"; mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
+# FAKE_DOCKER_DOWN: a docker that cannot be reached answers nothing.
+[[ -n "${FAKE_DOCKER_DOWN:-}" ]] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
 case "$1" in
   volume)
     case "$2" in
@@ -41,7 +43,7 @@ case "$1" in
           if [[ "$prev" == "--format" ]]; then :; elif [[ "$a" != "--format" ]]; then name="$a"; fi
           prev="$a"
         done
-        [[ -f "$FAKE_VOLUMES_DIR/$name" ]] || exit 1
+        [[ -f "$FAKE_VOLUMES_DIR/$name" ]] || { echo "Error response from daemon: get $name: no such volume" >&2; exit 1; }
         fmt=""; prev=""
         for a in "${@:3}"; do [[ "$prev" == "--format" ]] && fmt="$a"; prev="$a"; done
         if [[ "$fmt" == *Labels* ]]; then
@@ -72,6 +74,8 @@ case "$1" in
     esac ;;
   ps)
     [[ -n "${FAKE_PS_FAIL:-}" ]] && exit 1
+    # FAKE_PS_FAIL_VOL=<volume>: docker cannot list the containers of that one.
+    for a in "$@"; do [[ "$a" == "volume=${FAKE_PS_FAIL_VOL:-}" ]] && exit 1; done
     for a in "$@"; do
       case "$a" in
         volume=*)
@@ -225,6 +229,46 @@ out="$(HOME="$NOKEY" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR"
   && pass "PRJ-16 a home with no owner key says why its labelled volumes look like another home's" \
   || fail "PRJ-16 a home with no owner key (got: $out)"
 rm -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-lostkey" "$FAKE_VOLUMES_DIR/ai-containers-rvm-lostkey.labels"; rm -rf "$NOKEY"
+
+# A docker that cannot be reached is not one with no volume: rm keeps the
+# directory, where it removed it and orphaned the volume, and gc says so, rc 1,
+# where it said there was nothing to collect (review of the PRJ-16 fix).
+mkdir -p "$FAKE_HOME/.ai-containers/down16"; mkvol "ai-containers-rvm-down16" "down16"
+out="$(FAKE_DOCKER_DOWN=1 run_group rm down16 --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$FAKE_HOME/.ai-containers/down16" && "$out" == *"docker could not say whether ai-containers-rvm-down16 exists"* ]] \
+  && pass "PRJ-16 rm with docker unreachable refuses and keeps the directory" \
+  || fail "PRJ-16 rm with docker unreachable (rc=$rc; got: $out)"
+out="$(FAKE_DOCKER_DOWN=1 run_group list)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"down16"*"unknown"* && "$out" != *"none"* && "$out" == *"docker could not list its volumes"* ]] \
+  && pass "PRJ-16 list with docker unreachable lists the groups, their volumes unknown, and says so, rc 1" \
+  || fail "PRJ-16 list with docker unreachable (rc=$rc; got: $out)"
+out="$(FAKE_DOCKER_DOWN=1 run_group gc --yes)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"docker could not list its volumes"* && "$out" != *"Nothing to collect"* ]] \
+  && pass "PRJ-16 gc with docker unreachable says so, rc 1" || fail "PRJ-16 gc with docker unreachable (rc=$rc; got: $out)"
+rm -rf "$FAKE_HOME/.ai-containers/down16"; rm -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-down16" "$FAKE_VOLUMES_DIR/ai-containers-rvm-down16.labels"
+# Skipping one orphan it could not judge, gc removes the others and still exits 1.
+mkvol "ai-containers-rvm-gone1" "gone1"; mkvol "ai-containers-rvm-gone2" "gone2"
+out="$(FAKE_PS_FAIL_VOL=ai-containers-rvm-gone1 run_group gc --yes)"; rc=$?
+[[ "$rc" -ne 0 && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-gone1" && ! -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-gone2" && "$out" == *"Removed ai-containers-rvm-gone2"* ]] \
+  && pass "PRJ-16 gc removes what it can, skips the volume docker could not judge, and exits 1" \
+  || fail "PRJ-16 gc with one volume unjudged (rc=$rc; got: $out)"
+rm -f "$FAKE_VOLUMES_DIR"/ai-containers-rvm-gone1*
+# rm keeps a volume another home made whatever uses it, so a container that
+# does is no reason to refuse; and a home with no owner key says why it takes
+# its own volume for another's.
+mkdir -p "$FAKE_HOME/.ai-containers/busy16"; VOL_OWNER="sha256:$(printf '%064d' 7)" mkvol "ai-containers-rvm-busy16" "busy16"
+printf 'ai-containers-rvm-busy16' > "$FAKE_RUNNING_VOL"
+out="$(run_group rm busy16 --yes)"; rc=$?
+: > "$FAKE_RUNNING_VOL"
+[[ "$rc" -eq 0 && ! -d "$FAKE_HOME/.ai-containers/busy16" && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-busy16" && "$out" != *"Stop it first"* ]] \
+  && pass "PRJ-16 rm of a group whose volume another home made and uses removes the directory, keeps the volume" \
+  || fail "PRJ-16 rm with another home's volume in use (rc=$rc; got: $out)"
+NOKEY2="$TMP/nokey-home2"; mkdir -p "$NOKEY2/.ai-containers/busy16"
+out="$(HOME="$NOKEY2" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" rm busy16 --yes 2>&1)"
+[[ "$out" == *"rvm volume ai-containers-rvm-busy16 is kept: another home on this docker, or this one before it lost its owner key, made it"* \
+   && "$out" == *"this home has no owner key"* ]] \
+  && pass "PRJ-16 rm in a home with no owner key says why it keeps the volume" || fail "PRJ-16 rm with no owner key (got: $out)"
+rm -rf "$NOKEY2"; rm -f "$FAKE_VOLUMES_DIR"/ai-containers-rvm-busy16*
 
 # What a launch keeps from a protected git file's place is under the hidden
 # ~/.ai-containers/.restored, a name no group can have (bugs review PRJ-18):

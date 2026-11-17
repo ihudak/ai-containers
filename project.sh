@@ -58,8 +58,9 @@ Usage:
   ./project.sh gc  [--all] [--yes]         Remove what registered projects no longer need
 
 <project> is a registered path, a path to it, or the basename of exactly one
-registered project. A bare name that is also an unregistered directory here,
-while that project is there too, is refused: give the path of the one you mean.
+registered project. A bare name that is also an unregistered directory here is
+refused: give the path of the one you mean. mv takes the registered one where it
+is gone (moved by hand), or where the directory here is <new-dir> itself.
 
 Notes:
   - Groups and repo volumes are NOT touched: they are shared. Use ./group.sh and
@@ -115,7 +116,8 @@ prj_roots() {
   done < "$prj_conf"
 }
 
-# prj_resolve <arg> [unregistered-ok]: sets PRJ_ROOT and PRJ_DOT, or exits 1.
+# prj_resolve <arg> [unregistered-ok] [<new-dir>]: sets PRJ_ROOT and PRJ_DOT,
+# or exits 1. mv passes its <new-dir> (see the bare-name rule below).
 # shellcheck disable=SC2034  # PRJ_DOT is read by the commands built on this
 prj_resolve() {
   local arg="$1" ok="${2:-}" abs phys="" r rp want found="" n=0 cands="" base
@@ -156,14 +158,16 @@ prj_resolve() {
       printf 'Give the path of the one you mean.\n' >&2
       exit 1
     fi
-    # A bare name that is also a directory here, one no registered root is,
-    # while the registered project of that basename is there too: which of the
-    # two is meant cannot be told, so neither is taken. `rm api --yes` beside an
-    # unregistered ./api removed the registered project of that basename (bugs
-    # review PRJ-13). A path (./api, or the registered one) picks. A registered
-    # root that is gone is still taken by its name: a setup moved by hand, which
-    # `mv api <new-dir>` finishes from beside its new place.
-    if [[ -n "$found" && -n "$phys" && -d "$found" ]]; then
+    # A bare name that is also a directory here, one no registered root is:
+    # which of the two is meant cannot be told, so neither is taken. `rm api
+    # --yes` beside an unregistered ./api removed the registered project of
+    # that basename (bugs review PRJ-13), and did so for one that is gone too
+    # (review of its fix). A path (./api, or the registered one) picks. For mv
+    # (unregistered-ok) the registered one is taken where it is gone, a setup
+    # moved by hand, or where the directory here is <new-dir> itself: both are
+    # `mv api <new-dir>` run from beside the new place.
+    if [[ -n "$found" && -n "$phys" ]] \
+       && ! { [[ -n "$ok" && ! -d "$found" ]] || [[ -n "${3:-}" && "$phys" -ef "$3" ]]; }; then
       printf 'ERROR: "%s" is a directory here, %s, which is not a registered project,\n' "$(_ac_term "$arg")" "$(_ac_term "$phys")" >&2
       printf '       and the name of the registered project %s.\n' "$(_ac_term "$found")" >&2
       printf 'Give the path of the one you mean.\n' >&2
@@ -1118,7 +1122,11 @@ _prj_move_dot() {
   # mount) share a device number, rename(2) then fails EXDEV, and GNU mv falls
   # back to copying and deleting, unchecked.
   if [[ "${AI_CONTAINERS_MV_COPY:-}" != 1 ]] && od="$(_prj_dev "$old")" && nd="$(_prj_dev "$root")" && [[ "$od" == "$nd" ]]; then
+    # Marked before the rename, as for a copy below: an interrupt right after it
+    # finds the setup moved, by its inode (review of the PRJ-12 fix).
+    _prj_mv_landed="$old" _prj_mv_cino="$ino"
     if _prj_mv_to "$old" "$new" && _prj_landed "$ino" "$new" && [[ ! -e "$old" && ! -L "$old" ]]; then return 0; fi
+    _prj_mv_landed="" _prj_mv_cino=""
     where="$(_prj_where "$ino" "$new" "$old")"
     if [[ -n "$where" && "$where" == "$(_prj_phys "$old")" ]]; then
       printf 'ERROR: could not move %s to %s; it is where it was.\n' "$(_ac_term "$old")" "$(_ac_term "$new")" >&2
@@ -1457,7 +1465,7 @@ cmd_mv() {
   if [[ -z "$arg" || -z "$narg" ]]; then
     printf 'ERROR: usage: ./project.sh mv <project> <new-dir> [--yes]\n' >&2; exit 1
   fi
-  prj_resolve "$arg" unregistered-ok
+  prj_resolve "$arg" unregistered-ok "$narg"
   local old_root old_dot new_root new_dot reg=0 new_reg=0 moved=0
   old_root="$(_prj_strip "$PRJ_ROOT")"
   if _prj_registered "$PRJ_ROOT"; then reg=1
@@ -1992,8 +2000,8 @@ _prj_mv_interrupted() {
   # done once the leftover is gone (PRJ-12).
   if [[ -n "$_prj_mv_landed" ]] && _prj_landed "$_prj_mv_cino" "${_prj_mv_new%/}/.ai-containers"; then
     if [[ -e "$_prj_mv_landed" || -L "$_prj_mv_landed" ]]; then
-      printf '       %s is in place, the checked copy of %s, which was being\n' "$(_ac_term "${_prj_mv_new%/}/.ai-containers")" "$(_ac_term "$_prj_mv_landed")" >&2
-      printf '       removed: what is left of it is a leftover. Remove it, then run %s\n' "$_prj_mv_cmd" >&2
+      printf '       %s is in place, the checked copy of %s, which is now a\n' "$(_ac_term "${_prj_mv_new%/}/.ai-containers")" "$(_ac_term "$_prj_mv_landed")" >&2
+      printf '       leftover, whole or in part. Remove it, then run %s\n' "$_prj_mv_cmd" >&2
       printf '       again to finish whatever is left of the move:\n' >&2
       printf '         rm -rf %s\n' "$(_prj_q "$_prj_mv_landed")" >&2
     else

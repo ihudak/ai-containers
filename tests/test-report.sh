@@ -534,17 +534,17 @@ mk_base "$CTLB" && mk_base "$CTLB2" || { printf 'SCAFFOLD-FAILED: mk_base ctl\n'
 CTLP="$TMP/ctl"$'\e]0;N\a'"proj"
 mkdir -p "$CTLP/.ai-containers"
 printf '%s\n' 'AI_CONTAINER_GROUP=g'$'\t''x'$'\t''y' 'SANDBOX_MODE=open'$'\e[2K\r''restricted' \
-  'CONTAINER_CPUS='$'\e]0;PWNED\a''4' 'CONTAINER_MEMORY=8g'$'\e[1A' > "$CTLP/.ai-containers/sandbox.env"
+  'CONTAINER_CPUS='$'\e]0;PWNED\a''4'$'\xe2\x80\xae' 'CONTAINER_MEMORY=8g'$'\e[1A' > "$CTLP/.ai-containers/sandbox.env"
 printf 'v1'$'\xc2\x9b''2J\n' > "$CTLP/.ai-containers/engine-version"
 printf 'export IMAGE_NAME=x\n' > "$CTLP/.ai-containers/old"$'\e[2K'"-container.sh"
 printf '%s\n' "$CTLP" >> "$CTLB/projects.conf"; printf '%s\n' "$CTLP" >> "$CTLB2/projects.conf"
-ctl_bad() { LC_ALL=C grep -qE $'[\x01-\x08\x0b-\x1f\x7f]|\xc2[\x80-\x9f]' <<<"$1"; }
+ctl_bad() { LC_ALL=C grep -qE $'[\x01-\x08\x0b-\x1f\x7f]|\xc2[\x80-\x9f]|\xe2\x80[\xaa-\xae]|\xe2\x81[\xa6-\xa9]' <<<"$1"; }
 run "$CTLB/ai-containers-report.sh" --tsv "$CTLB" "$CTLB2"
 ctl_row="$(grep -m1 'ctl?' <<<"$OUT")"
 ctl_fields="$(awk -F'\t' '{ print NF }' <<<"$ctl_row")"
 hdr_fields="$(head -1 <<<"$OUT" | awk -F'\t' '{ print NF }')"
 [[ "$RC" == 0 && -n "$ctl_row" && "$ctl_fields" == "$hdr_fields" ]] && ! ctl_bad "$OUT" \
-  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4'* && "$ctl_row" == *'8g?[1A'* && "$ctl_row" == *'v1?2J'* ]] \
+  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4?'* && "$ctl_row" == *'8g?[1A'* && "$ctl_row" == *'v1?2J'* ]] \
   && pass "PRJ-15 --tsv renders every field's control characters, a tab and a C1 among them, so each row keeps its columns" \
   || fail "PRJ-15 --tsv (rc=$RC; $ctl_fields fields under $hdr_fields; $(od -c <<<"$ctl_row" | head -3 | tr '\n' ' '))"
 run "$CTLB/ai-containers-report.sh" "$CTLB" "$CTLB2"

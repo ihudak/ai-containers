@@ -14,7 +14,8 @@ unset CDPATH  # a relative cd follows it and prints the directory (bugs review G
 # a Docker named volume (it cannot live on a macOS bind mount — see the tar/virtiofs
 # note on rvm_volume_name in sandbox-common.sh). Deleting the directory now leaves a
 # multi-GB volume orphaned with nothing pointing at it. This script keeps the two in
-# step: 'rm' removes both, and 'gc' finds volumes whose group is already gone.
+# step: 'rm' removes both (keeping a volume another home made), and 'gc' finds
+# volumes whose group is already gone.
 #
 # Scope: groups and their volumes ONLY. Repo volumes are a separate, global
 # resource with their own lifecycle — use repo.sh for those. The two never overlap:
@@ -31,15 +32,17 @@ usage() {
   cat <<'EOF'
 Usage:
   ./group.sh list [--sizes]          List container groups and their rvm volumes
-  ./group.sh rm <group> [--yes]      Remove a group: its directory AND its rvm volume
+  ./group.sh rm <group> [--yes]      Remove a group: its directory and its rvm volume
   ./group.sh gc [--all] [--yes]      Remove this home's rvm volumes whose group directory is gone
 
 Notes:
   - A group owns two things: the directory ~/.ai-containers/<group>/ and, once you
     have built with a ruby= version, the Docker volume holding its Ruby home.
-    'rm' removes both; deleting the directory by hand orphans the volume ('gc'
+    'rm' removes both, but keeps a volume another home on this docker made;
+    deleting the directory by hand orphans the volume ('gc'
     cleans those up afterwards).
-  - 'rm' refuses while a running container still mounts the group's rvm volume.
+  - 'rm' refuses while a running container still mounts an rvm volume it would
+    remove.
   - 'host' is not a group (it once meant "mount my real $HOME", and is no longer
     supported), so it is never removed here.
   - One docker may serve several homes (Docker Desktop's, by every WSL distro),
@@ -103,6 +106,15 @@ _no_key_note() {
   printf '      losing it cannot be told apart from another home'"'"'s.\n'
 }
 
+# _docker_answers: rc 0 when docker lists its volumes; otherwise an ERROR, rc 1.
+# A docker that cannot be reached listed no volume, which gc took for nothing
+# to collect (review of the PRJ-16 fix).
+_docker_answers() {
+  docker volume ls -q >/dev/null 2>&1 && return 0
+  printf 'ERROR: docker could not list its volumes (is docker running?).\n' >&2
+  return 1
+}
+
 # _vol_busy <volume>: rc 0 when a running container uses it, 1 when none does,
 # 2 when docker could not list the containers, which is never read as none.
 _vol_busy() {
@@ -137,12 +149,19 @@ cmd_list() {
     return 0
   fi
 
+  # A docker that cannot be reached is not one with no volumes: the groups are
+  # still listed, their volumes unknown, and the run says so, rc 1 (review of
+  # the PRJ-16 fix).
+  local dk=1
+  docker volume ls -q >/dev/null 2>&1 || dk=0
   printf '%-24s  %-40s  %s\n' "GROUP" "RVM VOLUME" "$([[ "$show_sizes" == "1" ]] && echo "SIZE" || echo "STATE")"
   local g vol state
   while IFS= read -r g; do
     [[ -n "$g" ]] || continue
     vol="$(rvm_volume_name "$g")"
-    if docker volume inspect "$vol" >/dev/null 2>&1; then
+    if (( ! dk )); then
+      state="unknown"
+    elif docker volume inspect "$vol" >/dev/null 2>&1; then
       if [[ "$show_sizes" == "1" ]]; then
         state="$(volume_size "$vol")"
       else
@@ -155,6 +174,11 @@ cmd_list() {
     fi
     printf '%-24s  %-40s  %s\n' "$g" "$vol" "$state"
   done <<< "$names"
+  if (( ! dk )); then
+    printf 'ERROR: docker could not list its volumes (is docker running?), so which groups have a\n' >&2
+    printf '       Ruby volume, and which volumes are orphaned, cannot be told.\n' >&2
+    exit 1
+  fi
 
   # Orphans: a volume whose group directory no longer exists. Surfaced here rather
   # than only in gc so `list` alone tells you whether there is anything to clean.
@@ -204,19 +228,43 @@ cmd_rm() {
 
   local dir="$groups_root/$name"
   local vol; vol="$(rvm_volume_name "$name")"
-  local has_dir=0 has_vol=0
+  local has_dir=0 has_vol=0 vout
   [[ -d "$dir" ]] && has_dir=1
-  docker volume inspect "$vol" >/dev/null 2>&1 && has_vol=1
+  # A docker that cannot answer is not one that says there is no volume: read
+  # so, the directory went and the volume was left, orphaned (review of the
+  # PRJ-16 fix).
+  if vout="$(docker volume inspect "$vol" 2>&1 >/dev/null)"; then has_vol=1
+  elif [[ "${vout,,}" != *"no such volume"* ]]; then
+    printf 'ERROR: docker could not say whether %s exists (is docker running?); refusing.\n' "$vol" >&2
+    exit 1
+  fi
   if [[ "$has_dir" == "0" && "$has_vol" == "0" ]]; then
     printf 'ERROR: no such group "%s" (no directory at %s and no volume %s).\n' "$name" "$dir" "$vol" >&2
     exit 1
+  fi
+
+  # A volume another home made: one docker serves several homes, and that home's
+  # group of this name mounts the same volume. Kept and named; this home's
+  # directory goes (review of the PRJ-16 fix).
+  local own why="" keep_vol=0 maker="another home on this docker"
+  own="$(ai_containers_owner_known 2>/dev/null)" || own=""
+  # With no owner key, this home's own labelled volume looks like another's.
+  [[ -n "$own" ]] || maker="another home on this docker, or this one before it lost its owner key,"
+  if [[ "$has_vol" == "1" ]] && why="$(_vol_owner_why "$vol" "$own")" && [[ "$why" == "another home's" ]]; then
+    keep_vol=1
+    if [[ "$has_dir" == "0" ]]; then
+      printf 'ERROR: %s was made by %s and its group "%s" there may use it; this home\n' "$vol" "$maker" "$name" >&2
+      printf '       has no group "%s" to remove. To remove the volume anyway: docker volume rm %s\n' "$name" "$vol" >&2
+      _no_key_note "$own" >&2
+      exit 1
+    fi
   fi
 
   # Never yank a volume out from under a running container: docker would refuse the
   # rm anyway, but we would already have deleted the directory by then. A docker
   # that cannot list its containers is not read as none using it (PRJ-16).
   local brc=0
-  if [[ "$has_vol" == "1" ]]; then
+  if [[ "$has_vol" == "1" ]] && (( ! keep_vol )); then
     _vol_busy "$vol" || brc=$?
     if (( brc == 0 )); then
       printf 'ERROR: a running container is still using %s. Stop it first.\n' "$vol" >&2
@@ -226,24 +274,12 @@ cmd_rm() {
       exit 1
     fi
   fi
-  # A volume another home made: one docker serves several homes, and that home's
-  # group of this name mounts the same volume. Kept and named; this home's
-  # directory goes (review of the PRJ-16 fix).
-  local own why="" keep_vol=0
-  own="$(ai_containers_owner_known 2>/dev/null)" || own=""
-  if [[ "$has_vol" == "1" ]] && why="$(_vol_owner_why "$vol" "$own")" && [[ "$why" == "another home's" ]]; then
-    keep_vol=1
-    if [[ "$has_dir" == "0" ]]; then
-      printf 'ERROR: %s was made by another home on this docker, whose group "%s" may use it; this home\n' "$vol" "$name" >&2
-      printf '       has no group "%s" to remove. To remove the volume anyway: docker volume rm %s\n' "$name" "$vol" >&2
-      exit 1
-    fi
-  fi
 
   printf 'This will permanently remove group "%s":\n' "$name"
   [[ "$has_dir" == "1" ]] && printf '  directory  %s\n' "$dir"
   if [[ "$has_vol" == "1" ]] && (( keep_vol )); then
-    printf '  (rvm volume %s is kept: another home on this docker made it, and its group "%s" may use it)\n' "$vol" "$name"
+    printf '  (rvm volume %s is kept: %s made it, and its group "%s" there may use it)\n' "$vol" "$maker" "$name"
+    _no_key_note "$own"
     has_vol=0
   elif [[ "$has_vol" == "1" ]]; then
     local wnote=""
@@ -277,6 +313,7 @@ cmd_gc() {
     shift
   done
 
+  _docker_answers || exit 1
   local targets="" kept="" v g own why brc skipped=0 unknown=0
   local -A whose=()
   own="$(ai_containers_owner_known 2>/dev/null)" || own=""

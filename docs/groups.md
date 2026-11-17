@@ -39,7 +39,14 @@ A group's Ruby home (`~/.rvm` in the container: rvm, every Ruby version and its
 gems, only when `ruby=` is set) is **not** in this directory. It is the Docker
 volume `ai-containers-rvm-<group>`, on every platform. Removing or backing up the group directory does
 not touch it: `./group.sh rm <group>` removes both, and `./group.sh gc` collects a
-volume whose directory was deleted by hand.
+volume whose directory was deleted by hand. A docker that several homes share
+(every WSL distro's, under Docker Desktop) has one Ruby volume for a group name
+in all of them. Each home's `rm` and `gc` keep a volume another home made, and a
+launch that mounts one says so, but that is all: the home that made the volume
+can still remove it from under the others, with its `rm`, or its plain `gc` once
+its own group directory is gone, and any home can with `gc --all`. The other
+homes' groups then build their Rubies again. See
+[Several homes on one docker](troubleshooting.md#several-homes-on-one-docker-wsl-distros-or-users).
 
 ## Group-name rules
 
@@ -146,10 +153,10 @@ cp -a ~/.ai-containers/default ~/.ai-containers/new-project
 group also owns a Docker volume holding its Ruby home (see
 [Ruby (via rvm)](components/ruby.md) for why it can't be a directory), and a bare
 `rm -rf` would orphan it — potentially several GB with nothing left pointing at
-it. Use `group.sh`, which removes both halves together:
+it. Use `group.sh`, which removes both together:
 
 ```bash
-# Remove a group: its directory AND its rvm volume (irreversible)
+# Remove a group: its directory and its rvm volume (irreversible)
 ./group.sh rm docs
 
 # Already deleted directories by hand? Collect the orphaned volumes:
@@ -163,8 +170,9 @@ volumes carried their owner, is kept and named; `./group.sh gc --all` takes it
 too. `~/.ai-containers/.restored/` is not a group: it holds files a launch kept
 from a protected git file's place, and `group.sh` neither lists nor removes it.
 
-`group.sh rm` refuses while a running container still mounts the group's
-volume, and refuses `host`, which is not a group. It never touches repo volumes — those are global and shared across
+`group.sh rm` keeps a volume another home made, and removes this home's group
+directory. It refuses while a running container still mounts a volume it would
+remove, and refuses `host`, which is not a group. It never touches repo volumes — those are global and shared across
 every group; manage them with [`repo.sh`](repos-and-mounts.md#shared-repo-volumes-native-speed--reposh-and-repos).
 
 `cp -a` duplicates the *directory* only. The copy starts with an empty Ruby

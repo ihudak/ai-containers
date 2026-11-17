@@ -876,8 +876,9 @@ rvm_group_from_volume() {
 # _rvm_shared_note <volume> <group>: a NOTE when the group's Ruby volume was made
 # by another home. One docker serves several homes (Docker Desktop's, by every
 # WSL distro), and the volume's name has no home in it, so that home's group of
-# this name mounts the same volume, and its group.sh rm or gc --all can remove it
-# from under this one. A stated limit, the user's choice (bugs review PRJ-16);
+# this name may mount the same volume, and that home's group.sh can remove it from
+# under this one (rm, or gc once its group directory is gone). A stated limit, the
+# user's choice (bugs review PRJ-16);
 # REPO_VOLUME_PREFIX, which every repo and Ruby volume name starts with, keeps
 # homes apart.
 _rvm_shared_note() {
@@ -887,8 +888,9 @@ _rvm_shared_note() {
   own="$(ai_containers_owner_id 2>/dev/null)" || own=""
   [[ -n "$own" && "$o" == "$own" ]] && return 0
   printf 'NOTE: the Ruby volume %s was made by another home on this docker (another WSL distro or\n' "$1" >&2
-  printf '      user, or this one before ~/.ai-containers/project-id.key was lost). Its group "%s" uses it\n' "$2" >&2
-  printf '      too, and its group.sh rm or gc --all can remove it; this group then builds its Rubies again.\n' >&2
+  printf '      user), or by this one before ~/.ai-containers/project-id.key was lost. That home'"'"'s group\n' >&2
+  printf '      "%s" may use it too, and that home can remove it with group.sh (rm, or gc once its group\n' "$2" >&2
+  printf '      is gone there); this group then builds its Rubies again.\n' >&2
   printf '      To keep homes apart, give each its own REPO_VOLUME_PREFIX (docs/troubleshooting.md).\n' >&2
 }
 

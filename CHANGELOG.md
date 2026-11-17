@@ -209,29 +209,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   projects' basenames even when it was an unregistered directory in the
   current one, so `./project.sh rm api --yes` beside an unregistered `./api`
   removed the registered project `api` elsewhere, working copies and all. Such
-  a name is now refused, naming both, while that registered project is there
-  too; a path (`./api`) picks one. A registered project that is gone (moved by
-  hand) is still found by its name, and so is one reached by another path to
-  the same directory, a bind mount's (bugs review PRJ-13).
+  a name is now refused, naming both; a path (`./api`) picks one. `mv` still
+  takes the registered one where it is gone (moved by hand) or where the
+  directory here is its destination, and a registered project reached by
+  another path to the same directory, a bind mount's, is found (bugs review
+  PRJ-13).
 - **An interrupted `project.sh mv` can be finished.** Interrupted while it
   removed the old `.ai-containers` after a move across filesystems, it undid
   the new working copies and said to run it again, which then refused because
-  both directories existed. Once the checked copy is in place it now keeps its
-  working copies, names what is left of the old directory to remove, and the
-  run after that finishes the move (bugs review PRJ-12).
+  both directories existed. Once `.ai-containers` is in place at the new
+  directory, it now keeps the new working copies, names what is left of the old
+  directory to remove where there is one, and running `mv` again finishes the
+  move, on one filesystem too (bugs review PRJ-12).
 - **`project.sh mv` names two working copies that would share a name.** Two
   copies of one repo, launched through a link to the project and through its
   real path, both mapped to one new name: the second failed after the question,
   undoing the first, on every run. This is now refused before the question,
   naming both (bugs review PRJ-14).
-- **`group.sh gc` keeps another home's Ruby volume.** On a docker several homes
+- **`group.sh gc` and `rm` keep another home's Ruby volume, within a stated limit.** On a docker several homes
   share (Docker Desktop's, by every WSL distro), a group directory missing here
   may be another home's group, and `gc` removed its volume. A Ruby volume now
   carries the `ai-containers.owner` of the home that made it, and `gc` takes
   only this home's; another home's, and one made before the label, are kept and
   named, and `--all` takes them too, still named. `group.sh rm` keeps a volume
   another home made and removes this home's directory. Neither reads a docker
-  that cannot list its containers as one none uses. Every volume made before
+  that cannot list its containers as one none uses, nor one that cannot be
+  reached as one with no volume, and `gc` exits 1 when it skipped a volume it
+  could not judge. A launch that mounts another home's volume says so, and
+  `docs/troubleshooting.md` says how to keep homes apart with
+  `REPO_VOLUME_PREFIX`. The limit: a group of the same name in two homes still
+  shares one volume, which the home that made it can remove from under the
+  other. Every volume made before
   this change is unlabelled, so collecting one now takes `--all` (bugs review
   PRJ-16).
 - **What a launch keeps is no longer a group.** The files a launch keeps from a
