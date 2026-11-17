@@ -270,15 +270,16 @@ grep -q 'FAILED: rvm bootstrap' <<<"$boot_fail" \
 # (or `source`ing scripts/rvm) after bootstrap failed, which surfaces as bash's
 # own "rvm: command not found" or ".../scripts/rvm: No such file or directory"
 # (confirmed by reproducing the historical defect: neutering every early
-# `exit 0` produces exactly `rvm-reconcile.sh: line 70:
-# .../.rvm/scripts/rvm: No such file or directory`). A bare `command not
+# `exit 0` produces exactly
+# `rvm-reconcile.sh: line 70: .../.rvm/scripts/rvm: No such file or directory`).  # ref-lint: allow: a quoted error message
+# A bare `command not
 # found|No such file` used to match ANY leaked shell error in the captured
 # output, attributable or not — it happened to be flock's (fixed by stubbing
 # flock above), but the same looseness would false-fail on the next missing
 # PATH tool too, masquerading as this guarded defect. Anchoring on the token
 # immediately before the colon being `rvm` (bare, or path-suffixed via a
 # preceding `/`, e.g. `scripts/rvm:`) rules that out: it cannot match
-# `rvm-reconcile.sh: line N: <anything-else>: ...` (the script's own name has
+# `rvm-reconcile.sh: line N: <anything-else>: ...` (the script's own name has  # ref-lint: allow: a quoted error message
 # more than "rvm" before that colon) or an unrelated tool's bare name.
 # Filtering out every bash "<script>: line N: ..." shaped line instead (the
 # alternative considered) was rejected: the real defect's own error is in

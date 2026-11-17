@@ -358,7 +358,9 @@ $(grep -F 'registered project' <<<"$OUT")"
 fi
 
 run "$OUTER/ai-containers-report.sh" --markdown --no-notes
-if grep -qE '^\| unknown \| unknown \| default \| api \|.*\| `/' <<<"$OUT"; then
+# The path cell starts `/`, or `~` where TMPDIR is under HOME, which the report
+# shortens (display_path); `/` alone failed there (bugs review TST-41).
+if grep -qE '^\| unknown \| unknown \| default \| api \|.*\| `[/~]' <<<"$OUT"; then
   pass "--markdown backticks the path cell only"
 else
   fail "--markdown backticks the path cell only
@@ -519,6 +521,37 @@ grep -q '^  - grphost (.*AI_CONTAINER_GROUP=host is no longer supported' <<<"$OU
   && ! grep -q '^  - grplocal (.*AI_CONTAINER_GROUP=host is no longer supported' <<<"$OUT" \
   && pass "a project on the removed host group gets a note, and only that project" || fail "no note, or the wrong project's, for a host-group project
 $OUT"
+
+# ── values from a project's files are rendered (bugs review PRJ-15) ──────────
+# sandbox.env is the committed, shared file, and the agent writes the project:
+# an escape sequence in a value reached the host terminal, and a tab shifted
+# every later --tsv column. Every field and every note is rendered: here the
+# group, the mode, the CPUs, the memory, the engine version (one with a C1
+# control), the project's own name, a stale launcher's file name, and the note
+# that names a project registered in two bases.
+CTLB="$TMP/ctl/base"; CTLB2="$TMP/ctl/base2"
+mk_base "$CTLB" && mk_base "$CTLB2" || { printf 'SCAFFOLD-FAILED: mk_base ctl\n'; exit 1; }
+CTLP="$TMP/ctl"$'\e]0;N\a'"proj"
+mkdir -p "$CTLP/.ai-containers"
+printf '%s\n' 'AI_CONTAINER_GROUP=g'$'\t''x'$'\t''y' 'SANDBOX_MODE=open'$'\e[2K\r''restricted' \
+  'CONTAINER_CPUS='$'\e]0;PWNED\a''4'$'\xe2\x80\xae' 'CONTAINER_MEMORY=8g'$'\e[1A' > "$CTLP/.ai-containers/sandbox.env"
+printf 'v1'$'\xc2\x9b''2J\n' > "$CTLP/.ai-containers/engine-version"
+printf 'export IMAGE_NAME=x\n' > "$CTLP/.ai-containers/old"$'\e[2K'"-container.sh"
+printf '%s\n' "$CTLP" >> "$CTLB/projects.conf"; printf '%s\n' "$CTLP" >> "$CTLB2/projects.conf"
+ctl_bad() { LC_ALL=C grep -qE $'[\x01-\x08\x0b-\x1f\x7f]|\xc2[\x80-\x9f]|\xe2\x80[\xaa-\xae]|\xe2\x81[\xa6-\xa9]' <<<"$1"; }
+run "$CTLB/ai-containers-report.sh" --tsv "$CTLB" "$CTLB2"
+ctl_row="$(grep -m1 'ctl?' <<<"$OUT")"
+ctl_fields="$(awk -F'\t' '{ print NF }' <<<"$ctl_row")"
+hdr_fields="$(head -1 <<<"$OUT" | awk -F'\t' '{ print NF }')"
+[[ "$RC" == 0 && -n "$ctl_row" && "$ctl_fields" == "$hdr_fields" ]] && ! ctl_bad "$OUT" \
+  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4?'* && "$ctl_row" == *'8g?[1A'* && "$ctl_row" == *'v1?2J'* ]] \
+  && pass "PRJ-15 --tsv renders every field's control characters, a tab and a C1 among them, so each row keeps its columns" \
+  || fail "PRJ-15 --tsv (rc=$RC; $ctl_fields fields under $hdr_fields; $(od -c <<<"$ctl_row" | head -3 | tr '\n' ' '))"
+run "$CTLB/ai-containers-report.sh" "$CTLB" "$CTLB2"
+[[ "$RC" == 0 ]] && ! ctl_bad "$(tr -d '\n' <<<"$OUT")" && grep -q 'registered in multiple bases' <<<"$OUT" \
+  && grep -q 'stale pre-rename launcher' <<<"$OUT" && grep -q 'ctl?' <<<"$OUT" \
+  && pass "PRJ-15 the table and its notes carry no control character from a project's files to the terminal" \
+  || fail "PRJ-15 the table ($(grep -n 'ctl' <<<"$OUT" | od -c | head -4 | tr '\n' ' '))"
 
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then

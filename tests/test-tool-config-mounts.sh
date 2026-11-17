@@ -581,7 +581,112 @@ rm -f "$GROUP_ROOT/.config/gh/hosts.yml"
 : > "$CAPTURE"; run_sandbox "$TMP/app"
 [[ "$RC" -eq 0 ]] && ! grep -qF 'No gh auth token' "$ERR" \
   && pass "copilot off, no gh login: no HINT" || fail "copilot off: a HINT to log in for Copilot"
+# The group's .config/gh is the agent's ~/.config/gh, so hosts.yml is the
+# agent's to replace (bugs review LNCH-29). A link to the host's own hosts.yml
+# handed the container the host's token; a file it cannot read ended every
+# launch of the group under set -e. Each is a WARNING now, with no token, rc 0.
+printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ncopilot=ON\n' > "$SANDBOX_CONF"
+mkdir -p "$HOME/.config/gh"
+printf 'github.com:\n    oauth_token: gho_HOST8\n' > "$HOME/.config/gh/hosts.yml"
+ln -s "$HOME/.config/gh/hosts.yml" "$GROUP_ROOT/.config/gh/hosts.yml"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && -s "$CAPTURE" ]] && ! grep -q '^COPILOT_GITHUB_TOKEN=' "$CAPTURE" \
+  && grep -qF "WARNING: $GROUP_ROOT/.config/gh/hosts.yml is a link or not a regular file" "$ERR" \
+  && pass "LNCH-29: a hosts.yml that is a link is not followed: no token, a WARNING, the launch goes on" \
+  || fail "LNCH-29: a linked hosts.yml (rc=$RC; $(grep '^COPILOT_GITHUB_TOKEN=' "$CAPTURE"); $(grep -F hosts.yml "$ERR" | head -1))"
+rm -f "$GROUP_ROOT/.config/gh/hosts.yml"; mkfifo "$GROUP_ROOT/.config/gh/hosts.yml"
+: > "$CAPTURE"; run_sandbox "$TMP/app"
+[[ "$RC" -eq 0 && -s "$CAPTURE" ]] && ! grep -q '^COPILOT_GITHUB_TOKEN=' "$CAPTURE" \
+  && grep -qF "WARNING: $GROUP_ROOT/.config/gh/hosts.yml is a link or not a regular file" "$ERR" \
+  && pass "LNCH-29: a hosts.yml that is a FIFO is not opened: no token, a WARNING, the launch goes on" \
+  || fail "LNCH-29: a FIFO hosts.yml (rc=$RC; $(grep -F hosts.yml "$ERR" | head -1))"
+rm -f "$GROUP_ROOT/.config/gh/hosts.yml"
+printf 'github.com:\n    oauth_token: gho_test8\n' > "$GROUP_ROOT/.config/gh/hosts.yml"
+chmod 000 "$GROUP_ROOT/.config/gh/hosts.yml"
+if [[ -r "$GROUP_ROOT/.config/gh/hosts.yml" ]]; then
+  printf 'SKIP: LNCH-29 the unreadable-hosts.yml check: mode 000 is still readable here (root)\n'
+else
+  : > "$CAPTURE"; run_sandbox "$TMP/app"
+  [[ "$RC" -eq 0 && -s "$CAPTURE" ]] && ! grep -q '^COPILOT_GITHUB_TOKEN=' "$CAPTURE" \
+    && grep -qF "WARNING: $GROUP_ROOT/.config/gh/hosts.yml cannot be read" "$ERR" \
+    && pass "LNCH-29: a hosts.yml that cannot be read is a WARNING, not the end of the launch" \
+    || fail "LNCH-29: an unreadable hosts.yml (rc=$RC; $(tr '\n' ' ' < "$ERR" | cut -c1-300))"
+fi
+chmod 600 "$GROUP_ROOT/.config/gh/hosts.yml"
 teardown
+
+# ── LNCH-29's read, against a sibling container that swaps hosts.yml (review of its fix) ──
+# The group's .config/gh is shared by every container of the group, so one can
+# swap hosts.yml while a launch reads it. The function is run alone here.
+GT="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
+{ printf '_tp_cmd="" _tp_path=$'"'"'\\n'"'"'\n'
+  awk '/^_gh_read_prog=/ { p = 1 } p { print } p && /^  fi'"'"'$/ { exit }' "$REPO_DIR/sandbox.sh"
+  for fn in _term _q _timeout_prefix _group_gh_token; do
+    awk -v f="$fn() {" 'index($0, f) == 1 { p = 1 } p { print } p && /^}/ { exit }' "$REPO_DIR/sandbox.sh"
+  done; } > "$GT/fns.sh"
+grep -q '^_group_gh_token() {' "$GT/fns.sh" && grep -q '^_gh_read_prog=' "$GT/fns.sh" \
+  || { printf 'SCAFFOLD-FAILED: _group_gh_token not extracted\n'; exit 1; }
+mkdir -p "$GT/gh" "$GT/host" "$GT/bin"
+printf 'github.com:\n    oauth_token: gho_HOSTX\n' > "$GT/host/hosts.yml"
+printf 'github.com:\n    oauth_token: gho_GROUPX\n' > "$GT/reg"
+cp "$GT/reg" "$GT/gh/hosts.yml"
+# A FIFO swapped in between the launcher's check and the open is read under a
+# bound, not waited on for ever. The swap is made by a `timeout` on PATH, which
+# the bounded read runs, just before it runs the real one: a read without the
+# bound never swaps, and takes the token.
+# The real one is chosen as the launcher chooses it (sandbox.sh: `_timeout_prefix()`:
+# one that takes an argument that is not UTF-8), and the wrapper takes each of
+# the names it looks for.
+real_to=""
+for c in gtimeout timeout gnutimeout; do
+  command -v "$c" >/dev/null 2>&1 && "$c" -k 2 5 bash -c : $'\xff' >/dev/null 2>&1 && { real_to="$(command -v "$c")"; break; }
+done
+if [[ -z "$real_to" ]]; then
+  printf 'SKIP: LNCH-29 the bounded hosts.yml read: no timeout(1) here, so the launch does not bound it either\n'
+else
+  for c in gtimeout timeout gnutimeout; do
+    cat > "$GT/bin/$c" <<TO
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == "$GT/gh/hosts.yml" && -n "\${SWAP_FIFO:-}" ]]; then rm -f "\$a"; mkfifo "\$a"; fi
+  if [[ "\$a" == "$GT/gh/hosts.yml" && -n "\${SWAP_LINK:-}" ]]; then rm -f "\$a"; ln -s "$GT/host/hosts.yml" "\$a"; fi
+done
+exec "$real_to" "\$@"
+TO
+    chmod +x "$GT/bin/$c"
+  done
+  t0=$SECONDS
+  out="$(PATH="$GT/bin:$PATH" SWAP_FIFO=1 bash -c 'set -euo pipefail; source "$1"; _group_gh_token "$2"' _ "$GT/fns.sh" "$GT/gh/hosts.yml" 2>"$GT/err")"; rc=$?
+  [[ "$rc" == 0 && -z "$out" && $(( SECONDS - t0 )) -lt 15 ]] && grep -qF 'could not be read within 5 s' "$GT/err" \
+    && pass "LNCH-29 a FIFO swapped in after the check is read under a bound: no token, a WARNING, the launch goes on" \
+    || fail "LNCH-29 a FIFO swapped in after the check (rc=$rc; out=$out; $(( SECONDS - t0 )) s; $(head -c 300 "$GT/err"))"
+  rm -f "$GT/gh/hosts.yml"; cp "$GT/reg" "$GT/gh/hosts.yml"
+  # A link to the host's own hosts.yml swapped in between the check and the
+  # open: the open is not the file judged, by its inode, and nothing is read.
+  out="$(PATH="$GT/bin:$PATH" SWAP_LINK=1 bash -c 'set -euo pipefail; source "$1"; _group_gh_token "$2"' _ "$GT/fns.sh" "$GT/gh/hosts.yml" 2>"$GT/err")"; rc=$?
+  [[ "$rc" == 0 && -z "$out" ]] && grep -qF 'changed while it was being opened' "$GT/err" \
+    && pass "LNCH-29 a link swapped in between the check and the open is caught by the opened file's inode: no token" \
+    || fail "LNCH-29 a link swapped in after the check (rc=$rc; out=$out; $(head -c 300 "$GT/err"))"
+  rm -f "$GT/gh/hosts.yml"; cp "$GT/reg" "$GT/gh/hosts.yml"
+fi
+# The open is checked to be the file the name names: swapped to a link to the
+# host's file just before the open and back just after, the name looks as it
+# did and only that check sees the swap. Raced: a sibling swaps without pause.
+( while [[ -e "$GT/gh" ]]; do
+    ln -s "$GT/host/hosts.yml" "$GT/gh/.l" 2>/dev/null && mv -f "$GT/gh/.l" "$GT/gh/hosts.yml" 2>/dev/null
+    cp "$GT/reg" "$GT/gh/.r" 2>/dev/null && mv -f "$GT/gh/.r" "$GT/gh/hosts.yml" 2>/dev/null
+  done ) & swapper=$!
+leaks=0 reads=0
+for _ in $(seq 1 300); do
+  out="$(bash -c 'set -euo pipefail; source "$1"; _group_gh_token "$2"' _ "$GT/fns.sh" "$GT/gh/hosts.yml" 2>/dev/null)"
+  [[ "$out" == gho_HOSTX ]] && leaks=$(( leaks + 1 ))
+  [[ "$out" == gho_GROUPX ]] && reads=$(( reads + 1 ))
+done
+kill "$swapper" 2>/dev/null; wait "$swapper" 2>/dev/null
+(( leaks == 0 && reads > 0 )) \
+  && pass "LNCH-29 a sibling swapping hosts.yml for a link never hands over the host's token ($reads of 300 reads took the group's)" \
+  || fail "LNCH-29 the host's token was read $leaks time(s) of 300 while a sibling swapped hosts.yml ($reads took the group's)"
+rm -rf "$GT"
 
 # ── The bootstrap menu offers only groups a launch could select (LNCH-20) ───────
 # Not `host` (refused), not a hidden directory (the launcher's own .verify-*), not

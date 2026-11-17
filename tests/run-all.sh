@@ -52,7 +52,10 @@ for t in "$tests_dir"/test-*.sh; do
     done
     [ "$match" -eq 1 ] || continue
   fi
-  selected="${selected:+$selected }$t"
+  # By name: every test lies in $tests_dir, and the list is split again by
+  # word, so a path holding a space split each test in two, each half run as a
+  # script (bugs review TST-40). Run as "$tests_dir/$name" below.
+  selected="${selected:+$selected }${t##*/}"
 done
 
 if [ -z "$selected" ]; then
@@ -306,7 +309,7 @@ fi
 ra_rest="$selected"
 for t in $selected; do
   ra_rest="${ra_rest#"$t"}"; ra_rest="${ra_rest# }"
-  name="$(basename "$t")"
+  name="$t"
   total=$((total + 1))
   printf '── %s\n' "$name"
   cd -- "$ra_cwd" 2>/dev/null || true
@@ -336,7 +339,7 @@ for t in $selected; do
       ra_tee=$!
       ra_out="$ra_fifo"
     fi
-    TMPDIR="$ra_td" bash "$t" >"$ra_out" 2>&1 &
+    TMPDIR="$ra_td" bash "$tests_dir/$t" >"$ra_out" 2>&1 &
     ra_cur=$!
     # The clock, a second at a time: it also ends the test the moment the driver
     # is gone (the OOM killer, a KILL), which nothing else would now that the
@@ -378,10 +381,10 @@ for t in $selected; do
     [ ! -f "$ra_flag" ] || ra_timed_out=1
     rm -f "$ra_flag" "$ra_fifo" "$ra_fifo.done"
   elif [ "$verbose" -eq 1 ]; then
-    TMPDIR="$ra_td" bash "$t" 2>&1 | tee "$log"
+    TMPDIR="$ra_td" bash "$tests_dir/$t" 2>&1 | tee "$log"
     rc=${PIPESTATUS[0]}
   else
-    TMPDIR="$ra_td" bash "$t" >"$log" 2>&1
+    TMPDIR="$ra_td" bash "$tests_dir/$t" >"$log" 2>&1
     rc=$?
   fi
   if [ -n "$ra_times" ]; then

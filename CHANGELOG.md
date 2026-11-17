@@ -32,7 +32,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   alone, and `gc` offers a copy with no label, made before it, only under a
   path this home's registries know; `./project.sh gc --all` offers the rest,
   for copies from before the label or from a distro that no longer exists.
-  `repo.sh gc` and `repo.sh list --copies` do not read the label yet.
 
 - **`repo-git-reset.sh inspect` reports `WORKTREE|clean|changed|?`**, so a caller
   can tell whether a volume's checkout has uncommitted changes. `repo.sh` can
@@ -204,6 +203,110 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   would not remove and keeps its registry line; `add` refuses a source holding
   `|`; and a first clone that fails removes the volume it made, so the next run
   seeds it again.
+- **`verify-on-host.sh` fails a `PHASES` that names no phase.** A `PHASES` of
+  only whitespace was set, so not defaulted, and named nothing: the run checked
+  nothing and reported `RESULT: PASSED`. It is now a recorded failure. Phases
+  separated by a newline or a tab, which passed that check and then ran none
+  but Phase 0, now run, and a glob is read as written. `PHASES=0`, the
+  environment banner alone, still passes (bugs review TST-38).
+- **The weekly nvm update takes the release tag as data.** The tag from
+  nvm-sh/nvm's latest release was pasted into the job's script and a `sed`
+  program unchecked, in a job that can write to the repository. A tag that is
+  not `vX.Y.Z` is now refused, and the update step takes it through `env:`
+  (bugs review TST-39). Its pull request is opened with an `NVM_BUMP_TOKEN`
+  secret where the repository has one, so that its checks run: one opened with
+  `GITHUB_TOKEN` starts none until it is reopened (feature-gaps review GAP-27).
+- **The hermetic suite runs from a path with a space.** `tests/run-all.sh` split
+  every test's path at the space and ran each half (bugs review TST-40).
+- **`tests/test-code-references.sh` checks every spelling of a citation.** File
+  and snippet inside one pair of backticks, and a backticked file before a
+  backticked snippet, were not checked, and nor was either one split across
+  lines. They are now, outside the review logs, which quote in them the code
+  each entry found wrong (feature-gaps review GAP-25).
+- **`project.sh rm` and `mv` no longer take a directory here for another
+  project of its name.** A bare name was matched against the registered
+  projects' basenames even when it was an unregistered directory in the
+  current one, so `./project.sh rm api --yes` beside an unregistered `./api`
+  removed the registered project `api` elsewhere, working copies and all. Such
+  a name is now refused, naming both; a path (`./api`) picks one. `mv` still
+  takes the registered one where it is gone (moved by hand) or where the
+  directory here is its destination, and a registered project reached by
+  another path to the same directory, a bind mount's, is found (bugs review
+  PRJ-13).
+- **An interrupted `project.sh mv` can be finished.** Interrupted while it
+  removed the old `.ai-containers` after a move across filesystems, it undid
+  the new working copies and said to run it again, which then refused because
+  both directories existed. Once `.ai-containers` is in place at the new
+  directory, it now keeps the new working copies, names what is left of the old
+  directory to remove where there is one, and running `mv` again finishes the
+  move, on one filesystem too (bugs review PRJ-12).
+- **`project.sh mv` names two working copies that would share a name.** Two
+  copies of one repo, launched through a link to the project and through its
+  real path, both mapped to one new name: the second failed after the question,
+  undoing the first, on every run. This is now refused before the question,
+  naming both (bugs review PRJ-14).
+- **`group.sh gc` and `rm` keep another home's Ruby volume, within a stated limit.** On a docker several homes
+  share (Docker Desktop's, by every WSL distro), a group directory missing here
+  may be another home's group, and `gc` removed its volume. A Ruby volume now
+  carries the `ai-containers.owner` of the home that made it, and `gc` takes
+  only this home's; another home's, and one made before the label, are kept and
+  named, and `--all` takes them too, still named. `group.sh rm` keeps a volume
+  another home made and removes this home's directory. Neither reads a docker
+  that cannot list its containers as one none uses, nor one that cannot be
+  reached as one with no volume, and `gc` exits 1 when it skipped a volume it
+  could not judge. `group.sh list` names orphaned volumes when no group
+  directory is left, where it said only that there were no groups; with docker
+  unreachable it says that it cannot tell, and exits 1. A launch that mounts another home's volume says so, and
+  `docs/troubleshooting.md` says how to keep homes apart with
+  `REPO_VOLUME_PREFIX`. The limit: a group of the same name in two homes still
+  shares one volume, which the home that made it can remove from under the
+  other. Every volume made before
+  this change is unlabelled, so collecting one now takes `--all` (bugs review
+  PRJ-16).
+- **What a launch keeps is no longer a group.** The files a launch keeps from a
+  protected git file's place went to `~/.ai-containers/restored`, which
+  `group.sh` listed and removed as a group, `project-init.sh` offered, and
+  `AI_CONTAINER_GROUP` selected. They now go to the hidden
+  `~/.ai-containers/.restored/`, a name no group can have, and `restored` is a
+  group name like any other. An earlier launch's `restored` directory is still
+  listed as a group: move what it holds into `.restored`, or remove it (bugs
+  review PRJ-18).
+- **`ai-containers-report.sh` renders what it reads from a project.** Values
+  from a project's `sandbox.env` reached the terminal with their escape
+  sequences, and a tab in one shifted every later `--tsv` column. Control
+  characters are now replaced, as the launcher replaces them (bugs review
+  PRJ-15).
+- **A working copy whose seeding failed is no longer mounted.** A `:rwcopy`
+  working copy is seeded once, by a copy from the repo's volume, and from then
+  on an existing one is taken as seeded. When that copy failed (the image not
+  built yet, an interrupt, a full disk), the volume stayed, and every later
+  launch mounted it, empty or in part, with no word. The volume is now removed
+  when the copy fails or the launcher is stopped during it. A seeding is also
+  recorded on the host, per docker daemon, before the volume is made, and the
+  record goes only once the copy has finished. So a launcher killed outright,
+  or a VM stopped under it, leaves a record, and the next launch removes that
+  volume, never mounted, and seeds it again. A second launch seeding the same
+  working copy at once is refused, rather than copying into the first one's or
+  mounting its half copy. An image not built is named before any volume is
+  made (bugs review LNCH-31). A volume an earlier failure left has no record
+  and is still mounted: if the working copy a launch's `REPO:` line names is
+  empty or incomplete, remove that volume alone, `docker volume rm <name>`, and
+  launch again.
+- **A repo named `ro`, `rw` or `rwcopy` keeps the mode written.** A `REPOS`
+  entry with no mode was told by its mode equalling its name, so `rw:rw`
+  mounted the repo read-only and `@rw` was refused as a read-only working
+  directory (bugs review LNCH-34).
+- **On WSL's drvfs and SMB, a pointer inside a writable mount is mounted
+  again.** Since every mounted host path joined the launch's checks (LNCH-27),
+  a `DOCS_PATH`, `VAULT_PATH` or other pointer inside an `EXTRA_MOUNTS`
+  directory there was refused as a read-only bind that an 8.3 name gets round.
+  It is a mount of its own, not a bind below the writable one, and is no
+  longer judged so (bugs review LNCH-30).
+- **The entrypoint renders the name of a mount it refuses.** A mount found
+  swapped at container start was named with its control characters as they
+  were, and the name holds directories the agent chose. They are replaced as
+  the launcher replaces them on the host (bugs review LNCH-33). Takes effect
+  after a `./build.sh`.
 - **On Colima, the launch checks are read through held directories too.** The
   ids recorded for the container's own check are read in Colima's VM from the
   directory that holds each path, while it is held, as on a Linux host, so a
@@ -1006,6 +1109,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **The Copilot token is no longer read through a link the agent planted.**
+  With `copilot=ON` and no `COPILOT_GITHUB_TOKEN` set, every launch takes the
+  token from the group's `~/.config/gh/hosts.yml`. That file lies in a
+  directory the agent writes. A link planted there to your own
+  `~/.config/gh/hosts.yml`, or to another group's, handed the next container
+  that token, and a file at mode 000 ended every launch of the group. The file
+  is now read only when it is a regular file and not a link, and only through
+  an open that is that very file, under a time bound where a `timeout(1)` is
+  installed (a Mac needs Homebrew's coreutils), so a sibling container swapping
+  a link or a FIFO in at that moment gets nothing and hangs nothing.
+  Anything else is a `WARNING:`, and the launch goes on with no token (bugs
+  review LNCH-29).
 - **A program a git config has the host's git run is judged where it lies.**
   The keys that make git run a program (`core.fsmonitor`, a filter, a diff
   driver, a credential helper, a `!` alias, …) were named once, at a

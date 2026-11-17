@@ -58,7 +58,8 @@ export DOCKER_LOG="$TMP/docker.log"; : > "$DOCKER_LOG"
 # whose script is an rsync copies /src's to /dst's, and one with --dry-run prints
 # a change line when they differ; FAKE_COPY_BAD makes the copy add a file the
 # source does not have, and FAKE_RUN_TERM=<n> makes the n-th copy, once made,
-# send TERM to the shell that ran docker. `volume create` makes a volume with
+# send TERM to the shell that ran docker, and FAKE_VOLRM_TERM=<volume> does so
+# once that volume is removed. `volume create` makes a volume with
 # its --label values, and leaves one that exists as it is, as docker does.
 export VOLS="$TMP/vols" IMGS="$TMP/imgs" FAKE_RUNNING="$TMP/running" FAKE_STOPPED="$TMP/stopped"
 mkdir -p "$VOLS" "$IMGS"; : > "$FAKE_RUNNING"
@@ -126,6 +127,7 @@ case "$cmd${sub:+ $sub}" in
         echo "Error response from daemon: remove $v: volume is in use" >&2; exit 1
       fi
       rm -rf "$VOLS/$v"
+      [[ "$v" != "${FAKE_VOLRM_TERM:-}" ]] || kill -TERM "$PPID"
     done ;;
   "volume create")
     v="${pos[0]}"
@@ -293,6 +295,59 @@ ok "resolve refuses an unregistered path" bash -c '[ "$1" != 0 ] && [[ "$2" == *
 r="$(res "$TMP/nowhere" ok)"; rc=$?
 ok "resolve accepts an unregistered path when allowed" \
   bash -c '[ "$1" = 0 ] && [ "$2" = "$3|$3/.ai-containers" ]' _ "$rc" "$r" "$TMP/nowhere"
+# A bare name that is also a directory here, not registered, is not taken for
+# the registered project of that basename (bugs review PRJ-13): `rm api --yes`
+# beside an unregistered ./api removed another project. Which is meant cannot
+# be told, so neither is taken, for rm and for mv alike; a path picks one.
+mkdir -p "$TMP/here/alpha"; HERE_A="$(cd "$TMP/here/alpha" && pwd -P)"
+r="$(res "alpha" "" "$TMP/here")"; rc=$?
+ok "resolve refuses a bare name that is an unregistered directory here and a registered basename, naming both" \
+  bash -c '[ "$1" != 0 ] && [[ "$2" == *"$3"* && "$2" == *"$4"* && "$2" == *"not a registered project"* ]]' _ "$rc" "$r" "$HERE_A" "$A"
+r="$(res "alpha" ok "$TMP/here")"; rc=$?
+ok "resolve refuses that bare name when an unregistered path is allowed too (mv)" \
+  bash -c '[ "$1" != 0 ] && [[ "$2" == *"$3"* && "$2" == *"$4"* ]]' _ "$rc" "$r" "$HERE_A" "$A"
+r="$(res "./alpha" ok "$TMP/here")"; rc=$?
+ok "resolve takes ./alpha, a path, as the directory here when allowed" \
+  bash -c '[ "$1" = 0 ] && [ "$2" = "$3|$3/.ai-containers" ]' _ "$rc" "$r" "$HERE_A"
+rm -rf "$TMP/here"
+# The registered project of that name gone (a setup moved by hand), the name is
+# still the registered one's: `mv api <new-dir>` from beside the new place
+# finishes the move (review of the PRJ-13 fix).
+printf '%s\n' "$TMP/gone13/beta13" > "$ENG/projects.conf"; mkdir -p "$TMP/new13/beta13"
+r="$(res "beta13" ok "$TMP/new13")"; rc=$?
+ok "resolve takes a bare name for its registered project when that one is gone, for mv" \
+  bash -c '[ "$1" = 0 ] && [ "$2" = "$3|$3/.ai-containers" ]' _ "$rc" "$r" "$TMP/gone13/beta13"
+# For rm it is refused: `rm api --yes` beside an unregistered ./api removed a
+# gone project's working copies and line (review of the PRJ-13 fix).
+r="$(res "beta13" "" "$TMP/new13")"; rc=$?
+ok "resolve refuses that bare name for rm, naming both" \
+  bash -c '[ "$1" != 0 ] && [[ "$2" == *"$3"* && "$2" == *"the registered project $4"* ]]' _ "$rc" "$r" "$(cd "$TMP/new13/beta13" && pwd -P)" "$TMP/gone13/beta13"
+# mv from beside its <new-dir>, made beforehand, while the old place is still
+# there: the directory here is where the project goes, not a second candidate.
+mkdir -p "$TMP/gone13/beta13"
+r="$( ( cd "$TMP/new13" && source "$P" && prj_resolve beta13 unregistered-ok "$TMP/new13/beta13" && printf '%s' "$PRJ_ROOT" ) 2>&1 )"; rc=$?
+ok "resolve takes the registered project for mv when the directory here is <new-dir> itself" \
+  bash -c '[ "$1" = 0 ] && [ "$2" = "$3" ]' _ "$rc" "$r" "$TMP/gone13/beta13"
+# Standing in a project that holds a subdirectory of its own name: which is
+# meant cannot be told either, and both are named.
+printf '%s\n' "$TMP/own13/mysite" > "$ENG/projects.conf"; mkdir -p "$TMP/own13/mysite/mysite"
+r="$(res "mysite" "" "$TMP/own13/mysite")"; rc=$?
+ok "resolve refuses the name of the project it stands in when a subdirectory there has it, naming both" \
+  bash -c '[ "$1" != 0 ] && [[ "$2" == *"$4/mysite"* && "$2" == *"the registered project $3"* ]]' _ "$rc" "$r" "$TMP/own13/mysite" "$(cd "$TMP/own13/mysite" && pwd -P)"
+# The registered root reached by another path to the same directory (a bind
+# mount) is that project, not a directory of the same name (review of the
+# PRJ-13 fix). A bind mount needs a mount namespace of one's own.
+if unshare -rm true 2>/dev/null; then
+  printf '%s\n' "$TMP/real13/api" > "$ENG/projects.conf"; mkdir -p "$TMP/real13/api" "$TMP/view13"
+  r="$(unshare -rm bash -c 'mount --bind "$1" "$2" && cd "$2" && source "$3" && prj_resolve api && printf "%s" "$PRJ_ROOT"' _ "$TMP/real13" "$TMP/view13" "$P" 2>&1)"; rc=$?
+  ok "resolve takes a bind-mounted view of the registered root for that project" \
+    bash -c '[ "$1" = 0 ] && [ "$2" = "$3" ]' _ "$rc" "$r" "$TMP/real13/api"
+  rm -rf "$TMP/real13" "$TMP/view13"
+else
+  printf 'SKIP: the bind-mounted view of a registered root: no unprivileged mount namespace here\n'
+fi
+rm -rf "$TMP/gone13" "$TMP/new13" "$TMP/own13"
+printf '%s\n%s\n%s\n%s\n' "$A" "$B" "$C" "$S" > "$ENG/projects.conf"
 
 # ── registered roots that no longer exist on disk (the rm case) ──
 GONE="$TMP/gone/vanished"; GONE2="$TMP/gone/crlf-gone"; GONE3="$TMP/gone/unique-name-gone"
@@ -985,6 +1040,12 @@ if [[ -n "${FAKE_MV_PLANT:-}" && "$last" == "$FAKE_MV_PLANT" && ! -e "$last" && 
   if [[ -n "${FAKE_MV_PLANT_TO:-}" ]]; then ln -s "$FAKE_MV_PLANT_TO" "$last"
   else mkdir "$last" && printf 'planted\n' > "$last/planted"; fi
 fi
+# FAKE_MV_TERM=<dest>: a TERM to whoever moves something to <dest>, before the
+# move (nothing moved); FAKE_MV_TERM_AFTER=<dest>: right after it (PRJ-12).
+if [[ -n "${FAKE_MV_TERM:-}" && "$last" == "$FAKE_MV_TERM" ]]; then kill -TERM "$PPID"; sleep 0.2; exit 1; fi
+if [[ -n "${FAKE_MV_TERM_AFTER:-}" && "$last" == "$FAKE_MV_TERM_AFTER" ]]; then
+  "$REAL_MV" "$@"; rc=$?; kill -TERM "$PPID"; exit "$rc"
+fi
 exec "$REAL_MV" "$@"
 FAKEMV
 chmod +x "$TMP/bin/mv"
@@ -1120,6 +1181,27 @@ ok "mv repairs a project already moved by hand" \
            && [ ! -e "$6/.ai-containers" ]' \
   _ "$rc" "$ENG/projects.conf" "$N" "$VOLS" "$nv" "$A" "$IMGS/img-alpha" "$ida" "$OLDWC" "$IP"
 ok "  … saying there was nothing to move" hasx "  directory   $N/.ai-containers (already there; nothing to move)"
+# A setup moved by hand, interrupted: while copying, the copies made are
+# removed; once the old copies start to go, what was done is listed. Either
+# way the next run finishes the move (review of the PRJ-12 fix).
+world
+A="$W/alpha"; mvproj "$A"; N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"; nv="$(wcname app "$N/.ai-containers")"
+FAKE_RUN_TERM=1 mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 mv of a setup moved by hand, interrupted while copying, removes the copy made and keeps the old one" \
+  bash -c '[ "$1" = 143 ] && [ ! -d "$2/$3" ] && [ "$(cat "$2/$4/data/work")" = unpushed ] && grep -qF "The old working copies are as they were" "$5"' \
+  _ "$rc" "$VOLS" "$nv" "$OLDWC" "$TMP/out"
+mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 ... and running it again finishes the move" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && [ "$(cat "$4/$5/data/work")" = unpushed ] && [ ! -d "$4/$6" ]' _ "$rc" "$N" "$ENG/projects.conf" "$VOLS" "$nv" "$OLDWC"
+world
+A="$W/alpha"; mvproj "$A"; N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"; nv="$(wcname app "$N/.ai-containers")"
+FAKE_VOLRM_TERM="$OLDWC" mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 mv of a setup moved by hand, interrupted once the old copies start to go, keeps the new copy" \
+  bash -c '[ "$1" = 143 ] && [ "$(cat "$2/$3/data/work")" = unpushed ] && [ ! -d "$2/$4" ] && grep -qF "interrupted" "$5"' \
+  _ "$rc" "$VOLS" "$nv" "$OLDWC" "$TMP/out"
+mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 ... and running it again finishes the move" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && ! grep -qxF "$6" "$3" && [ "$(cat "$4/$5/data/work")" = unpushed ]' _ "$rc" "$N" "$ENG/projects.conf" "$VOLS" "$nv" "$A"
 world
 A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img-alpha\n'; built "$A" img-alpha; ida="$(tid "$A/.ai-containers")"
 N="$W/moved"; mkdir -p "$N"; mv "$A/.ai-containers" "$N/.ai-containers"; nv="$(wcname app "$N/.ai-containers")"
@@ -1451,6 +1533,116 @@ unset AI_CONTAINERS_MV_COPY FAKE_CP_TERM
 ok "mv interrupted while it copies .ai-containers leaves no temp copy in <new-dir>" \
   bash -c '[ "$1" = 143 ] && [ -z "$(ls -A "$2" 2>/dev/null)" ] && [ -f "$3/.ai-containers/sandbox.env" ] && cmp -s "$4" "$5" \
            && grep -q "ERROR: interrupted" "$6"' _ "$rc" "$N" "$A" "$ENG/projects.conf" "$TMP/conf.before" "$TMP/out"
+# Interrupted after the checked copy has landed, while the old .ai-containers is
+# removed (bugs review PRJ-12): the trap undid the working copies and said the
+# old ones were as they were and to run mv again, which then refused because both
+# directories existed, the old one half removed. The landed copy is the setup
+# now: the working copies stay, and the message names the leftover to remove and
+# the run that finishes the move. Here an rm that removes part of the old
+# directory and then sends TERM to project.sh, or (FAKE_RM_TERM_AFTER) removes
+# all of it first.
+REAL_RM="$(command -v rm)"; export REAL_RM
+cat > "$TMP/bin/rm" <<'FAKERM'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [[ -n "${FAKE_RM_TERM:-}" && "$a" == "$FAKE_RM_TERM" ]]; then
+    "$REAL_RM" -f -- "$a/sandbox.env" "$a/sandbox.local.env"; kill -TERM "$PPID"; exit 130
+  fi
+  if [[ -n "${FAKE_RM_TERM_AFTER:-}" && "$a" == "$FAKE_RM_TERM_AFTER" ]]; then
+    "$REAL_RM" "$@"; kill -TERM "$PPID"; exit 0
+  fi
+done
+exec "$REAL_RM" "$@"
+FAKERM
+chmod +x "$TMP/bin/rm"; hash -r
+world
+A="$W/alpha"; mvproj "$A" $'IMAGE_NAME=img\n' $'VAULT_PATH=/v\n'; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+AI_CONTAINERS_MV_COPY=1 FAKE_RM_TERM="$A/.ai-containers" mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 mv interrupted while it removes the old .ai-containers keeps the checked copy and the new working copy, and names the leftover" \
+  bash -c '[ "$1" = 143 ] && [ -f "$2/.ai-containers/sandbox.local.env" ] && [ -d "$3/$4" ] && [ -d "$3/$5" ] && cmp -s "$6" "$7" \
+           && grep -qF "$2/.ai-containers is in place, the checked copy of $8/.ai-containers" "$9" && grep -qF "rm -rf $8/.ai-containers" "$9" \
+           && ! grep -qF "The old working copies are as they were" "$9"' \
+  _ "$rc" "$N" "$VOLS" "$nv" "$OLDWC" "$ENG/projects.conf" "$TMP/conf.before" "$A" "$TMP/out"
+# The way out it names: remove the leftover, run mv again. That finishes the
+# move: the registry names the new place, the new copy is taken as done, the
+# old one goes.
+"$REAL_RM" -rf -- "$A/.ai-containers"
+mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 removing that leftover and running mv again finishes the move" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && ! grep -qxF "$4" "$3" && [ -d "$5/$6" ] && [ ! -d "$5/$7" ] && [ "$(cat "$5/$6/data/work")" = unpushed ]' \
+  _ "$rc" "$N" "$ENG/projects.conf" "$A" "$VOLS" "$nv" "$OLDWC"
+# The TERM that comes once the old directory is gone entirely: nothing is left
+# over, and a run again is all that finishing takes.
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+AI_CONTAINERS_MV_COPY=1 FAKE_RM_TERM_AFTER="$A/.ai-containers" mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 mv interrupted just after the old .ai-containers is gone says only to run it again, the new working copy kept" \
+  bash -c '[ "$1" = 143 ] && [ ! -e "$2/.ai-containers" ] && [ -d "$3/$4" ] && grep -qF "$5/.ai-containers is in place. Run ./project.sh mv" "$6" \
+           && ! grep -qF "leftover" "$6" && ! grep -qF "The old working copies are as they were" "$6"' \
+  _ "$rc" "$A" "$VOLS" "$nv" "$N" "$TMP/out"
+mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 ... and running it again finishes the move" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && [ -d "$4/$5" ] && [ ! -d "$4/$6" ]' _ "$rc" "$N" "$ENG/projects.conf" "$VOLS" "$nv" "$OLDWC"
+"$REAL_RM" -f -- "$TMP/bin/rm"; hash -r
+# Interrupted right after the rename that lands the checked copy, before the
+# old directory is touched (review of the PRJ-12 fix): it is in place, so the
+# working copies stay. An rmdir of the emptied temp directory sends the TERM.
+REAL_RMDIR="$(command -v rmdir)"; export REAL_RMDIR
+cat > "$TMP/bin/rmdir" <<'FAKERMDIR'
+#!/usr/bin/env bash
+"$REAL_RMDIR" "$@"; rc=$?
+for a in "$@"; do [[ -n "${FAKE_RMDIR_TERM:-}" && "${a##*/}" == .ai-containers.* ]] && kill -TERM "$PPID"; done
+exit "$rc"
+FAKERMDIR
+chmod +x "$TMP/bin/rmdir"; hash -r
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+AI_CONTAINERS_MV_COPY=1 FAKE_RMDIR_TERM=1 mvrun "$A" "$N" --yes; rc=$?
+"$REAL_RM" -f -- "$TMP/bin/rmdir"; hash -r
+ok "PRJ-12 mv interrupted right after the checked copy lands keeps the new working copy and names the old directory as the leftover" \
+  bash -c '[ "$1" = 143 ] && [ -d "$2/.ai-containers" ] && [ -d "$3/$4" ] && grep -qF "$2/.ai-containers is in place, the checked copy of $5/.ai-containers" "$6" \
+           && ! grep -qF "The old working copies are as they were" "$6"' _ "$rc" "$N" "$VOLS" "$nv" "$A" "$TMP/out"
+"$REAL_RM" -rf -- "$A/.ai-containers"; mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 ... and its way out finishes the move" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && [ -d "$4/$5" ] && [ ! -d "$4/$6" ]' _ "$rc" "$N" "$ENG/projects.conf" "$VOLS" "$nv" "$OLDWC"
+
+# On one filesystem the move is a rename, marked landed just before it, by the
+# directory's own inode: an interrupt right after it says to run mv again, and
+# keeps the new working copies (review of the PRJ-12 fix).
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+FAKE_MV_TERM_AFTER="$N/.ai-containers" mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 mv interrupted right after its rename on one filesystem keeps the new working copy and says to run it again" \
+  bash -c '[ "$1" = 143 ] && [ -d "$2/.ai-containers" ] && [ ! -e "$5/.ai-containers" ] && [ -d "$3/$4" ] \
+           && grep -qF "$2/.ai-containers is in place. Run ./project.sh mv" "$6" && ! grep -qF "The old working copies are as they were" "$6"' \
+  _ "$rc" "$N" "$VOLS" "$nv" "$A" "$TMP/out"
+mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 ... and running it again finishes the move" \
+  bash -c '[ "$1" = 0 ] && grep -qxF "$2" "$3" && [ -d "$4/$5" ] && [ ! -d "$4/$6" ]' _ "$rc" "$N" "$ENG/projects.conf" "$VOLS" "$nv" "$OLDWC"
+# Something put at <new-dir>/.ai-containers just before the rename, then a TERM
+# before it: the copy has not landed, though something is there, and only its
+# inode tells; the copies made are undone.
+world
+A="$W/alpha"; mvproj "$A"; N="$W/beta"; nv="$(wcname app "$N/.ai-containers")"
+AI_CONTAINERS_MV_COPY=1 FAKE_MV_PLANT="$N/.ai-containers" FAKE_MV_TERM="$N/.ai-containers" mvrun "$A" "$N" --yes; rc=$?
+ok "PRJ-12 mv interrupted before its rename, with something put where the copy goes, does not take that for the copy" \
+  bash -c '[ "$1" = 143 ] && [ -f "$2/.ai-containers/sandbox.env" ] && [ ! -d "$3/$4" ] && ! grep -qF "is in place" "$5" \
+           && grep -qF "The old working copies are as they were" "$5"' _ "$rc" "$A" "$VOLS" "$nv" "$TMP/out"
+
+# Two copies of one repo, launched through a link to the project and through
+# its real path, would both take one new name (bugs review PRJ-14): refused
+# before the question, naming both, rather than failing after it every time.
+world; mkdir -p "$W/real"; ln -s "$W/real" "$W/link"
+A="$W/real/alpha"; mkproj "$A"; printf 'hi\n' > "$A/README"; mkbase app
+mkwc app 1 "$A/.ai-containers"; mkwc app 2 "$W/link/alpha/.ai-containers"
+cp "$ENG/projects.conf" "$TMP/conf.before"
+mvrun "$A" "$W/new" --yes; rc=$?
+ok "PRJ-14 mv refuses two copies of one repo that would take one new name, before the question, naming both" \
+  bash -c '[ "$1" = 1 ] && grep -qF "ERROR: the working copies ai-containers-repo-app--wc-1 (launched from $2/.ai-containers) and" "$3" \
+           && grep -qF "ai-containers-repo-app--wc-2 (launched from $4/.ai-containers) are of one repo" "$3" \
+           && ! grep -qF "Move all of the above?" "$3" && [ -d "$2/.ai-containers" ] && [ ! -e "$5/.ai-containers" ] && cmp -s "$6" "$7" \
+           && [ -d "$8/ai-containers-repo-app--wc-1" ] && [ -d "$8/ai-containers-repo-app--wc-2" ]' \
+  _ "$rc" "$A" "$TMP/out" "$W/link/alpha" "$W/new" "$ENG/projects.conf" "$TMP/conf.before" "$VOLS"
 
 # a checkout whose .git is a file naming its git directory
 world

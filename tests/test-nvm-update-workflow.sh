@@ -78,18 +78,110 @@ sed -e 's/\${{ steps\.latest\.outputs\.tag }}/v9.9.9/g' \
 if grep -q '\${{' "$TMP/rendered.sh"; then
   fail "every \${{ }} in the step is rendered (left: $(grep -o '\${{[^}]*}}' "$TMP/rendered.sh" | head -n 1))"
 fi
-( cd "$TMP/r" && GITHUB_OUTPUT="$TMP/out" bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
+# The step takes the tags from its environment (TST-39), as the workflow's env: gives them.
+if ! grep -q '\${{' "$TMP/step.sh"; then
+  pass "TST-39 the step's script holds no \${{ }}: what it uses comes through env:, never pasted into the script"
+else
+  fail "TST-39 the step's script holds \${{ }} (left: $(grep -o '\${{[^}]*}}' "$TMP/step.sh" | head -n 1))"
+fi
+# The step's environment is its own env: mapping, rendered as GitHub would, not
+# names this test sets: a mapping that swapped the two, or was lost, must fail
+# here (review of the TST-39 fix).
+# step_env <tag nvm's latest release gives>: the step's env: mapping, one
+# NAME=value per line, with what GitHub would render. Read as YAML reads it:
+# comment and blank lines skipped, a trailing comment cut, a quoted value
+# unquoted, and an expression however it is spaced.
+step_env() {
+  local kv v
+  while IFS= read -r kv; do
+    v="$(sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+#.*$//' -e 's/[[:space:]]+$//' \
+               -e 's/^"(.*)"$/\1/' -e "s/^'(.*)'\$/\\1/" \
+               -e 's/\$\{\{[[:space:]]*([^[:space:]}]+)[[:space:]]*\}\}/${{ \1 }}/g' <<<"${kv#*:}")"
+    v="${v//'${{ steps.latest.outputs.tag }}'/$1}"
+    v="${v//'${{ steps.current.outputs.dockerfile }}'/$current}"
+    printf '%s=%s\n' "${kv%%:*}" "$v"
+  done < <(awk -v step="$STEP" '
+    $0 == "      - name: " step { instep = 1; next }
+    instep && /^      - / { exit }
+    instep && /^        env:[[:space:]]*$/ { inenv = 1; next }
+    inenv && /^[[:space:]]*(#.*)?$/ { next }
+    instep && inenv && /^          [A-Za-z_][A-Za-z0-9_]*: / { sub(/^          /, ""); print; next }
+    inenv { inenv = 0 }
+  ' "$WF")
+}
+stepenv=()
+while IFS= read -r kv; do stepenv+=("$kv"); done < <(step_env v9.9.9)
+names="$(printf '%s\n' ${stepenv[@]+"${stepenv[@]}"} | sed 's/=.*//' | LC_ALL=C sort | tr '\n' ' ')"
+if [[ " $names" == *" CURRENT "* && " $names" == *" LATEST "* ]] && [[ "${stepenv[*]}" != *'${{'* ]]; then
+  pass "the step's env: mapping gives LATEST and CURRENT, each rendered"
+else
+  fail "the step's env: mapping gives LATEST and CURRENT, each rendered (got: ${stepenv[*]:-nothing}; if the workflow reads fine, this test's step_env() is what to fix)"
+fi
+( cd "$TMP/r" && env -u LATEST -u CURRENT ${stepenv[@]+"${stepenv[@]}"} GITHUB_OUTPUT="$TMP/out" bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
 if [[ "$rc" == 0 ]] && grep -qx 'changed=true' "$TMP/out" 2>/dev/null; then
   pass "the step updates the version and reports changed=true"
 else
   fail "the step updates the version and reports changed=true (rc $rc)"
 fi
 changed="$(cd "$TMP/r" && git diff --name-only | LC_ALL=C sort)"
+# Where the latest tag is the Dockerfile's own, the step says so and changes
+# nothing: it takes the current version from CURRENT, which the mapping must
+# give (review of the TST-39 fix).
+upenv=()
+while IFS= read -r kv; do upenv+=("$kv"); done < <(step_env "$current")
+mkdir -p "$TMP/r2" && cp "$TMP/r/sandbox.conf" "$TMP/r2/" && git -C "$TMP/r" show HEAD:Dockerfile > "$TMP/r2/Dockerfile"
+( cd "$TMP/r2" && env -u LATEST -u CURRENT ${upenv[@]+"${upenv[@]}"} GITHUB_OUTPUT="$TMP/out3" bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
+if [[ "$rc" == 0 ]] && grep -qx 'changed=false' "$TMP/out3" 2>/dev/null && cmp -s "$TMP/r2/Dockerfile" <(git -C "$TMP/r" show HEAD:Dockerfile); then
+  pass "the step with the Dockerfile's own version reports changed=false and changes nothing"
+else
+  fail "the step with the Dockerfile's own version reports changed=false and changes nothing (rc $rc; $(cat "$TMP/out3" 2>/dev/null))"
+fi
 
 if [[ -n "$changed" && "$changed" == "$listed" ]]; then
   pass "the PR body lists exactly the files the job changes ($(tr '\n' ' ' <<<"$changed"))"
 else
   fail "the PR body lists exactly the files the job changes — it lists '$(tr '\n' ' ' <<<"$listed")', the job changed '$(tr '\n' ' ' <<<"$changed")'"
+fi
+
+# A tag that is not nvm's shape is refused before anything uses it (TST-39):
+# one with a quote and a command substitution, and one with an & that sed would
+# take for the matched text, writing a line nobody asked for (a slash, which sed
+# refuses by itself, would pass with no check at all).
+for bad in 'v1.0.0"$(touch "$PWN")"' 'v1.0.0&'; do
+  ( cd "$TMP/r" && git checkout -q -- . && PWN="$TMP/pwned" GITHUB_OUTPUT="$TMP/out2" LATEST="$bad" CURRENT="$current" \
+      bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
+  if [[ "$rc" != 0 && ! -e "$TMP/pwned" ]] && [[ -z "$(cd "$TMP/r" && git diff --name-only)" ]]; then
+    pass "TST-39 the update step refuses the tag $bad and changes nothing"
+  else
+    fail "TST-39 the update step took the tag $bad (rc $rc)"
+  fi
+done
+# The step that fetches the tag checks its shape where it is first read.
+awk -v step="Get latest nvm release tag" '
+  $0 == "      - name: " step { instep = 1; next }
+  instep && /^      - / { exit }
+  instep && /^        run: \|[[:space:]]*$/ { inrun = 1; next }
+  inrun && /^[[:space:]]*$/ { print ""; next }
+  inrun && /^          / { sub(/^          /, ""); print; next }
+  inrun { exit }
+' "$WF" | sed 's/\${{ secrets\.GITHUB_TOKEN }}/x/g' > "$TMP/latest.sh"
+if ! command -v jq >/dev/null 2>&1; then
+  printf "SKIP: TST-39 the fetch step's check: no jq here\n"
+else
+  mkdir -p "$TMP/fakebin"
+  printf '#!/bin/sh\nprintf "%%s" "$FAKE_JSON"\n' > "$TMP/fakebin/curl"; chmod +x "$TMP/fakebin/curl"
+  for tag in 'v0.40.5' 'v1.0.0"; touch pwned; "' 'main'; do
+    : > "$TMP/out3"
+    PATH="$TMP/fakebin:$PATH" FAKE_JSON="$(jq -n --arg t "$tag" '{tag_name: $t}')" GITHUB_OUTPUT="$TMP/out3" \
+      bash -e "$TMP/latest.sh" >/dev/null 2>&1; rc=$?
+    if [[ "$tag" == v0.40.5 ]]; then
+      [[ "$rc" == 0 ]] && grep -qx 'tag=v0.40.5' "$TMP/out3" \
+        && pass "TST-39 the fetch step passes nvm's own tag" || fail "TST-39 the fetch step refused v0.40.5 (rc $rc)"
+    else
+      [[ "$rc" != 0 && ! -s "$TMP/out3" ]] \
+        && pass "TST-39 the fetch step refuses the tag $tag" || fail "TST-39 the fetch step took the tag $tag (rc $rc)"
+    fi
+  done
 fi
 
 printf '\n%d failure(s)\n' "$fails"; exit "$fails"

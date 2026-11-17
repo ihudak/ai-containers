@@ -67,7 +67,9 @@ pointer_repo_entry() {  # $1=name  $2=mode  $3..=current repos_list entries
   local e existing_mode
   for e in "$@"; do
     if [[ "${e%%:*}" == "$name" ]]; then
-      existing_mode="${e##*:}"; [[ "$existing_mode" == "$name" ]] && existing_mode="ro"
+      # No mode given is no `:`, never a mode equal to the name: a repo named
+      # rw attached rw:rw was mounted :ro (bugs review LNCH-34).
+      existing_mode="ro"; [[ "$e" == *:* ]] && existing_mode="${e##*:}"
       if [[ "$existing_mode" != "$mode" ]]; then
         printf "NOTE: repo '%s' is already mounted (%s); the pointer's :%s is ignored.\n" \
           "$name" "$existing_mode" "$mode" >&2
@@ -2151,9 +2153,14 @@ launcher_ro_overlay() {
   # 1ed3de8), and nothing on Linux lists them, so any name there counts.
   # No bind can close that, so every overlay, pin and file bind is checked, and
   # one that can be reached so refuses the launch (bugs review GIT-41).
+  # A mounted host path (a pointer, an EXTRA_MOUNTS entry) is in the same list
+  # for its verification (LNCH-27), but it is a mount of its own, not a bind below
+  # a writable one: what lies under it is as writable through the outer mount on
+  # any filesystem, so it is not judged here (bugs review LNCH-30).
   local _gw_why _gw_flip
   for ((k = 0; k < ${#_vrfy[@]}; k += 2)); do
     f="${_vrfy[k]}"
+    [[ -z "${_host_verified[$f|${_vrfy[k+1]}]:-}" ]] || continue
     for i in ${bsrc[@]+"${!bsrc[@]}"}; do
       [[ "$f" == "${bsrc[i]}"/* ]] || continue
       p="${bsrc[i]}"; rest="${f#"${bsrc[i]}"/}"
@@ -5862,11 +5869,13 @@ _ro_files_snapshot() {
 # mode from the umask (no chmod, which follows a link), and renamed over the file
 # without following a link at the destination. What stood there is never moved:
 # a regular file's content, or a link's target, is copied into a directory of the
-# launcher's own, ~/.ai-containers/restored/<time>-<pid>, which the WARNING names
+# launcher's own, ~/.ai-containers/.restored/<time>-<pid>, which the WARNING names
 # (the change may be the user's own, made on the host while the container ran:
 # git push -u, git remote add). Not covered: the host's git reads the changed
 # file until the container exits, and a launcher killed before then puts nothing
 # back. Never a refusal, and the container's exit status stays the launcher's.
+# Hidden: a name no group can have, where `restored` was listed, removable and
+# selectable as a group (bugs review PRJ-18).
 _ro_files_restore() {
   local i f k tmp m rd="" keep msg gone
   local -a t=()
@@ -5879,9 +5888,9 @@ _ro_files_restore() {
     keep=""; gone=""
     [[ -e "$f" || -L "$f" ]] || gone=1
     if [[ -z "$rd" ]]; then
-      rd="$ai_containers_root/restored/$(date +%Y%m%d%H%M%S)-$$"
-      if ! { mkdir -p "$ai_containers_root" && { mkdir -m 700 "$ai_containers_root/restored" \
-                 || [[ -d "$ai_containers_root/restored" && ! -L "$ai_containers_root/restored" ]]; } \
+      rd="$ai_containers_root/.restored/$(date +%Y%m%d%H%M%S)-$$"
+      if ! { mkdir -p "$ai_containers_root" && { mkdir -m 700 "$ai_containers_root/.restored" \
+                 || [[ -d "$ai_containers_root/.restored" && ! -L "$ai_containers_root/.restored" ]]; } \
              && mkdir -m 700 "$rd"; } 2>/dev/null || [[ -L "$rd" || ! -d "$rd" ]]; then rd=-; fi
     fi
     if [[ "$rd" != - ]]; then
@@ -6074,23 +6083,189 @@ _git_walk_keys() {
 # with this HOME's id (ai_containers_owner_id()), which tells project.sh this
 # home's copies from another's on a daemon several homes share. A launch never
 # fails over the id: without one the copy is made unlabelled, as before.
+#
+# An existing working copy is taken as seeded, so a copy cut short (a failed
+# run, an interrupt, a full disk, a launcher killed, the VM stopped) left a
+# volume that every later launch mounted, empty or in part, with no word (bugs
+# review LNCH-31). So a seeding is recorded before the volume is made, in
+# _seed_dir/<daemon id>/<volume>: a file of this home holding the launcher's pid
+# and start time, put in place whole by a hard link, which fails where one is
+# there. The record goes only once the copy has finished. A launch reads it
+# after it has asked docker about the volume, so a seeding that began in
+# between is seen; and while it is there, no launch mounts the volume:
+# - its launcher is still running: another launch is seeding it now, and this
+#   one is refused, so that neither copies into, nor removes, the other's;
+# - its launcher is gone, killed or stopped with no chance to clean up: the
+#   volume was never mounted, so it is removed and seeded again;
+# - it vanished as it was read: that seeding finished.
+# It is a daemon's: a launch through another docker context or DOCKER_HOST
+# talks to another daemon, whose volume of that name is another volume. Another
+# home on the same daemon keeps records of its own, which this one does not see
+# (docs/troubleshooting.md, "Several homes on one docker"). The EXIT trap
+# (_seed_wc_drop) removes a volume this launch's copy did not finish. A record
+# is never in the volume itself: the agent could remove it there, and the next
+# launch would copy over its work.
+_seed_dir="${ai_containers_root}/.seeding"
+_seed_wc_vol="" _seed_wc_name="" _seed_wc_rec="" _seed_wc_pid=""
+# _seed_proc <pid>: "<pid> <start time>" of a running process, or nothing; the
+# start time tells a launcher still running from another process given its pid.
+# On Linux from /proc (its 22nd field; a minimal image has no ps), elsewhere
+# (macOS) from ps, in UTC and the C locale, its words joined by _ (review of the
+# LNCH-31 fix: a time zone or locale of another shell gave another string).
+_seed_proc() {
+  local t
+  local -a _sp_w=()
+  if [[ -r "/proc/$1/stat" ]]; then
+    t="$(head -c 4096 "/proc/$1/stat" 2>/dev/null)" || return 0
+    read -r -a _sp_w <<< "${t##*) }"
+    [[ -n "${_sp_w[19]:-}" ]] && printf '%s %s' "$1" "${_sp_w[19]}"
+    return 0
+  fi
+  t="$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null)" || return 0
+  read -r -a _sp_w <<< "$t"
+  (( ${#_sp_w[@]} )) || return 0
+  t="${_sp_w[*]}"; printf '%s %s' "$1" "${t// /_}"
+  return 0
+}
+# _seed_vol_state <volume>: 0 when it exists, 1 when docker says there is no
+# such volume, 2 when docker could not say: one it could not find for another
+# reason (a busy daemon) is never taken for one that is not there.
+_seed_vol_state() {
+  local out
+  out="$(docker volume inspect "$1" 2>&1 >/dev/null)" && return 0
+  [[ "${out,,}" == *"no such volume"* ]] && return 1
+  return 2
+}
+# _seed_rec_state <record>: 0 when there is none (or it vanished as it was read:
+# that seeding finished), 1 when its launcher runs, 2 when its launcher is gone.
+# A record is linked into place whole, so one that holds nothing is no launch's.
+_seed_rec_held=""
+_seed_rec_state() {
+  _seed_rec_held=""
+  [[ -e "$1" || -L "$1" ]] || return 0
+  _seed_rec_held="$(head -c 200 "$1" 2>/dev/null | head -n 1)" || _seed_rec_held=""
+  [[ -e "$1" || -L "$1" ]] || return 0
+  if [[ -n "$_seed_rec_held" && "$(_seed_proc "${_seed_rec_held%% *}")" == "$_seed_rec_held" ]]; then return 1; fi
+  return 2
+}
 seed_workcopy_volume() {
   local base_vol="$1" wc_vol="$2" repo_name="${3:-}" launch="${4:-}" owner
-  if docker volume inspect "$wc_vol" >/dev/null 2>&1; then
+  local daemon dir rec me tmp vst=0 rst=0 crc=0
+  daemon="$(docker info --format '{{.ID}}' 2>/dev/null | tr -cd 'A-Za-z0-9_.:-')" || daemon=""
+  dir="$_seed_dir/${daemon:-unknown}"; rec="$dir/$wc_vol"
+  # The volume first, then the record: a seeding that began after the look at
+  # the volume has its record by now, and is seen (review of the LNCH-31 fix).
+  _seed_vol_state "$wc_vol" || vst=$?
+  _seed_rec_state "$rec" || rst=$?
+  if (( vst == 2 )); then
+    printf 'ERROR: docker could not say whether the working copy "%s" exists; launch again once it answers.\n' "$wc_vol" >&2
+    exit 1
+  fi
+  if (( rst == 1 )); then
+    printf 'ERROR: the working copy "%s" is being seeded by another launch (pid %s), which has not\n' "$wc_vol" "${_seed_rec_held%% *}" >&2
+    printf '       finished; run this again once it has.\n' >&2
+    exit 1
+  fi
+  if (( rst == 2 )); then
+    if (( vst == 0 )) && ! docker volume rm "$wc_vol" >/dev/null 2>&1; then
+      printf 'ERROR: the working copy "%s" was left half-seeded by a launch that did not finish, and could\n' "$wc_vol" >&2
+      printf '       not be removed (does a container use it?). Remove it, then launch again: docker volume rm %s\n' "$wc_vol" >&2
+      exit 1
+    fi
+    rm -f -- "$rec" || { printf 'ERROR: could not remove %s.\n' "$rec" >&2; exit 1; }
+    if (( vst == 0 )); then
+      printf 'NOTE: the working copy "%s" was left half-seeded by a launch that did not finish; it is\n' "$wc_vol" >&2
+      printf '      removed and seeded again.\n' >&2
+    fi
+  elif (( vst == 0 )); then
     return 0
+  fi
+  # The copy runs the project image, which --pull=never never fetches. An image
+  # not built yet is named before any volume is made, not after (LNCH-31).
+  if ! docker image inspect "$image_name" >/dev/null 2>&1; then
+    printf 'ERROR: the image "%s" is not built, so the working copy "%s" cannot be seeded.\n' "$image_name" "$wc_vol" >&2
+    printf '       Build it first: ./build.sh\n' >&2
+    exit 1
+  fi
+  # The record, whole and exclusively: written beside, then hard-linked into
+  # place, which fails where one is there; of two launches that both found no
+  # volume, one seeds and the other is refused.
+  me="$(_seed_proc "$$")"; tmp="$dir/.$wc_vol.$$"
+  if [[ -z "$me" ]] || ! { { [[ -d "$dir" ]] || { mkdir -p "$_seed_dir" && chmod 700 "$_seed_dir" && mkdir -p "$dir"; } || [[ -d "$dir" ]]; } \
+                           && ( set -o noclobber; printf '%s\n' "$me" > "$tmp" ) && ln "$tmp" "$rec"; } 2>/dev/null; then
+    rm -f -- "$tmp" 2>/dev/null
+    if [[ -n "$me" && ( -e "$rec" || -L "$rec" ) ]]; then
+      printf 'ERROR: the working copy "%s" is being seeded by another launch, which has not finished;\n' "$wc_vol" >&2
+      printf '       run this again once it has.\n' >&2
+    else
+      printf 'ERROR: could not record the seeding of the working copy "%s" in %s.\n' "$wc_vol" "$dir" >&2
+    fi
+    exit 1
+  fi
+  rm -f -- "$tmp"
+  _seed_wc_rec="$rec"
+  # Seeded by another launch between the look above and the record: its.
+  vst=0; _seed_vol_state "$wc_vol" || vst=$?
+  if (( vst != 1 )); then
+    rm -f -- "$rec"; _seed_wc_rec=""
+    (( vst == 0 )) && return 0
+    printf 'ERROR: docker could not say whether the working copy "%s" exists; launch again once it answers.\n' "$wc_vol" >&2
+    exit 1
   fi
   printf 'Seeding writable working copy "%s" from "%s" (one-time local copy)...\n' "$wc_vol" "$base_vol" >&2
   local labels=(--label "ai-containers.workcopy=1")
   [[ -n "$repo_name" ]] && labels+=(--label "ai-containers.repo=${repo_name}")
   [[ -n "$launch" ]] && labels+=(--label "ai-containers.launch-dir=${launch}")
   if owner="$(ai_containers_owner_id 2>/dev/null)"; then labels+=(--label "ai-containers.owner=${owner}"); fi
+  _seed_wc_vol="$wc_vol" _seed_wc_name="${wc_vol}-seed-$$"
   docker volume create "${labels[@]}" "$wc_vol" >/dev/null
+  # In the background, so that the EXIT trap can stop it before it removes the
+  # volume: a copy still running would make the volume again, empty.
   # --entrypoint bash bypasses entrypoint.sh (which ignores args and would run the
   # firewall/restricted flow). cp -a preserves the ownership set on the base volume.
-  docker run --rm --pull=never --entrypoint bash \
+  docker run --rm --pull=never --name "$_seed_wc_name" --entrypoint bash \
     -v "$base_vol":/src:ro \
     -v "$wc_vol":/dst \
-    "$image_name" -c 'cp -a /src/. /dst/'
+    "$image_name" -c 'cp -a /src/. /dst/' &
+  _seed_wc_pid=$!
+  wait "$_seed_wc_pid" || crc=$?
+  _seed_wc_pid=""
+  if (( crc != 0 )); then
+    printf 'ERROR: seeding the working copy "%s" from "%s" failed.\n' "$wc_vol" "$base_vol" >&2
+    exit 1
+  fi
+  if ! rm -f -- "$rec"; then
+    printf 'ERROR: could not remove %s, the record of the seeding just finished.\n' "$rec" >&2
+    exit 1
+  fi
+  _seed_wc_vol="" _seed_wc_name="" _seed_wc_rec=""
+}
+
+# _seed_wc_drop: run by the EXIT trap. It removes a working copy whose seeding
+# did not finish (seed_workcopy_volume): the copy's container first, which the
+# copy's own PID 1 would not let a TERM end (review of the LNCH-31 fix), then its
+# client, so that nothing makes the volume again, then the volume and its
+# record. A volume that cannot be removed keeps its record, so the next launch
+# removes it and seeds it again.
+_seed_wc_drop() {
+  [[ -n "${_seed_wc_rec:-}" ]] || return 0
+  local i=0
+  if [[ -n "${_seed_wc_name:-}" ]]; then docker rm -f "$_seed_wc_name" >/dev/null 2>&1 || true; fi
+  if [[ -n "${_seed_wc_pid:-}" ]]; then
+    kill "$_seed_wc_pid" 2>/dev/null || true
+    while kill -0 "$_seed_wc_pid" 2>/dev/null && (( i < 50 )); do sleep 0.1; i=$(( i + 1 )); done
+    kill -KILL "$_seed_wc_pid" 2>/dev/null || true
+    wait "$_seed_wc_pid" 2>/dev/null || true
+  fi
+  if [[ -n "${_seed_wc_name:-}" ]]; then docker rm -f "$_seed_wc_name" >/dev/null 2>&1 || true; fi
+  if [[ -z "${_seed_wc_vol:-}" ]] || docker volume rm "$_seed_wc_vol" >/dev/null 2>&1; then
+    rm -f -- "$_seed_wc_rec" 2>/dev/null || true
+    [[ -z "${_seed_wc_vol:-}" ]] || printf 'NOTE: the working copy "%s" was not seeded to the end and is removed; the next launch seeds it again.\n' "$_seed_wc_vol" >&2
+  else
+    printf 'WARNING: the working copy "%s" was not seeded to the end and could not be removed now;\n' "$_seed_wc_vol" >&2
+    printf '         the next launch removes it and seeds it again.\n' >&2
+  fi
+  _seed_wc_vol="" _seed_wc_rec=""
 }
 
 split_env_list() {  # $1=raw value (e.g. "$REPOS", "$EXTRA_MOUNTS", "$PREVIEW_PORTS")
@@ -6487,7 +6662,7 @@ _git_watch_add() {
   [[ -z "${_git_watch_had[$1]:-}" ]] || return 0
   _git_watch_had[$1]=1; _git_watch+=("$1")
 }
-trap 'rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
+trap '_seed_wc_drop || true; rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
 
 # _host_way_add <what> <path as set> <what the launch resolved it to>: records a
 # host path the launch mounts, for launcher_ro_overlay to judge the way to it
@@ -6591,6 +6766,63 @@ validate_sandbox_ids() {
     printf '       e.g. SANDBOX_UID=1000 SANDBOX_GID=1000, for repo.sh as well.\n' >&2
     exit 1
   fi
+}
+
+# _group_gh_token <hosts.yml>: prints the first oauth_token of the group's gh
+# hosts.yml, for COPILOT_GITHUB_TOKEN, or nothing.
+#
+# That file is in the agent's ~/.config/gh, a writable mount, so it is the
+# agent's to replace (bugs review LNCH-29):
+# - a link to your own ~/.config/gh/hosts.yml, or to another group's, made the
+#   next launch hand the container the token the group was made to keep from it;
+# - a file at mode 000 ended every launch of the group under set -e.
+#
+# So only a regular file that is not a link is read, through one open checked
+# to be the very file judged so, as project-files.sh: `_proj_read()` reads a
+# project's files. The open and the read run in a child under a time bound
+# where a timeout(1) is installed (_timeout_prefix; a Mac needs Homebrew's
+# coreutils, as for every bounded read here): a sibling container of the group shares that directory and
+# can swap a FIFO in between the check and the open, where the open blocks
+# (review of the LNCH-29 fix). Anything else is a WARNING, never the end of the
+# launch.
+_gh_read_prog='
+  f="$1"; want="$2"; b=""
+  { exec {fd}<"$f"; } 2>/dev/null || { printf unreadable; exit 0; }
+  # The open is the very file the launcher checked, by its inode: ls -L gives
+  # the open file'"'"'s for /dev/fd/N on Linux, where it is a link into /proc,
+  # and on macOS, whose fdescfs node carries it
+  # (project-files.sh: `_proj_fd_is()`). A file swapped in between the check
+  # and the open, a link to your own hosts.yml included, has another (review of
+  # the LNCH-29 fix).
+  if [[ -f "/dev/fd/$fd" ]] && read -r b _ < <(ls -diL "/dev/fd/$fd" 2>/dev/null) && [[ -n "$b" && "$b" == "$want" ]]; then
+    # The whole of the first 64 KiB: an awk that exits at the first match would
+    # end head with SIGPIPE, which pipefail reports.
+    printf "ok %s" "$(head -c 65536 <&"$fd" | awk '"'"'/oauth_token:/ && t == "" { t = $2 } END { print t }'"'"')"
+  else
+    printf changed
+  fi'
+_group_gh_token() {
+  local f="$1" out="" rc=0 secs=5 ino=""
+  local -a tp=()
+  [[ -e "$f" || -L "$f" ]] || return 0
+  if [[ -L "$f" || ! -f "$f" ]]; then
+    printf 'WARNING: %s is a link or not a regular file, so no Copilot token is read from it.\n' "$(_term "$f")" >&2
+    printf '         The agent can make it one, to have a launch hand it a token from elsewhere.\n' >&2
+    printf '         Remove it, then run "gh auth login" in the container (or set COPILOT_GITHUB_TOKEN):\n' >&2
+    printf '           rm %s\n' "$(_q "$f")" >&2
+    return 0
+  fi
+  read -r ino _ < <(ls -di "$f" 2>/dev/null) || ino=""
+  read -r -a tp <<< "$(_timeout_prefix "$secs")"
+  out="$("${tp[@]}" "${BASH:-bash}" -c "set -uo pipefail; $_gh_read_prog" _ "$f" "$ino" 2>/dev/null)" || rc=$?
+  case "$rc:$out" in
+    "0:ok "*) printf '%s' "${out#ok }" ;;
+    0:unreadable) printf 'WARNING: %s cannot be read, so no Copilot token is taken from it.\n' "$(_term "$f")" >&2 ;;
+    0:changed) printf 'WARNING: %s changed while it was being opened, so no Copilot token is read from it.\n' "$(_term "$f")" >&2 ;;
+    *) printf 'WARNING: %s could not be read within %s s (was a FIFO put there?), so no Copilot token\n' "$(_term "$f")" "$secs" >&2
+       printf '         is taken from it.\n' >&2 ;;
+  esac
+  return 0
 }
 
 run_container() {
@@ -6840,7 +7072,7 @@ run_container() {
     # unlabelled volume, made before labels, names no owner.
     local _pe _pn _pm _prec
     for _pe in "${repos_list[@]}"; do
-      _pn="${_pe%%:*}"; _pm="${_pe##*:}"
+      _pn="${_pe%%:*}"; _pm="ro"; [[ "$_pe" == *:* ]] && _pm="${_pe##*:}"
       _prec="$(repo_registry_lookup "$_pn" 2>/dev/null)" || continue
       [[ "$(repo_record_backend "$_prec")" == "bind" ]] && continue
       _repo_volume_foreign "$_pn" "$(repo_volume_name "$_pn")"
@@ -6849,8 +7081,8 @@ run_container() {
     for entry in "${repos_list[@]}"; do
       local rname rmode
       rname="${entry%%:*}"
-      rmode="${entry##*:}"
-      [[ "$rmode" == "$rname" ]] && rmode="ro"
+      # No mode given is no `:` (pointer_repo_entry(), LNCH-34).
+      rmode="ro"; [[ "$entry" == *:* ]] && rmode="${entry##*:}"
 
       if ! validate_repo_name "$rname"; then
         exit 1
@@ -7285,10 +7517,7 @@ run_container() {
   # Resolve COPILOT_GITHUB_TOKEN from the group's gh hosts.yml if not set.
   local copilot_token="${COPILOT_GITHUB_TOKEN:-}"
   if is_enabled copilot && [[ -z "$copilot_token" ]]; then
-    local gh_hosts="$group_root/.config/gh/hosts.yml"
-    if [[ -f "$gh_hosts" ]]; then
-      copilot_token="$(awk '/oauth_token:/{print $2; exit}' "$gh_hosts")"
-    fi
+    copilot_token="$(_group_gh_token "$group_root/.config/gh/hosts.yml")"
     if [[ -z "$copilot_token" ]]; then
       printf 'HINT: No gh auth token found for group "%s".\n' "$group" >&2
       printf '      Run "gh auth login" inside the container to authenticate Copilot CLI.\n' >&2

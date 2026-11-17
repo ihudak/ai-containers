@@ -902,9 +902,10 @@ OUT38="$TMP/out38"; mkdir -p "$OUT38" "$LAUNCHER/.agent-blocked"
 ln -s "$OUT38/x" "$LAUNCHER/.agent-blocked/planted"
 EXTRA_MOUNTS="$OUT38" launch "$LAUNCHER" ..
 rm -f "$LAUNCHER/.agent-blocked/planted"
-! grep -q 'leads somewhere the agent can change' "$ERR" \
+# A refused launch mounts nothing and names nothing: these absences count only for one that ran (GAP-26).
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -q 'leads somewhere the agent can change' "$ERR" \
   && pass "T38 a link planted in the launcher's output directory is not walked" \
-  || fail "T38 planted output-dir link (stderr: $(grep -F 'leads somewhere' "$ERR" | tr '\n' ' '))"
+  || fail "T38 planted output-dir link (rc=$LAUNCH_RC; stderr: $(grep -F 'leads somewhere' "$ERR" | tr '\n' ' '))"
 ln -s "$OUT38/x" "$LAUNCHER/outward.conf"
 EXTRA_MOUNTS="$OUT38" launch "$LAUNCHER" .
 rm -f "$LAUNCHER/outward.conf"
@@ -1965,15 +1966,18 @@ rm -f "$fns72"
 # ── T73: working copies, Colima, a pointer's path, a name quoted, launchers ──
 # GAP-2 slice 5: a condition or a return of each, turned, survived every test.
 fns73="$TMP/fns73.sh"
-{ awk -v f="resolve_path() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox-common.sh"
+{ # A seeding is recorded under ~/.ai-containers (review of the LNCH-31 fix): here a scratch one.
+  printf 'ai_containers_root=%q; _seed_dir="$ai_containers_root/.seeding"\n' "$TMP/t73root"
+  printf '_seed_wc_vol="" _seed_wc_name="" _seed_wc_rec="" _seed_wc_pid=""\n'
+  awk -v f="resolve_path() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox-common.sh"
   awk '/^_vm_hold_[a-z]*=/ {p = 1} p {print} p && /'\''$/ {p = 0}' "$ENGINE/sandbox.sh"
-  for f73 in _term _q _timeout_prefix seed_workcopy_volume _colima_profile _vm_dev_ino_load _bind_read repos_path_in_container launcher_dirs_in; do
+  for f73 in _term _q _timeout_prefix _seed_proc _seed_vol_state _seed_rec_state seed_workcopy_volume _colima_profile _vm_dev_ino_load _bind_read repos_path_in_container launcher_dirs_in; do
     awk -v f="$f73() {" 'index($0, f) == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh"
   done; } > "$fns73"
 t73() { bash -c 'set -euo pipefail; source "$1"; shift; eval "$1"' _ "$fns73" "$1" 2>&1; }
 # A working copy: made once, with the labels it has a value for, and copied;
 # an existing one is left alone.
-o73="$(T73L="$TMP/t73.log" t73 'image_name=img; L="$T73L"; : > "$L"; docker() { printf "%s\n" "$*" >> "$L"; case "$1 $2" in "volume inspect") return "${INSPECT:-1}" ;; esac; }
+o73="$(T73L="$TMP/t73.log" t73 'image_name=img; L="$T73L"; : > "$L"; docker() { printf "%s\n" "$*" >> "$L"; case "$1 $2" in "volume inspect") [[ "${INSPECT:-1}" == 0 ]] && return 0; echo "Error: no such volume" >&2; return 1 ;; esac; }
   seed_workcopy_volume base wc app /launch 2>/dev/null; echo == >> "$L"; seed_workcopy_volume base wc2 "" "" 2>/dev/null; echo == >> "$L"
   INSPECT=0 seed_workcopy_volume base wc3 app /l; echo done >> "$L"; cat "$L"')"
 w1="${o73%%==*}"; r73="${o73#*==}"; w2="${r73%%==*}"; w3="${r73#*==}"
@@ -1988,7 +1992,7 @@ fi
 # It carries this HOME's id (ai-containers.owner), which project.sh tells this
 # home's copies from another's by on a shared daemon; with no id to give it is
 # made and copied all the same, unlabelled, under the launcher's set -e.
-o73="$(T73L="$TMP/t73o.log" t73 'image_name=img; L="$T73L"; : > "$L"; docker() { printf "%s\n" "$*" >> "$L"; case "$1 $2" in "volume inspect") return 1 ;; esac; }
+o73="$(T73L="$TMP/t73o.log" t73 'image_name=img; L="$T73L"; : > "$L"; docker() { printf "%s\n" "$*" >> "$L"; case "$1 $2" in "volume inspect") echo "Error: no such volume" >&2; return 1 ;; esac; }
   ai_containers_owner_id() { printf sha256:own73; }; seed_workcopy_volume base wc4 app /launch 2>/dev/null; echo == >> "$L"
   ai_containers_owner_id() { return 1; }; seed_workcopy_volume base wc5 app /l 2>/dev/null; echo done >> "$L"; cat "$L"')"
 w4="${o73%%==*}"; w5="${o73#*==}"
@@ -2592,6 +2596,35 @@ for c91 in build nonsense; do
     && pass "T91 sandbox.sh $c91 exits 1, says why and runs no container" \
     || fail "T91 sandbox.sh $c91 (rc=$rc91; $(head -2 "$ERR" | tr '\n' ' '))"
 done
+
+# ── T92: the case/Windows refusal judges binds below a writable mount, not the mounted host paths (LNCH-30) ─
+# GIT-41's refusal is for a read-only overlay, pin or file bind below a writable
+# mount root on a filesystem where another spelling, or an 8.3 short name,
+# reaches what the bind covers. LNCH-27 put every mounted host path into the
+# list it walks, so a pointer inside a writable mount there was refused too,
+# though it is a mount root of its own and needs no bind below anything. Here an
+# engine copy takes one directory for a Windows filesystem (_win_fs).
+W92="$TMP/win92"; L92="$TMP/l92/.ai-containers"
+mkdir -p "$W92/data/docs" "$W92/data/notes" "$TMP/l92" && cp -R "$LAUNCHER" "$L92" \
+  && awk -v w="$W92" 'index($0, "command=\"${1:-") == 1 { print "_win_fs() { [[ \"$1\" == \"" w "\" || \"$1\" == \"" w "\"/* ]]; }" } { print }' \
+       "$LAUNCHER/sandbox.sh" > "$L92/sandbox.sh" && grep -q '^_win_fs() { \[\[ "\$1" == "' "$L92/sandbox.sh" \
+  || { printf 'SCAFFOLD-FAILED: T92\n'; exit 1; }
+EXTRA_MOUNTS="$W92/data" DOCS_PATH="$W92/data/docs" launch "$L92" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF "$W92/data/docs:/workspace/docs:ro" <<<"$(mounts)" \
+  && pass "T92 a :ro pointer inside a writable mount on a Windows filesystem is mounted, not refused" \
+  || fail "T92 DOCS_PATH inside a writable Windows mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+EXTRA_MOUNTS="$W92/data" VAULT_PATH="$W92/data/notes" launch "$L92" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -qxF "$W92/data/notes:/workspace/vault:rw" <<<"$(mounts)" \
+  && pass "T92 a writable pointer inside a writable mount on a Windows filesystem is mounted, not refused" \
+  || fail "T92 VAULT_PATH inside a writable Windows mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+# The control: a launcher planted there still needs a read-only overlay below
+# the writable mount, which is refused, so _win_fs took effect.
+mk_launcher "$W92/data/proj"
+EXTRA_MOUNTS="$W92/data" launch "$L92" "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "is mounted read-only, but $W92/data is on a filesystem where" \
+  && pass "T92 an overlay below a writable mount on a Windows filesystem is still refused" \
+  || fail "T92 the control overlay (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$W92" "$TMP/l92"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

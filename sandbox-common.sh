@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# sandbox-common.sh — shared library for build.sh, sandbox.sh, and repo.sh.
+# sandbox-common.sh — shared library for the entry-point scripts beside it
+# (build.sh, sandbox.sh, repo.sh, group.sh, project.sh and the rest).
 #
 # This file is meant to be SOURCED, not executed. It provides:
 #   - configuration parsing for sandbox.conf (get_versions / is_enabled / ...)
@@ -7,7 +8,7 @@
 #   - path + docker-volume name helpers
 #   - the global repo-volume registry (~/.ai-containers/repos.conf)
 #
-# All three entry-point scripts live in the same directory as this file.
+# Every entry-point script that sources it lives in the same directory as this file.
 
 # Guard against double-sourcing.
 if [[ -n "${_SANDBOX_COMMON_SOURCED:-}" ]]; then
@@ -16,7 +17,7 @@ fi
 _SANDBOX_COMMON_SOURCED=1
 
 # The bash floor is declared once, in bash-floor.sh, and sourced here so the
-# three entry points that source this library inherit it.
+# entry points that source this library inherit it.
 # shellcheck source=SCRIPTDIR/bash-floor.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bash-floor.sh"
 
@@ -873,14 +874,42 @@ rvm_group_from_volume() {
 # "$root/.rvm" left by a group created before rvm moved to a volume, so upgrading
 # does not silently discard already-compiled rubies (minutes per version to rebuild).
 #   $1 = group name   $2 = group root dir   $3 = image to run the copy in
+# _rvm_shared_note <volume> <group>: a NOTE when the group's Ruby volume was made
+# by another home. One docker serves several homes (Docker Desktop's, by every
+# WSL distro), and the volume's name has no home in it, so that home's group of
+# this name may mount the same volume, and that home's group.sh can remove it from
+# under this one (rm, or gc once its group directory is gone). A stated limit, the
+# user's choice (bugs review PRJ-16);
+# REPO_VOLUME_PREFIX, which every repo and Ruby volume name starts with, keeps
+# homes apart.
+_rvm_shared_note() {
+  local o own
+  o="$(docker_volume_label "$1" 'ai-containers.owner')"
+  [[ -n "$o" ]] || return 0
+  own="$(ai_containers_owner_id 2>/dev/null)" || own=""
+  [[ -n "$own" && "$o" == "$own" ]] && return 0
+  printf 'NOTE: the Ruby volume %s was made by another home on this docker (another WSL distro or\n' "$1" >&2
+  printf '      user), or by this one before ~/.ai-containers/project-id.key was lost. That home'"'"'s group\n' >&2
+  printf '      "%s" may use it too, and that home can remove it with group.sh (rm, or gc once its group\n' "$2" >&2
+  printf '      is gone there); this group then builds its Rubies again.\n' >&2
+  printf '      To keep homes apart, give each its own REPO_VOLUME_PREFIX (docs/troubleshooting.md).\n' >&2
+}
+
 rvm_volume_ensure() {
   local group="$1" root="$2" image="$3"
   local vol; vol="$(rvm_volume_name "$group")"
 
   if docker volume inspect "$vol" >/dev/null 2>&1; then
+    _rvm_shared_note "$vol" "$group"
     printf '%s\n' "$vol"; return 0
   fi
-  if ! docker volume create --label "ai-containers.rvm-group=${group}" "$vol" >/dev/null 2>&1; then
+  # With this HOME's id: one daemon serves several homes (Docker Desktop's, by
+  # every WSL distro), and group.sh gc takes only the volumes this home made
+  # (bugs review PRJ-16). A launch never fails over the id: without one the
+  # volume is made unlabelled, as before.
+  local own; local -a olab=()
+  if own="$(ai_containers_owner_id 2>/dev/null)"; then olab=(--label "ai-containers.owner=${own}"); fi
+  if ! docker volume create --label "ai-containers.rvm-group=${group}" ${olab[@]+"${olab[@]}"} "$vol" >/dev/null 2>&1; then
     printf 'ERROR: could not create the rvm volume %s\n' "$vol" >&2
     return 1
   fi

@@ -1274,15 +1274,15 @@ r136() {  # <case> <setup> [<after>] — a kept file f, changed by <setup>, then
   elif [[ -d "$TMP/r136/d/f" ]]; then r136f=dir
   elif [[ -f "$TMP/r136/d/f" ]]; then r136f="$(cat "$TMP/r136/d/f")"
   else r136f=""; fi
-  r136k="$(cat "$TMP/r136/root/restored"/*/0-f 2>/dev/null)"
+  r136k="$(cat "$TMP/r136/root/.restored"/*/0-f 2>/dev/null)"
 }
 r136 same ':'
-[[ ! -s "$TMP/r136.err" && "$r136f" == kept && ! -e "$TMP/r136/root/restored" ]] \
+[[ ! -s "$TMP/r136.err" && "$r136f" == kept && ! -e "$TMP/r136/root/.restored" ]] \
   && pass "G136 a file that holds what it did is left alone, and nothing is said" \
   || fail "G136 unchanged (file '$r136f'; $(head -c 200 "$TMP/r136.err"))"
 r136 changed 'printf "the agent\n" > d/f'
 [[ "$r136f" == kept && "$r136k" == "the agent" ]] && grep -qF "It is put back as it was at launch." "$TMP/r136.err" \
-   && grep -qF "What it held is kept in $TMP/r136/root/restored/" "$TMP/r136.err" \
+   && grep -qF "What it held is kept in $TMP/r136/root/.restored/" "$TMP/r136.err" \
   && pass "G136 a changed file is put back, and what it held kept and named" \
   || fail "G136 changed (file '$r136f', kept '$r136k'; $(tr '\n' ' ' < "$TMP/r136.err"))"
 r136 removed 'rm -f d/f'
@@ -1301,15 +1301,15 @@ r136 dir 'rm -f d/f && mkdir d/f'
 [[ -d "$TMP/r136/d/f" ]] && grep -qF "could NOT be put back" "$TMP/r136.err" \
   && pass "G136 a directory in its place is not replaced, and said so" \
   || fail "G136 directory ($(tr '\n' ' ' < "$TMP/r136.err"))"
-r136 again 'mkdir -m 700 root/restored && printf "the agent\n" > d/f'
+r136 again 'mkdir -m 700 root/.restored && printf "the agent\n" > d/f'
 [[ "$r136f" == kept && "$r136k" == "the agent" ]] && grep -qF "What it held is kept in" "$TMP/r136.err" \
   && pass "G136 the restored directory of an earlier launch is used again" \
   || fail "G136 restored exists (kept '$r136k'; $(tr '\n' ' ' < "$TMP/r136.err"))"
-r136 linked 'mkdir -p elsewhere && ln -s ../elsewhere root/restored && printf "the agent\n" > d/f'
+r136 linked 'mkdir -p elsewhere && ln -s ../elsewhere root/.restored && printf "the agent\n" > d/f'
 [[ "$r136f" == kept && -z "$(ls -A "$TMP/r136/elsewhere")" ]] && grep -qF "What it held could not be kept." "$TMP/r136.err" \
   && pass "G136 a restored directory that is a link is not written through" \
   || fail "G136 restored is a link (written: $(ls -A "$TMP/r136/elsewhere" | tr '\n' ' '); $(tr '\n' ' ' < "$TMP/r136.err"))"
-r136 unmakeable 'printf x > root/restored && printf "the agent\n" > d/f'
+r136 unmakeable 'printf x > root/.restored && printf "the agent\n" > d/f'
 [[ "$r136f" == kept ]] && grep -qF "What it held could not be kept." "$TMP/r136.err" && ! grep -qF "(It had been removed.)" "$TMP/r136.err" \
   && pass "G136 where nothing can be kept, a changed file is said not to be kept, not removed" \
   || fail "G136 nothing kept (file '$r136f'; $(tr '\n' ' ' < "$TMP/r136.err"))"
@@ -1321,13 +1321,13 @@ r136 nosnap 'rm -f snap/0 && printf "the agent\n" > d/f'
   || fail "G136 copy gone (file '$r136f'; $(tr '\n' ' ' < "$TMP/r136.err"))"
 # The directory for this restore already there: it is not written into, since
 # whoever made it chose what is in it.
-r136 rdthere 'date() { printf 20260101000000; }; mkdir -p "root/restored/20260101000000-$$" && printf "the agent\n" > d/f'
-[[ "$r136f" == kept && -z "$(ls -A "$TMP/r136/root/restored/"*)" ]] && grep -qF "What it held could not be kept." "$TMP/r136.err" \
+r136 rdthere 'date() { printf 20260101000000; }; mkdir -p "root/.restored/20260101000000-$$" && printf "the agent\n" > d/f'
+[[ "$r136f" == kept && -z "$(ls -A "$TMP/r136/root/.restored/"*)" ]] && grep -qF "What it held could not be kept." "$TMP/r136.err" \
   && pass "G136 a restore directory already there is not written into" \
-  || fail "G136 restore directory there (written: $(ls -A "$TMP/r136/root/restored/"* | tr '\n' ' '); $(tr '\n' ' ' < "$TMP/r136.err"))"
+  || fail "G136 restore directory there (written: $(ls -A "$TMP/r136/root/.restored/"* | tr '\n' ' '); $(tr '\n' ' ' < "$TMP/r136.err"))"
 # Made, and swapped for a link before it is used (a stand-in mkdir does it):
 # not written through.
-r136 rdswap 'mkdir -p elsewhere; mkdir() { command mkdir "$@" || return; if [[ "${*: -1}" == */restored/*-* ]]; then rmdir "${*: -1}" && ln -s "$PWD/elsewhere" "${*: -1}"; fi; }
+r136 rdswap 'mkdir -p elsewhere; mkdir() { command mkdir "$@" || return; if [[ "${*: -1}" == */.restored/*-* ]]; then rmdir "${*: -1}" && ln -s "$PWD/elsewhere" "${*: -1}"; fi; }
   printf "the agent\n" > d/f'
 [[ "$r136f" == kept && -z "$(ls -A "$TMP/r136/elsewhere")" ]] && grep -qF "What it held could not be kept." "$TMP/r136.err" \
   && pass "G136 a restore directory swapped for a link once made is not written through" \

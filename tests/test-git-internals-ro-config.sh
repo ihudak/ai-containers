@@ -307,9 +307,10 @@ done
 : > "$TMP/shared72.gitconfig"; "${G[@]}" init -q "$PROJ/z72/a/b/mine" \
   && "${G[@]}" -C "$PROJ/z72/a/b/mine" config include.path "$TMP/shared72.gitconfig"
 launch ..
-! grep -qF "not every include of /workspace/proj/z72/a/b/mine/.git/config was followed" "$ERR" \
+# A refused launch mounts nothing and names nothing: these absences count only for one that ran (GAP-26).
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "not every include of /workspace/proj/z72/a/b/mine/.git/config was followed" "$ERR" \
   && pass "G72 empty include entries in planted repositories do not cut the walk of yours" \
-  || fail "G72 the launch budget was spent by empty entries"
+  || fail "G72 the launch budget was spent by empty entries (rc=$LAUNCH_RC)"
 rm -rf "$PROJ/e72" "$PROJ/z72" "$TMP/shared72.gitconfig"
 
 # ── G98: where git does not run, no config is read by guesswork ──────────────

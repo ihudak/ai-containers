@@ -58,7 +58,9 @@ Usage:
   ./project.sh gc  [--all] [--yes]         Remove what registered projects no longer need
 
 <project> is a registered path, a path to it, or the basename of exactly one
-registered project.
+registered project. A bare name that is also an unregistered directory here is
+refused: give the path of the one you mean. mv takes the registered one where it
+is gone (moved by hand), or where the directory here is <new-dir> itself.
 
 Notes:
   - Groups and repo volumes are NOT touched: they are shared. Use ./group.sh and
@@ -114,7 +116,8 @@ prj_roots() {
   done < "$prj_conf"
 }
 
-# prj_resolve <arg> [unregistered-ok]: sets PRJ_ROOT and PRJ_DOT, or exits 1.
+# prj_resolve <arg> [unregistered-ok] [<new-dir>]: sets PRJ_ROOT and PRJ_DOT,
+# or exits 1. mv passes its <new-dir> (see the bare-name rule below).
 # shellcheck disable=SC2034  # PRJ_DOT is read by the commands built on this
 prj_resolve() {
   local arg="$1" ok="${2:-}" abs phys="" r rp want found="" n=0 cands="" base
@@ -131,7 +134,9 @@ prj_resolve() {
     for r in "${roots[@]+"${roots[@]}"}"; do
       [[ -d "$r" ]] || continue
       rp="$(cd "$r" 2>/dev/null && pwd -P)" || continue
-      [[ "$rp" == "$phys" ]] && { found="$r"; break; }
+      # Or the same directory by another path: a bind mount, a macOS firmlink
+      # (review of the PRJ-13 fix).
+      if [[ "$rp" == "$phys" || "$r" -ef "$phys" ]]; then found="$r"; break; fi
     done
   fi
   # 2. the same string, made absolute and without a trailing /
@@ -150,6 +155,21 @@ prj_resolve() {
     done
     if (( n > 1 )); then
       printf 'ERROR: "%s" is the name of %d registered projects:\n%s' "$(_ac_term "$arg")" "$n" "$cands" >&2
+      printf 'Give the path of the one you mean.\n' >&2
+      exit 1
+    fi
+    # A bare name that is also a directory here, one no registered root is:
+    # which of the two is meant cannot be told, so neither is taken. `rm api
+    # --yes` beside an unregistered ./api removed the registered project of
+    # that basename (bugs review PRJ-13), and did so for one that is gone too
+    # (review of its fix). A path (./api, or the registered one) picks. For mv
+    # (unregistered-ok) the registered one is taken where it is gone, a setup
+    # moved by hand, or where the directory here is <new-dir> itself: both are
+    # `mv api <new-dir>` run from beside the new place.
+    if [[ -n "$found" && -n "$phys" ]] \
+       && ! { [[ -n "$ok" && ! -d "$found" ]] || [[ -n "${3:-}" && "$phys" -ef "$3" ]]; }; then
+      printf 'ERROR: "%s" is a directory here, %s, which is not a registered project,\n' "$(_ac_term "$arg")" "$(_ac_term "$phys")" >&2
+      printf '       and the name of the registered project %s.\n' "$(_ac_term "$found")" >&2
       printf 'Give the path of the one you mean.\n' >&2
       exit 1
     fi
@@ -1102,7 +1122,11 @@ _prj_move_dot() {
   # mount) share a device number, rename(2) then fails EXDEV, and GNU mv falls
   # back to copying and deleting, unchecked.
   if [[ "${AI_CONTAINERS_MV_COPY:-}" != 1 ]] && od="$(_prj_dev "$old")" && nd="$(_prj_dev "$root")" && [[ "$od" == "$nd" ]]; then
+    # Marked before the rename, as for a copy below: an interrupt right after it
+    # finds the setup moved, by its inode (review of the PRJ-12 fix).
+    _prj_mv_landed="$old" _prj_mv_cino="$ino"
     if _prj_mv_to "$old" "$new" && _prj_landed "$ino" "$new" && [[ ! -e "$old" && ! -L "$old" ]]; then return 0; fi
+    _prj_mv_landed="" _prj_mv_cino=""
     where="$(_prj_where "$ino" "$new" "$old")"
     if [[ -n "$where" && "$where" == "$(_prj_phys "$old")" ]]; then
       printf 'ERROR: could not move %s to %s; it is where it was.\n' "$(_ac_term "$old")" "$(_ac_term "$new")" >&2
@@ -1125,7 +1149,12 @@ _prj_move_dot() {
     printf '       %s is kept.\n' "$(_ac_term "$old")" >&2
     return 1
   fi
+  # Marked before the rename: an interrupt right after it must not undo the
+  # working copies made for the copy now in place. The trap takes it as landed
+  # only once the copy is at <new> by its inode (review of the PRJ-12 fix).
+  _prj_mv_landed="$old" _prj_mv_cino="$cino"
   if ! _prj_mv_to "$tmpd/.ai-containers" "$new" || ! _prj_landed "$cino" "$new"; then
+    _prj_mv_landed="" _prj_mv_cino=""
     if [[ -e "$tmpd/.ai-containers" || -L "$tmpd/.ai-containers" ]]; then
       rm -rf -- "$tmpd"
       printf 'ERROR: could not move the checked copy of %s to %s; it is removed, and %s is kept.\n' \
@@ -1142,6 +1171,10 @@ _prj_move_dot() {
   fi
   rmdir -- "$tmpd" 2>/dev/null || true
   _prj_mv_tmp=""
+  # The checked copy is in place: it is the setup now, and an interrupt during
+  # the removal below must neither undo the working copies made for it nor say
+  # the move can be run again as it stands (bugs review PRJ-12). The trap names
+  # what is left of the old directory instead (_prj_mv_landed, set above).
   # rm -rf removes a link it meets inside, never what it points to.
   if [[ -L "$old" ]] || ! rm -rf -- "$old" || [[ -e "$old" || -L "$old" ]]; then return 2; fi
   return 0
@@ -1415,8 +1448,9 @@ _prj_tracks_dot() {
 # before what replaces it is checked: the working copies are copied and checked,
 # then the directory moved (across filesystems: copied, checked, and only then
 # removed), then the old copies removed. A failure or an interrupt before the
-# old copies go undoes the copies made; one after it leaves what a re-run —
-# which then finds the project already moved — finishes.
+# checked copy of .ai-containers has landed undoes the copies made; one after it
+# keeps them, and leaves what a re-run — which then finds the project already
+# moved, once what is left of the old directory is removed — finishes (PRJ-12).
 cmd_mv() {
   local arg="" narg="" assume_yes=0 a
   for a in "$@"; do
@@ -1431,7 +1465,7 @@ cmd_mv() {
   if [[ -z "$arg" || -z "$narg" ]]; then
     printf 'ERROR: usage: ./project.sh mv <project> <new-dir> [--yes]\n' >&2; exit 1
   fi
-  prj_resolve "$arg" unregistered-ok
+  prj_resolve "$arg" unregistered-ok "$narg"
   local old_root old_dot new_root new_dot reg=0 new_reg=0 moved=0
   old_root="$(_prj_strip "$PRJ_ROOT")"
   if _prj_registered "$PRJ_ROOT"; then reg=1
@@ -1554,7 +1588,7 @@ cmd_mv() {
   # an old root that is gone) take the name a launch from the new place uses.
   docker_volume_labels_load
   local wc ldir nl repo i line own o
-  local -a wc_old=() wc_new=() wc_repo=() wc_ldir=() wc_done=() stay=() stay_why=()
+  local -a wc_old=() wc_new=() wc_repo=() wc_ldir=() wc_was=() wc_done=() stay=() stay_why=()
   own="$(prj_owner)" || own=""
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
@@ -1574,9 +1608,26 @@ cmd_mv() {
     if [[ -z "$repo" ]]; then
       stay+=("$wc"); stay_why+=("— stays: it carries no ai-containers.repo label, so its new name cannot be told"); continue
     fi
-    wc_old+=("$wc"); wc_repo+=("$repo"); wc_ldir+=("$nl")
+    wc_old+=("$wc"); wc_repo+=("$repo"); wc_ldir+=("$nl"); wc_was+=("$ldir")
     wc_new+=("$(repo_workcopy_volume_name "$repo" "$(workcopy_tag "$nl")")"); wc_done+=("")
   done < <(prj_workcopies "$old_root")
+  # Two copies of one repo would take one new name: a launch through a link to
+  # the project and one through its real path make two copies, which both move
+  # to the one new launch directory. The second copy failed after the question,
+  # undoing the first, on every run, with no word why (bugs review PRJ-14).
+  local -A wc_taken=()
+  local j
+  for i in "${!wc_new[@]}"; do
+    j="${wc_taken[${wc_new[i]}]:-}"
+    if [[ -n "$j" ]]; then
+      printf 'ERROR: the working copies %s (launched from %s) and\n' "$(_ac_term "${wc_old[j]}")" "$(_ac_term "${wc_was[j]}")" >&2
+      printf '       %s (launched from %s) are of one repo, launched through two\n' "$(_ac_term "${wc_old[i]}")" "$(_ac_term "${wc_was[i]}")" >&2
+      printf '       spellings of this project'"'"'s path, and would both become %s. Keep one: push\n' "$(_ac_term "${wc_new[i]}")" >&2
+      printf '       what the other holds, remove it (docker volume rm <name>), then run this again. Nothing was changed.\n' >&2
+      exit 1
+    fi
+    wc_taken[${wc_new[i]}]="$i"
+  done
   # A container that uses an old copy, a stopped one too, makes docker refuse to
   # remove it once it is copied, after the setup has moved: asked now.
   local users urc
@@ -1794,7 +1845,7 @@ cmd_mv() {
   # <new-dir> (it holds sandbox.local.env), and, until the old copies start to
   # go, the copies this run made (_prj_mv_undo). Set here and put back before
   # this returns: project.sh is sourced by tests, so never a global trap.
-  _prj_mv_made=(); _prj_mv_making=""; _prj_mv_first=""; _prj_mv_undo=1
+  _prj_mv_made=(); _prj_mv_making=""; _prj_mv_first=""; _prj_mv_undo=1; _prj_mv_landed=""; _prj_mv_cino=""
   _prj_mv_new="$new_root"; _prj_mv_cmd="./project.sh mv $q_old $q_new"
   old_int="$(trap -p INT)"; old_term="$(trap -p TERM)"
   trap '_prj_mv_interrupted 130' INT
@@ -1931,17 +1982,33 @@ cmd_mv() {
 }
 
 # _prj_mv_interrupted <status>: cmd_mv's INT and TERM trap — the temp copy a move
-# across filesystems was making in <new-dir> goes; and while no old working
-# copy has gone yet (_prj_mv_undo), so do the copies this run made, the one it
-# was making included, and the directories mkdir -p made while they are empty:
-# the old copies hold the work, and a run again makes them anew. What was done
-# before is above.
-_prj_mv_made=(); _prj_mv_making=""; _prj_mv_first=""; _prj_mv_undo=0; _prj_mv_new=""; _prj_mv_cmd=""
+# across filesystems was making in <new-dir> goes. Once the checked copy of
+# .ai-containers is at <new-dir> (_prj_mv_landed, confirmed by its inode), it is
+# the setup: the copies stay, and what is left of the old directory is named as
+# a leftover (PRJ-12). Before that, while no old working copy has gone yet
+# (_prj_mv_undo), the copies this run made go too, the one it was making
+# included, and the directories mkdir -p made while they are empty: the old
+# copies hold the work, and a run again makes them anew. What was done before
+# is above.
+_prj_mv_made=(); _prj_mv_making=""; _prj_mv_first=""; _prj_mv_undo=0; _prj_mv_new=""; _prj_mv_cmd=""; _prj_mv_landed=""; _prj_mv_cino=""
 _prj_mv_interrupted() {
   local -a undo=()
   if [[ -n "$_prj_mv_tmp" ]]; then rm -rf -- "$_prj_mv_tmp"; _prj_mv_tmp=""; fi
   printf '\nERROR: interrupted; what was done is listed above, and no temporary copy is left in %s.\n' "$(_ac_term "$_prj_mv_new")" >&2
-  if (( _prj_mv_undo )); then
+  # The checked copy had landed and the old directory was being removed: the
+  # copy is the setup, and its working copies stay; a run again takes them as
+  # done once the leftover is gone (PRJ-12).
+  if [[ -n "$_prj_mv_landed" ]] && _prj_landed "$_prj_mv_cino" "${_prj_mv_new%/}/.ai-containers"; then
+    if [[ -e "$_prj_mv_landed" || -L "$_prj_mv_landed" ]]; then
+      printf '       %s is in place, the checked copy of %s, which is now a\n' "$(_ac_term "${_prj_mv_new%/}/.ai-containers")" "$(_ac_term "$_prj_mv_landed")" >&2
+      printf '       leftover, whole or in part. Remove it, then run %s\n' "$_prj_mv_cmd" >&2
+      printf '       again to finish whatever is left of the move:\n' >&2
+      printf '         rm -rf %s\n' "$(_prj_q "$_prj_mv_landed")" >&2
+    else
+      printf '       %s is in place. Run %s again to finish whatever is left of\n' "$(_ac_term "${_prj_mv_new%/}/.ai-containers")" "$_prj_mv_cmd" >&2
+      printf '       the move.\n' >&2
+    fi
+  elif (( _prj_mv_undo )); then
     _prj_mv_undo=0
     undo=(${_prj_mv_made[@]+"${_prj_mv_made[@]}"})
     if [[ -n "$_prj_mv_making" ]] && docker volume inspect "$_prj_mv_making" >/dev/null 2>&1; then undo+=("$_prj_mv_making"); fi

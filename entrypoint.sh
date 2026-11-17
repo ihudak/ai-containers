@@ -370,7 +370,7 @@ verify_launcher_mounts() {
     printf 'NOTE: launcher mounts are not verified against a concurrent-container swap: /run/ai-launcher/manifest cannot be read (on an SELinux host with SELINUX_LABEL=keep, label ~/.ai-containers for containers; see docs/troubleshooting.md).\n' >&2
     return 0
   fi
-  local got dev ino dst bad=0
+  local got dev ino dst shown bad=0
   got="$(stat -c '%d:%i' /run/ai-launcher 2>/dev/null || true)"
   if [[ "$got" != "$AI_LAUNCHER_ANCHOR" ]]; then
     # Expected on every launch on such a host (macOS file sharing), and nothing
@@ -381,7 +381,13 @@ verify_launcher_mounts() {
   while IFS= read -r -d '' dev && IFS= read -r -d '' ino && IFS= read -r -d '' dst; do
     got="$(stat -c '%d:%i' "$dst" 2>/dev/null || true)"
     if [[ "$got" != "$dev:$ino" ]]; then
-      printf 'ERROR: %s is not the directory it was checked as (expected %s, got %s).\n' "$dst" "$dev:$ino" "${got:-none}" >&2
+      # A destination holds directory names the agent chose, and this goes to
+      # the terminal of the launch: rendered as sandbox.sh: `_term()` renders
+      # them on the host, C0 and DEL, UTF-8's C1 controls and the bidi controls
+      # each a ? (bugs review LNCH-33). In a subshell, for the C locale.
+      shown="$(LC_ALL=C; s="$dst"; s="${s//[[:cntrl:]]/?}"; s="${s//$'\xc2'[$'\x80'-$'\x9f']/?}"
+               s="${s//$'\xe2\x80'[$'\xaa'-$'\xae']/?}"; s="${s//$'\xe2\x81'[$'\xa6'-$'\xa9']/?}"; printf '%s' "$s")"
+      printf 'ERROR: %s is not the directory it was checked as (expected %s, got %s).\n' "$shown" "$dev:$ino" "${got:-none}" >&2
       bad=1
     fi
   done < /run/ai-launcher/manifest

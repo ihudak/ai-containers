@@ -160,8 +160,9 @@ chmod 755 "$TMP/hid/r/.git"; rm -rf "$TMP/hid"
 # directory that happens to hold HEAD and config must keep its config writable.
 mkdir -p "$TMP/app/docs" && printf 'ref: x\n' > "$TMP/app/docs/HEAD" && printf 'k=v\n' > "$TMP/app/docs/config"
 launch "$TMP/app"
-! grep -q '/app/docs' <<<"$(mounts)" && pass "G11 a stray HEAD file is not taken for a git directory" \
-  || fail "G11 stray HEAD (mounts: $(mounts | grep '/app/' | tr '\n' ' '))"
+# A refused launch mounts nothing and names nothing: these absences count only for one that ran (GAP-26).
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -q '/app/docs' <<<"$(mounts)" && pass "G11 a stray HEAD file is not taken for a git directory" \
+  || fail "G11 stray HEAD (rc=$LAUNCH_RC; mounts: $(mounts | grep '/app/' | tr '\n' ' '))"
 
 # ── G12: depth — a checkout six levels down is found, seven is not ────────────
 mkdir -p "$TMP/deep/1/2/3/4/5/6/7"
@@ -227,9 +228,10 @@ launch "$TMP/app"
 # ── G18: shallowest first — a repository under another's read-only hooks/ ─────
 mkdir -p "$PROJ/.git/hooks/inner" && "${G[@]}" -C "$PROJ/.git/hooks/inner" init -q
 launch ..
-! grep -q ':/workspace/proj/.git/hooks:rw$' <<<"$(mounts)" && ! grep -q 'hooks/inner' <<<"$(mounts)" \
+# A refused launch mounts nothing and names nothing: these absences count only for one that ran (GAP-26).
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -q ':/workspace/proj/.git/hooks:rw$' <<<"$(mounts)" && ! grep -q 'hooks/inner' <<<"$(mounts)" \
   && pass "G18 a repository inside another's read-only hooks/ is left under it, never pinned writable" \
-  || fail "G18 ordering (git mounts: $(git_mounts | grep hooks | tr '\n' ' '))"
+  || fail "G18 ordering (rc=$LAUNCH_RC; git mounts: $(git_mounts | grep hooks | tr '\n' ' '))"
 rm -rf "$PROJ/.git/hooks/inner"
 
 # ── G20: a mount rooted inside a .git is named ────────────────────────────────
@@ -300,9 +302,10 @@ A63="$PROJ/app63"; "${G[@]}" init -q "$A63" && "${G[@]}" -C "$A63" commit -q --a
   && "${G[@]}" -C "$A63" submodule -q deinit dein && "${G[@]}" -C "$A63" worktree add -q "$TMP/outside63" \
   || { printf 'SCAFFOLD-FAILED: G63\n'; exit 1; }
 launch ..
-! grep -qF "no worktree is known" "$ERR" \
+# A refused launch mounts nothing and names nothing: these absences count only for one that ran (GAP-26).
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "no worktree is known" "$ERR" \
   && pass "G63 removed, deinit'd and outside-worktree git directories do not warn" \
-  || fail "G63 ordinary repositories warn every launch ($(grep -F 'no worktree is known' "$ERR"))"
+  || fail "G63 ordinary repositories warn every launch (rc=$LAUNCH_RC; $(grep -F 'no worktree is known' "$ERR"))"
 rm -rf "$S63" "$A63" "$TMP/outside63"
 
 # ── G70: a FIFO HEAD hid the repository from the scan, silently, and the host's

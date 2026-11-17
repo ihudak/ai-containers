@@ -32,6 +32,8 @@ FAKE_RUNNING_VOL="$TMP/fake-running-vol"; : > "$FAKE_RUNNING_VOL"
 FAKE_BIN="$TMP/bin"; mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
+# FAKE_DOCKER_DOWN: a docker that cannot be reached answers nothing.
+[[ -n "${FAKE_DOCKER_DOWN:-}" ]] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
 case "$1" in
   volume)
     case "$2" in
@@ -41,7 +43,7 @@ case "$1" in
           if [[ "$prev" == "--format" ]]; then :; elif [[ "$a" != "--format" ]]; then name="$a"; fi
           prev="$a"
         done
-        [[ -f "$FAKE_VOLUMES_DIR/$name" ]] || exit 1
+        [[ -f "$FAKE_VOLUMES_DIR/$name" ]] || { echo "Error response from daemon: get $name: no such volume" >&2; exit 1; }
         fmt=""; prev=""
         for a in "${@:3}"; do [[ "$prev" == "--format" ]] && fmt="$a"; prev="$a"; done
         if [[ "$fmt" == *Labels* ]]; then
@@ -71,6 +73,9 @@ case "$1" in
       *) exit 0 ;;
     esac ;;
   ps)
+    [[ -n "${FAKE_PS_FAIL:-}" ]] && exit 1
+    # FAKE_PS_FAIL_VOL=<volume>: docker cannot list the containers of that one.
+    for a in "$@"; do [[ "$a" == "volume=${FAKE_PS_FAIL_VOL:-}" ]] && exit 1; done
     for a in "$@"; do
       case "$a" in
         volume=*)
@@ -85,7 +90,17 @@ esac
 FAKE
 chmod +x "$FAKE_BIN/docker"
 
-mkvol() { : > "$FAKE_VOLUMES_DIR/$1"; printf 'ai-containers.rvm-group=%s\n' "$2" > "$FAKE_VOLUMES_DIR/$1.labels"; }
+# This HOME's owner id (sandbox-common.sh: `ai_containers_owner_id()`), which a
+# launch labels the rvm volume it makes with (PRJ-16); made here, as a launch
+# makes it, with the key it needs.
+OWN="$(HOME="$FAKE_HOME" bash -c 'source "$1/sandbox-common.sh" && ai_containers_owner_id' _ "$REPO_DIR" 2>/dev/null)"
+[[ "$OWN" == sha256:* ]] || { printf 'SCAFFOLD-FAILED: no owner id\n'; exit 1; }
+# mkvol <volume> <group>: an rvm volume this home made; VOL_OWNER= another id,
+# or empty for one made before owner labels.
+mkvol() {
+  : > "$FAKE_VOLUMES_DIR/$1"
+  { printf 'ai-containers.rvm-group=%s\n' "$2"; [[ -z "${VOL_OWNER-$OWN}" ]] || printf 'ai-containers.owner=%s\n' "${VOL_OWNER-$OWN}"; } > "$FAKE_VOLUMES_DIR/$1.labels"
+}
 
 run_group() {  # run group.sh with the fake env; echoes output, sets RC
   HOME="$FAKE_HOME" PATH="$FAKE_BIN:$PATH" \
@@ -150,6 +165,131 @@ grep -q 'Skipping ai-containers-rvm-busy' <<<"$out" \
   || fail "gc leaves the in-use volume in place"
 : > "$FAKE_RUNNING_VOL"
 run_group gc --yes >/dev/null
+
+# Whose volume (bugs review PRJ-16): one daemon serves several homes (Docker
+# Desktop's, by every WSL distro), so a group directory missing here may be
+# another home's group. gc takes only the volumes this home made; another
+# home's, and one made before owner labels, are kept and named, and --all takes
+# them, still named.
+VOL_OWNER="sha256:$(printf '%064d' 7)" mkvol "ai-containers-rvm-theirs" "theirs"
+VOL_OWNER="" mkvol "ai-containers-rvm-oldvol" "oldvol"
+mkvol "ai-containers-rvm-mine" "mine"
+out="$(run_group list)"
+grep -qF 'ai-containers-rvm-theirs  (another home'"'"'s: gc keeps it unless --all)' <<<"$out" \
+  && grep -qF 'ai-containers-rvm-oldvol  (no owner label: gc keeps it unless --all)' <<<"$out" \
+  && grep -qxF '  ai-containers-rvm-mine' <<<"$out" && ! grep -qF 'no owner key' <<<"$out" \
+  && pass "PRJ-16 list says which orphans gc keeps, and why" \
+  || fail "PRJ-16 list (got: $out)"
+out="$(run_group gc --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"Removed ai-containers-rvm-mine"* && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-theirs" && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-oldvol" ]] \
+  && grep -qF 'ai-containers-rvm-theirs: another home'"'"'s' <<<"$out" && grep -qF 'ai-containers-rvm-oldvol: no owner label' <<<"$out" \
+  && grep -qF './group.sh gc --all' <<<"$out" \
+  && pass "PRJ-16 gc removes this home's orphan and keeps another home's and an unlabelled one, naming them" \
+  || fail "PRJ-16 gc by owner (rc=$rc; got: $out)"
+out="$(run_group gc --all --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"Removed ai-containers-rvm-theirs"* && "$out" == *"Removed ai-containers-rvm-oldvol"* ]] \
+  && [[ ! -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-theirs" && ! -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-oldvol" ]] \
+  && grep -qF 'ai-containers-rvm-theirs  (another home'"'"'s: its group of that name may use it)' <<<"$out" \
+  && grep -qF 'ai-containers-rvm-oldvol  (no owner label: it may be another home'"'"'s)' <<<"$out" \
+  && pass "PRJ-16 gc --all takes every orphan, whoever made it, naming whose each is" \
+  || fail "PRJ-16 gc --all (rc=$rc; got: $out)"
+# A docker that cannot list its containers is not read as "none use it": the
+# volume is skipped, gc says nothing was removed, and exits 1.
+mkvol "ai-containers-rvm-unsure" "unsure"
+out="$(FAKE_PS_FAIL=1 run_group gc --yes)"; rc=$?
+[[ "$rc" -ne 0 && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-unsure" && "$out" == *"Skipping ai-containers-rvm-unsure — docker could not list the containers"* ]] \
+  && [[ "$out" == *"Nothing removed: 1 orphaned volume(s) of this home skipped"* && "$out" != *"Nothing to collect"* ]] \
+  && pass "PRJ-16 gc skips a volume when docker cannot say whether a container uses it, and says so, rc 1" \
+  || fail "PRJ-16 gc with docker ps failing (rc=$rc; got: $out)"
+run_group gc --yes >/dev/null
+# group.sh rm reads it the same way, and keeps a volume another home made.
+mkdir -p "$FAKE_HOME/.ai-containers/shared16"; mkvol "ai-containers-rvm-shared16" "shared16"
+out="$(FAKE_PS_FAIL=1 run_group rm shared16 --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$FAKE_HOME/.ai-containers/shared16" && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-shared16" && "$out" == *"docker could not list the containers"* ]] \
+  && pass "PRJ-16 rm refuses when docker cannot say whether a container uses the volume" \
+  || fail "PRJ-16 rm with docker ps failing (rc=$rc; got: $out)"
+rm -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-shared16" "$FAKE_VOLUMES_DIR/ai-containers-rvm-shared16.labels"
+VOL_OWNER="sha256:$(printf '%064d' 7)" mkvol "ai-containers-rvm-shared16" "shared16"
+out="$(run_group rm shared16 --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$FAKE_HOME/.ai-containers/shared16" && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-shared16" ]] \
+  && [[ "$out" == *"rvm volume ai-containers-rvm-shared16 is kept: another home on this docker made it"* ]] \
+  && pass "PRJ-16 rm removes this home's group directory and keeps a volume another home made, naming it" \
+  || fail "PRJ-16 rm of a group whose volume another home made (rc=$rc; got: $out)"
+out="$(run_group rm shared16 --yes)"; rc=$?
+[[ "$rc" -ne 0 && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-shared16" && "$out" == *"was made by another home"* && "$out" == *"docker volume rm ai-containers-rvm-shared16"* ]] \
+  && pass "PRJ-16 rm of only another home's volume is refused, with the command that removes it anyway" \
+  || fail "PRJ-16 rm of only another home's volume (rc=$rc; got: $out)"
+rm -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-shared16" "$FAKE_VOLUMES_DIR/ai-containers-rvm-shared16.labels"
+# A home whose owner key is gone (an rm -rf of ~/.ai-containers) cannot tell its
+# own labelled volumes from another home's, and says so.
+NOKEY="$TMP/nokey-home"; mkdir -p "$NOKEY/.ai-containers"
+mkvol "ai-containers-rvm-lostkey" "lostkey"
+out="$(HOME="$NOKEY" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" gc --yes 2>&1)"
+[[ "$out" == *"ai-containers-rvm-lostkey: another home's"* && "$out" == *"this home has no owner key"* ]] \
+  && pass "PRJ-16 a home with no owner key says why its labelled volumes look like another home's" \
+  || fail "PRJ-16 a home with no owner key (got: $out)"
+rm -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-lostkey" "$FAKE_VOLUMES_DIR/ai-containers-rvm-lostkey.labels"; rm -rf "$NOKEY"
+
+# A docker that cannot be reached is not one with no volume: rm keeps the
+# directory, where it removed it and orphaned the volume, and gc says so, rc 1,
+# where it said there was nothing to collect (review of the PRJ-16 fix).
+mkdir -p "$FAKE_HOME/.ai-containers/down16"; mkvol "ai-containers-rvm-down16" "down16"
+out="$(FAKE_DOCKER_DOWN=1 run_group rm down16 --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$FAKE_HOME/.ai-containers/down16" && "$out" == *"docker could not say whether ai-containers-rvm-down16 exists"* ]] \
+  && pass "PRJ-16 rm with docker unreachable refuses and keeps the directory" \
+  || fail "PRJ-16 rm with docker unreachable (rc=$rc; got: $out)"
+out="$(FAKE_DOCKER_DOWN=1 run_group list)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"down16"*"unknown"* && "$out" != *"none"* && "$out" == *"docker could not list its volumes"* ]] \
+  && pass "PRJ-16 list with docker unreachable lists the groups, their volumes unknown, and says so, rc 1" \
+  || fail "PRJ-16 list with docker unreachable (rc=$rc; got: $out)"
+out="$(FAKE_DOCKER_DOWN=1 run_group gc --yes)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"docker could not list its volumes"* && "$out" != *"Nothing to collect"* ]] \
+  && pass "PRJ-16 gc with docker unreachable says so, rc 1" || fail "PRJ-16 gc with docker unreachable (rc=$rc; got: $out)"
+rm -rf "$FAKE_HOME/.ai-containers/down16"; rm -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-down16" "$FAKE_VOLUMES_DIR/ai-containers-rvm-down16.labels"
+# Skipping one orphan it could not judge, gc removes the others and still exits 1.
+mkvol "ai-containers-rvm-gone1" "gone1"; mkvol "ai-containers-rvm-gone2" "gone2"
+out="$(FAKE_PS_FAIL_VOL=ai-containers-rvm-gone1 run_group gc --yes)"; rc=$?
+[[ "$rc" -ne 0 && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-gone1" && ! -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-gone2" && "$out" == *"Removed ai-containers-rvm-gone2"* ]] \
+  && pass "PRJ-16 gc removes what it can, skips the volume docker could not judge, and exits 1" \
+  || fail "PRJ-16 gc with one volume unjudged (rc=$rc; got: $out)"
+rm -f "$FAKE_VOLUMES_DIR"/ai-containers-rvm-gone1*
+# rm keeps a volume another home made whatever uses it, so a container that
+# does is no reason to refuse; and a home with no owner key says why it takes
+# its own volume for another's.
+mkdir -p "$FAKE_HOME/.ai-containers/busy16"; VOL_OWNER="sha256:$(printf '%064d' 7)" mkvol "ai-containers-rvm-busy16" "busy16"
+printf 'ai-containers-rvm-busy16' > "$FAKE_RUNNING_VOL"
+out="$(run_group rm busy16 --yes)"; rc=$?
+: > "$FAKE_RUNNING_VOL"
+[[ "$rc" -eq 0 && ! -d "$FAKE_HOME/.ai-containers/busy16" && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-busy16" && "$out" != *"Stop it first"* ]] \
+  && pass "PRJ-16 rm of a group whose volume another home made and uses removes the directory, keeps the volume" \
+  || fail "PRJ-16 rm with another home's volume in use (rc=$rc; got: $out)"
+NOKEY2="$TMP/nokey-home2"; mkdir -p "$NOKEY2/.ai-containers/busy16"
+out="$(HOME="$NOKEY2" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" rm busy16 --yes 2>&1)"
+[[ "$out" == *"rvm volume ai-containers-rvm-busy16 is kept: another home on this docker, or this one before it lost its owner key, made it"* \
+   && "$out" == *"this home has no owner key"* ]] \
+  && pass "PRJ-16 rm in a home with no owner key says why it keeps the volume" || fail "PRJ-16 rm with no owner key (got: $out)"
+rm -rf "$NOKEY2"; rm -f "$FAKE_VOLUMES_DIR"/ai-containers-rvm-busy16*
+
+# What a launch keeps from a protected git file's place is under the hidden
+# ~/.ai-containers/.restored, a name no group can have (bugs review PRJ-18):
+# not listed, not offered, not removable as a group. A group named restored is
+# a group like any other.
+mkdir -p "$FAKE_HOME/.ai-containers/.restored/20261117-1"; : > "$FAKE_HOME/.ai-containers/.restored/20261117-1/config"
+out="$(run_group list)"
+! grep -qE '^\.?restored ' <<<"$out" && pass "PRJ-18 list does not show the launcher's .restored as a group" || fail "PRJ-18 list shows .restored (got: $out)"
+out="$(run_group rm .restored --yes)"; rc=$?
+[[ "$rc" -ne 0 && -f "$FAKE_HOME/.ai-containers/.restored/20261117-1/config" ]] \
+  && pass "PRJ-18 rm .restored is refused, the kept files left" || fail "PRJ-18 rm .restored (rc=$rc; got: $out)"
+out="$(HOME="$FAKE_HOME" bash -c 'source "$1/sandbox-common.sh" && group_menu_choices default' _ "$REPO_DIR" 2>&1)"
+[[ "$out" != *restored* ]] && pass "PRJ-18 the bootstrap menu does not offer .restored" || fail "PRJ-18 the menu offers .restored (got: $out)"
+out="$(HOME="$FAKE_HOME" bash -c 'eval "$(sed -n "/^valid_group_name() {/,/^}/p;/^existing_groups() {/,/^}/p" "$1/project-init.sh")"; existing_groups' _ "$REPO_DIR" 2>&1)"
+[[ -n "$out" && "$out" != *restored* ]] && pass "PRJ-18 project-init does not offer .restored as a group" || fail "PRJ-18 project-init offers .restored (got: $out)"
+mkdir -p "$FAKE_HOME/.ai-containers/restored"
+out="$(run_group list)"
+grep -qE '^restored ' <<<"$out" && pass "PRJ-18 a group named restored is listed like any other" || fail "PRJ-18 a group named restored is hidden (got: $out)"
+out="$(HOME="$FAKE_HOME" bash -c 'source "$1/sandbox-common.sh" && validate_group_name restored && echo OK' _ "$REPO_DIR" 2>&1)"
+[[ "$out" == OK ]] && pass "PRJ-18 AI_CONTAINER_GROUP=restored is a valid group" || fail "PRJ-18 restored refused as a group (got: $out)"
+rm -rf "$FAKE_HOME/.ai-containers/.restored" "$FAKE_HOME/.ai-containers/restored"
 
 # ── rm ──────────────────────────────────────────────────────────────────────────
 # group.sh has TWO independent exit-1 paths a "host" run could hit: the host-guard
@@ -322,6 +462,23 @@ out="$(HOME="$TMP/empty-home" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOL
 [[ "$rc" -eq 0 && "$out" == *"No container groups yet"* ]] \
   && pass "list with no groups root exits zero and says so" \
   || fail "list with no groups root exits zero and says so (rc=$rc; out: $out)"
+# Every group directory deleted by hand leaves only orphans, and list names them
+# still: it returned at "No container groups yet" before its orphan check
+# (review of the PRJ-16 fix).
+VOL_OWNER="" mkvol "ai-containers-rvm-left16" "left16"
+out="$(HOME="$TMP/empty-home" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" \
+  FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" list 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"No container groups yet"* && "$out" == *"ai-containers-rvm-left16  (no owner label"* ]] \
+  && pass "PRJ-16 list with no group directory left still names the orphaned volumes" \
+  || fail "PRJ-16 list with no group directory left (rc=$rc; out: $out)"
+rm -f "$FAKE_VOLUMES_DIR"/ai-containers-rvm-left16*
+# ... and with docker unreachable it cannot tell whether there are any: it says
+# so, rc 1, rather than "no groups" and success.
+out="$(HOME="$TMP/empty-home" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_DOCKER_DOWN=1 \
+  FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" list 2>&1)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"No container groups yet"* && "$out" == *"docker could not list its volumes"* ]] \
+  && pass "PRJ-16 list with no group directory and docker unreachable says the orphans cannot be told, rc 1" \
+  || fail "PRJ-16 list with no group directory and docker unreachable (rc=$rc; out: $out)"
 
 # ── THE CONFIRMATION, ON A REAL TTY ─────────────────────────────────────────────
 # Everything above runs without a terminal, so confirm()'s interactive branch —
