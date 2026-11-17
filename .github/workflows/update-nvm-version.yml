@@ -26,6 +26,13 @@ jobs:
             echo "::error::Failed to fetch latest nvm release tag from GitHub API"
             exit 1
           fi
+          # The tag is data from upstream, and the later steps paste it into a
+          # branch name, a sed program and a PR: only nvm's own shape passes
+          # (bugs review TST-39).
+          if [[ ! "$tag" =~ ^v[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]]; then
+            echo "::error::The latest nvm release tag is not of the form vX.Y.Z; refusing it"
+            exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Read current nvm version
@@ -43,9 +50,18 @@ jobs:
 
       - name: Update files if version changed
         id: update
+        # Through the environment, never as ${{ }} in the script: GitHub pastes
+        # those into the script text before bash parses it (bugs review TST-39).
+        env:
+          LATEST: ${{ steps.latest.outputs.tag }}
+          CURRENT: ${{ steps.current.outputs.dockerfile }}
         run: |
-          latest="${{ steps.latest.outputs.tag }}"
-          dockerfile="${{ steps.current.outputs.dockerfile }}"
+          latest="$LATEST"
+          dockerfile="$CURRENT"
+          if [[ ! "$latest" =~ ^v[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]]; then
+            echo "::error::The nvm tag to update to is not of the form vX.Y.Z; refusing it"
+            exit 1
+          fi
 
           if [[ "$latest" == "$dockerfile" ]]; then
             echo "already up to date ($latest)"

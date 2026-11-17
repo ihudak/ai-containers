@@ -402,6 +402,18 @@ grep -q 'RESULT: FAILED' "$TMP/out.log" \
   && pass "PHASES=\"1 2 3\": verdict line says FAILED" \
   || fail "PHASES=\"1 2 3\": verdict line says FAILED"
 
+# A PHASES of nothing but whitespace (a trailing-space slip, an unset variable
+# in "$X ") is set, so it is not defaulted, yet names no phase at all: the loop
+# above had no word to reject, and the run verified nothing and passed (bugs
+# review TST-38). PHASES=0, the banner alone, is documented and still passes.
+r="$(mk_repo 0)"
+expect_rc "TST-38 a PHASES of only whitespace fails, not verifies nothing and exits 0" 1 "$(run_verify "$r" " ")"
+grep -q 'RESULT: FAILED' "$TMP/out.log" && grep -q 'names no phase' "$TMP/out.log" \
+  && pass "TST-38 PHASES=\" \": verdict line says FAILED, naming why" \
+  || fail "TST-38 PHASES=\" \": verdict line says FAILED, naming why"
+r="$(mk_repo 0)"
+expect_rc "TST-38 PHASES=0, the environment banner alone, still passes as documented" 0 "$(run_verify "$r" 0)"
+
 # The empty case is NOT affected — ${PHASES:-4 5 7} must still default cleanly
 # to every real phase this script has, with no phase_fail firing for a
 # selection nobody made. This is also the one test that exercises ALL of

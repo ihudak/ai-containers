@@ -293,13 +293,21 @@ want_phase() { case " $PHASES " in (*" $1 "*) return 0 ;; (*) return 1 ;; esac; 
 # out until the tier existed did its job — naming it early failed loudly
 # instead of silently verifying nothing.
 VALID_PHASES="0 4 5 6 7"
+_named_phases=0
 for _requested_phase in $PHASES; do
+  _named_phases=$(( _named_phases + 1 ))
   case " $VALID_PHASES " in
     (*" $_requested_phase "*) : ;;
     (*) phase_fail "$_requested_phase" \
           "PHASES=\"$PHASES\" names phase $_requested_phase, which this script does not have (valid: $VALID_PHASES)" ;;
   esac
 done
+# A PHASES of nothing but whitespace is set, so it is not defaulted, and names
+# no phase: the loop above had no word to reject, and the run verified nothing
+# and passed (bugs review TST-38). PHASES=0, the banner alone, names one.
+if (( _named_phases == 0 )); then
+  phase_fail "-" "PHASES=\"$PHASES\" names no phase (valid: $VALID_PHASES; unset for the default)"
+fi
 
 # ── Phase 0: environment ────────────────────────────────────────────────────────
 say "PHASE 0 — environment"
