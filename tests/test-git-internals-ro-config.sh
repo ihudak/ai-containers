@@ -2174,6 +2174,28 @@ ch327='u:a priority of chrt that cannot be told from the program;'
 [[ "$o327" == "$ch327|$ch327|p:./evil;|p:./evil.rb;|p:/usr/lib/safe.rb;|p:./~/bin/tool;|p:./~/x.sh;|p:~/bin/tool;|p:git-remote-a/x;|none;|" ]] \
   && pass "G327 chrt's priority, ruby -F, a quoted ~ and a remote's helper are read as the programs read them" \
   || fail "G327 the review's cases (got: $o327)"
+# A ~ is your home directory only where the shell makes it one, at the start of
+# a word outside quotes: attached to an option (-I~/lib) it is handed on as it
+# is, and python takes a module's name as written (~.x is ./~/x.py), so the
+# file is one under the checkout, which was judged in your home (re-review of
+# the fix, C1). ruby may expand it itself, so it is judged both ways; to node
+# it is a module named ~; a key run with no shell is judged both ways too.
+o327="$(run327 <<'CASES'
+core.fsmonitor|perl -I~/lib /abs/safe.pl
+core.fsmonitor|perl -I ~/lib /abs/safe.pl
+core.fsmonitor|python3 -m ~.x
+core.fsmonitor|python3 -m '~.x'
+core.fsmonitor|ruby -r~/x /usr/lib/a.rb
+core.fsmonitor|ruby -I~/lib /usr/lib/a.rb
+core.fsmonitor|node --require=~/x /usr/lib/a.js
+core.fsmonitor|node -r ~/x /usr/lib/a.js
+core.fsmonitor|bash --rcfile "~/rc" /usr/bin/x.sh
+gpg.program|~/bin/gpg
+CASES
+)"
+[[ "$o327" == "p:./~/lib;p:/abs/safe.pl;|p:~/lib;p:/abs/safe.pl;|p:./~/x.py;|p:./~/x.py;|p:~/x;p:./~/x;p:/usr/lib/a.rb;|p:./~/lib;p:~/lib;p:/usr/lib/a.rb;|u:a module loaded by name;|p:~/x;p:/usr/lib/a.js;|p:./~/rc;p:/usr/bin/x.sh;|p:~/bin/gpg;p:./~/bin/gpg;|" ]] \
+  && pass "G327 a ~ is your home only at the start of a word outside quotes; elsewhere it is a directory in the checkout" \
+  || fail "G327 where a ~ is a home directory (got: $o327)"
 rm -f "$fns327"
 # End to end, as the review ran it: the NOTE the launch gave for
 # `fsmonitor = ./evil.sh` it did not give for `. ./evil.sh`.
@@ -2181,11 +2203,14 @@ H327="$TMP/h327"
 mkdir -p "$H327" && "${G[@]}" init -q "$H327/r" && "${G[@]}" -C "$H327/r" config core.fsmonitor '. ./evil.sh' \
   && "${G[@]}" -C "$H327/r" config core.sshCommand 'PATH=./bin ssh' \
   && "${G[@]}" -C "$H327/r" config core.pager '"~/bin/tool"' && "${G[@]}" -C "$H327/r" config remote.o.vcs a/x \
-  && "${G[@]}" -C "$H327/r" config gc.recentObjectsHook /bin/true || { printf 'SCAFFOLD-FAILED: G327 launch\n'; exit 1; }
+  && "${G[@]}" -C "$H327/r" config gc.recentObjectsHook /bin/true \
+  && "${G[@]}" -C "$H327/r" config uploadpack.packObjectsHook /bin/true \
+  && "${G[@]}" -C "$H327/r" config diff.t.textconv 'perl -I~/lib /usr/bin/true' || { printf 'SCAFFOLD-FAILED: G327 launch\n'; exit 1; }
 [[ "$("${G[@]}" -C "$H327/r" config core.pager)" == '"~/bin/tool"' ]] || { printf 'SCAFFOLD-FAILED: G327 the quotes are not in the value\n'; exit 1; }
 EXTRA_MOUNTS="$H327" launch "$TMP/app"
 n327="$(grep -A1 -F 'NOTE: /workspace/h327/r/.git is protected for the first time, and its config already sets' "$ERR" | tail -1)"
-[[ "$n327" == *remote.o.vcs* && "$n327" == *gc.recentobjectshook* ]] \
+[[ "$n327" == *remote.o.vcs* && "$n327" == *gc.recentobjectshook* && "$n327" == *uploadpack.packobjectshook* ]] \
+  && grep -qF "has your host's git run /workspace/h327/r/~/lib (diff.t.textconv), which leads somewhere the agent can change:" "$ERR" \
   && grep -qF "has your host's git run /workspace/h327/r/~/bin/tool (core.pager), which leads somewhere the agent can change:" "$ERR" \
   && grep -qF "has your host's git run /workspace/h327/r/git-remote-a/x (remote.o.vcs), which leads somewhere the agent can change:" "$ERR" \
   && pass "G327 a quoted ~ is judged in the checkout, and a remote's helper and gc's hook are named and judged" \

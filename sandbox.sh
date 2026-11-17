@@ -4442,6 +4442,19 @@ _gdi_blocked() {
   # read-only, so they lead here again by themselves.
   if [[ -z "${_gb_norec:-}" && "/$1/" != *"/./"* && "/$1/" != *"/../"* && "$1" != *"//"* ]] \
      && (( BASH_SUBSHELL == 0 && ${#1} <= 4096 )); then
+    # Past SANDBOX_GIT_MAX of them a launch the launch is refused, as for any
+    # number the agent can plant at no cost: an index entry each, behind one
+    # directory it made unsearchable, and a thousand of them took a launch
+    # from 2 s to 44 s, and every later one 20 s (re-review of the fix, C3).
+    if (( ${#_git_want_new[@]} < 5 )); then _git_want_new+=("$1"); fi
+    if (( ++_git_want_n > ${gitmax:-200} )); then
+      printf 'ERROR: more than %d checkouts that an index names lie behind directories that cannot be\n' "${gitmax:-200}" >&2
+      printf '       searched, so none of them can be looked at; refusing the launch. Among them:\n' >&2
+      for _gb_c in "${_git_want_new[@]}"; do printf '         %s\n' "$(_q "$_gb_c")" >&2; done
+      printf '       Make the directory in their way searchable (the WARNING naming it has the chmod), or\n' >&2
+      printf '       remove the entries from the index if they are not yours, or raise SANDBOX_GIT_MAX.\n' >&2
+      exit 1
+    fi
     _git_report_record "$1" want "0 0 0"
   fi
   return 0
@@ -4928,6 +4941,7 @@ git_dirs_in() {
   local gover="" _gdi_fk=0 _gdi_ff _gdi_fro _gdi_fat _gdi_fr
   local _rq _rqp _rqk _rqt _rqd _rqn=0 _rq_done="" _gb_norec=""
   local -A _rqid=() _rqunr=()
+  local -a _rqnm=()
   while :; do
   while (( n < ${#_gdi_dirs[@]} || nf < ${#_gdi_files[@]} || ni < ${#_gdi_ionly[@]} )); do
     # Past SANDBOX_GIT_MAX the launch is refused anyway: following on, and
@@ -5289,7 +5303,14 @@ git_dirs_in() {
       [[ "$_rqp" == "$5"/* ]] || continue
       if [[ ! -e "$_rqp" && ! -L "$_rqp" ]] || [[ "$_rqk" == want && -d "$_rqp" && ! -L "$_rqp" && ! -x "$_rqp" ]]; then
         if [[ -z "${_rqid[$_rqp]+x}" ]]; then
-          _rqid[$_rqp]="?"; _gb_norec=1; _gdi_blocked "$_rqp" "$5" || true; _gb_norec=""
+          _rqid[$_rqp]="?"
+          # Not one behind a directory already bound whole: a thousand recorded
+          # checkouts behind one unsearchable directory each cost the walk, and
+          # what it starts, again (re-review of the GIT-105 fix, C3).
+          for g in ${_gdi_unr[@]+"${_gdi_unr[@]}"}; do
+            if [[ "$_rqp" == "$g" || "$_rqp" == "$g"/* ]]; then continue 2; fi
+          done
+          _gb_norec=1; _gdi_blocked "$_rqp" "$5" || true; _gb_norec=""
         fi
         continue
       fi
@@ -5305,12 +5326,15 @@ git_dirs_in() {
         if (( ${#_rqunr[@]} == 0 )); then
           _rqunr[/]=1; for g in ${_gdi_unr[@]+"${_gdi_unr[@]}"}; do _rqunr[$g]=1; done
         fi
+        if (( ${#_rqnm[@]} < 5 )); then _rqnm+=("$_rqt"); fi
         if (( ++_rqn > 5 * ${gitmax:-200} )); then
           printf 'ERROR: %s names more than %d paths in %s\n' "$(_term "$_git_reported_file")" "$(( 5 * ${gitmax:-200} ))" "$(_term "$5")" >&2
-          printf '       that nothing there leads to any more, and each had to be looked at; refusing the launch.\n' >&2
-          printf '       Remove the lines of repositories that are gone from that file, or the file itself:\n' >&2
-          printf '       launches then name again what they named, and find a git directory only by what\n' >&2
-          printf '       leads to it. Or raise SANDBOX_GIT_MAX.\n' >&2
+          printf '       that are still there, but that no index and no .git file leads to any more, and each\n' >&2
+          printf '       has to be looked at; refusing the launch. Among them:\n' >&2
+          for g in "${_rqnm[@]}"; do printf '         %s\n' "$(_q "$g")" >&2; done
+          printf '       Remove those that are not yours, or raise SANDBOX_GIT_MAX if they are. (Removing\n' >&2
+          printf '       that file ends this too, and with it what the file is for: a git directory a session\n' >&2
+          printf '       drops from an index is then found only by what still leads to it.)\n' >&2
           exit 1
         fi
         if [[ "$_rqk" == want ]]; then _rqid[$_rqt]="want"
@@ -5870,7 +5894,7 @@ _git_prog() {
   local -n _gp_o=$3
   local LC_ALL=C _gp_v="$2" _gp_w _gp_b _gp_s="" _gp_wr="" _gp_a="" _gp_d="" _gp_n=0
   local _gp_rq='^"([^"]*)"' _gp_rs="^'([^']*)'" _gp_rm='[$`(){};|&<>\"'"'"'*?[]' _gp_ro=$'[;&|`\n]|\\$\\(|[<>]\\(|(^|[ \t])=\\('
-  local _gp_ex="" _gp_t="" _gp_seen="" _gp_end="" _gp_asg="" _gp_k _gpx="" _gpx_v=""
+  local _gp_ex="" _gp_t="" _gp_seen="" _gp_end="" _gp_asg="" _gp_k _gpx="" _gpx_v="" _gp_lit="" _gp_p
   # The shell splits words on space and tab, and ends a command at a newline:
   # split on any [[:space:]], `!git<VT>./evil` was read as git, found on PATH,
   # where the shell runs ./git<VT>./evil, and a newline before the program
@@ -5892,7 +5916,12 @@ _git_prog() {
       _gp_o=("p:git-remote-$_gp_v"); return 0 ;;
     mergetool.*.path|difftool.*.path|man.*.path|browser.*.path|gpg.program|gpg.*.program|lfs.customtransfer.*.path)
       [[ "$_gp_v" =~ / ]] || return 1
-      _gp_o=("p:$_gp_v"); return 0 ;;
+      _gp_o=("p:$_gp_v")
+      # Run with no shell, so a leading ~ is a home directory only where the
+      # program that reads the key makes it one, and not every one does: judged
+      # both in your home and as the directory named ~ under the checkout.
+      if [[ "$_gp_v" == '~'* ]]; then _gp_o+=("p:./$_gp_v"); fi
+      return 0 ;;
   esac
   [[ "$_gp_v" =~ $_gp_rw ]]; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
   if [[ "$_gp_v" == '!'* ]]; then _gp_v="${_gp_v:1}"; fi
@@ -5907,12 +5936,8 @@ _git_prog() {
         _gp_w="${BASH_REMATCH[1]}"; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
         # A quoted word with more of it after the quote: not followed.
         if [[ -n "$_gp_v" && "${_gp_v:0:1}" != [$_gp_ws] ]]; then _gp_o+=("u:$_gp_x"); return 0; fi
-        # In quotes a leading ~ is no home directory: the shell runs "~/x" as
-        # the file x in a directory named ~ under the checkout, which the agent
-        # can make, while the entry p:~/x was judged in your home, and nothing
-        # was said (review of the GIT-106 fix, B3). Given as ./~/x.
-        if [[ "$_gp_w" == '~'* ]]; then _gp_w="./$_gp_w"; fi ;;
-      *) [[ "$_gp_v" =~ $_gp_rn ]]; _gp_w="${BASH_REMATCH[0]}"; _gp_v="${_gp_v:${#_gp_w}}" ;;
+        _gp_lit=1 ;;
+      *) [[ "$_gp_v" =~ $_gp_rn ]]; _gp_w="${BASH_REMATCH[0]}"; _gp_v="${_gp_v:${#_gp_w}}"; _gp_lit="" ;;
     esac
     if [[ "$_gp_w" == *$'\n'* ]]; then _gp_o+=("u:another command after it"); return 0; fi
     if [[ "$_gp_w" =~ [[:cntrl:]] ]]; then _gp_o+=("u:a control character"); return 0; fi
@@ -5928,7 +5953,7 @@ _git_prog() {
         end) _gp_end=1; continue ;;
         inline) _gp_o+=("u:inline code"); return 0 ;;
         u:*) _gp_o+=("$_gpx"); return 0 ;;
-        *=) _gp_k="${_gpx%=}"; _gp_w="$_gpx_v" ;;
+        *=) _gp_k="${_gpx%=}"; _gp_w="$_gpx_v"; _gp_lit=1 ;;
         *) _gp_a="$_gpx"; continue ;;
       esac
     elif [[ -n "$_gp_s" ]]; then
@@ -5945,18 +5970,41 @@ _git_prog() {
     else
       _gp_k=""
     fi
+    # A leading ~ is your home directory only where the shell makes it one: at
+    # the start of a word outside quotes. In quotes, and in a value attached to
+    # an option (-I~/lib, --require=~/x), the shell hands the ~ on as it is,
+    # and the file is one in a directory named ~ under the checkout, which the
+    # agent can make: judged there (./~/x), where the entry p:~/x was judged in
+    # your home and nothing was said (reviews of the GIT-106 fix, B3 and C1).
+    _gp_p="$_gp_w"
+    if [[ -n "$_gp_lit" && "$_gp_p" == '~'* ]]; then _gp_p="./$_gp_p"; fi
     case "$_gp_k" in
       arg) continue ;;
-      script) _gp_o+=("p:$_gp_w"); _gp_t=1; break ;;
-      pymod) _gp_o+=("p:${_gp_w//.//}.py"); _gp_t=1; break ;;
-      dir) _gp_o+=("p:$_gp_w"); continue ;;
+      script) _gp_o+=("p:$_gp_p"); _gp_t=1; break ;;
+      pymod)
+        # python takes the module's name as it is: ~.x is the file ~/x.py in the
+        # checkout, whatever the shell would have made of a ~ at a word's start.
+        _gp_p="${_gp_w//.//}.py"
+        if [[ "$_gp_p" == '~'* ]]; then _gp_p="./$_gp_p"; fi
+        _gp_o+=("p:$_gp_p"); _gp_t=1; break ;;
+      dir)
+        _gp_o+=("p:$_gp_p")
+        # ruby may expand a ~ itself: judged in your home as well.
+        if [[ "$_gp_s" == ruby && "$_gp_p" != "$_gp_w" ]]; then _gp_o+=("p:$_gp_w"); fi
+        continue ;;
       mod|rlib)
         # By a path it is that file; by name it is found where the interpreter
         # looks, the checkout's node_modules among them, or it is one of the
         # few of ruby's own that load nothing else.
         # shellcheck disable=SC2088  # '~/'* matches a LITERAL leading ~/ in the config value
         case "$_gp_w" in
-          /*|./*|../*|'~/'*) _gp_o+=("p:$_gp_w"); continue ;;
+          /*|./*|../*) _gp_o+=("p:$_gp_w"); continue ;;
+          '~/'*)
+            # The shell made it your home directory, or ruby does (its require
+            # expands a ~); to node it is a module named ~, looked for under
+            # the checkout's node_modules, which falls to the name below.
+            if [[ -z "$_gp_lit" ]]; then _gp_o+=("p:$_gp_w"); continue; fi
+            if [[ "$_gp_k" == rlib ]]; then _gp_o+=("p:$_gp_w" "p:./$_gp_w"); continue; fi ;;
         esac
         if [[ "$_gp_k" == rlib && "$_gp_w" =~ ^(set|json|yaml|time|date|pp|fileutils|optparse|securerandom|digest|uri|ostruct|English|shellwords|tempfile|open3|erb|csv|stringio|pathname|logger|benchmark|base64|zlib|socket|timeout|etc)$ ]]; then continue; fi
         _gp_o+=("u:a module loaded by name"); return 0 ;;
@@ -5992,7 +6040,7 @@ _git_prog() {
     # The command word. Named by a path it is judged, a wrapper or an
     # interpreter too: ./env and bin/python3 are files like any other.
     _gp_wr=""; _gp_end=""
-    if [[ "$_gp_w" =~ / ]]; then _gp_o+=("p:$_gp_w"); fi
+    if [[ "$_gp_w" =~ / ]]; then _gp_o+=("p:$_gp_p"); fi
     _gp_b=""; if (( ${#_gp_w} <= 256 )); then _gp_b="${_gp_w##*/}"; fi
     case "$_gp_b" in
       exec|env|command|nohup|nice|timeout|sudo|doas|setsid|stdbuf|ionice|chrt|taskset|xargs|watch|unbuffer)
@@ -6313,7 +6361,13 @@ _git_report_record() {   # <git dir, physical> [hooks] [identity]: add it, once,
   # As _git_reported reads it (GIT-90).
   if [[ "$p" == *$'\n'* ]]; then LC_ALL=C printf -v p '%q' "$p"; fi
   _git_reported_load
-  line="${3:-$(_git_ident "$1")} ${2:+$2:}$p"
+  line="${3:-$(_git_ident "$1")}"
+  # The identity of a link carries its target's text, a newline in it included
+  # (_git_ident), and no line here is about a link: one swapped in between the
+  # scan and this point is not recorded, or its target could write a line of
+  # its own into the record (noticed in the re-review of the GIT-105 fix).
+  if [[ "$line" == *$'\n'* || "$line" == *' -> '* ]]; then return 0; fi
+  line+=" ${2:+$2:}$p"
   [[ -z "${_git_reported_set[$line]:-}" ]] || return 0
   _git_reported_set[$line]=1; _git_rec_add "$line"
   if [[ -L "$_git_reported_file" ]]; then _git_rec_lost="it is a link"; return 0; fi
@@ -6460,14 +6514,16 @@ _ro_files_restore() {
 #   rebase with --apply keeps too): `--build-fake-ancestor=<path>` there had
 #   `git am --continue` write an index over the file it names, any file of
 #   yours (review of the GAP-15 fix, A2; measured, git 2.53). Any option but
-#   the few that only say how a patch is matched is named.
+#   the few that only say how a patch is matched is named: --reject too, which
+#   writes .rej files, and --directory, --include and --exclude, so your own
+#   git am with one of those, stopped, is named at each launch.
 # A file, or its directory, that is a link or no regular file is named as not
 # read; a read cut off is the launch's to refuse, like any other (_rd_run).
 _git_seq_re=$'^[ \t]*(exec|x)([ \t\r]|$)'
 _git_seq_exec() {
   local -n _gs_o=$2
   local LC_ALL=C _gs_g="$1" _gs_d _gs_t _gs_n _gs_w _gs_s _gs_sum="" _gs_c
-  local _gs_ao="^( *'(--whitespace=[a-z-]+|-C[0-9]+|-p[0-9]+|--ignore-whitespace|--ignore-space-change|--reject)')* *\$"
+  local _gs_ao="^( *'(--whitespace=[a-z-]+|-C[0-9]+|-p[0-9]+|--ignore-whitespace|--ignore-space-change)')* *\$"
   _gs_o=""
   for _gs_d in rebase-merge sequencer rebase-apply; do
     [[ -e "$_gs_g/$_gs_d" || -L "$_gs_g/$_gs_d" ]] || continue
@@ -6485,10 +6541,7 @@ _git_seq_exec() {
         if [[ ! "$_gs_n" =~ ^[0-9]+$ ]]; then _gs_w="$_gs_t: not read"
         elif (( 10#$_gs_n == 1 )); then _gs_w="$_gs_t: 1 exec line"
         elif (( 10#$_gs_n > 1 )); then _gs_w="$_gs_t: $_gs_n exec lines"; fi
-        if [[ -n "$_gs_w" && -n "${3:-}" ]]; then
-          _gs_c="$(_rd_run "$_gs_g/$_gs_t" cksum -- "$_gs_g/$_gs_t" 2>/dev/null)" || _gs_c="?"
-          _gs_sum+="${_gs_c%% /*} "
-        fi
+        if [[ -n "$_gs_w" && -n "${3:-}" ]]; then _git_seq_sum "$_gs_g/$_gs_t"; _gs_sum+="$_gs_c "; fi
       fi
       [[ -z "$_gs_w" ]] || _gs_o+="${_gs_o:+; }$_gs_w"
     fi
@@ -6522,18 +6575,28 @@ _git_seq_exec() {
     fi
     [[ -n "$_gs_w" ]] || continue
     _gs_o+="${_gs_o:+; }$_gs_w"
-    if [[ -n "${3:-}" && -f "$_gs_g/$_gs_t" && ! -L "$_gs_g/$_gs_t" ]]; then
-      _gs_c="$(_rd_run "$_gs_g/$_gs_t" cksum -- "$_gs_g/$_gs_t" 2>/dev/null)" || _gs_c="?"
-      _gs_sum+="${_gs_c%% /*} "
-    fi
+    if [[ -n "${3:-}" ]]; then _git_seq_sum "$_gs_g/$_gs_t"; _gs_sum+="$_gs_c "; fi
   done
   if [[ -n "${3:-}" ]]; then printf -v "$3" '%s' "$_gs_sum"; fi
   return 0
 }
+# _git_seq_sum <file>: in _gs_c, a SHA-256 of what the file holds, for telling
+# whether a session changed it. Not a CRC: a todo with one exec line swapped
+# and four bytes of a comment adjusted had the same cksum, and was taken for
+# unchanged (re-review of the GAP-15 fix, C2). One that cannot be taken (a
+# link, no regular file, no digest tool on this host, a read cut off) is a
+# value no other is equal to, so the file counts as changed.
+_git_seq_sum() {
+  _gs_c=""
+  if [[ -f "$1" && ! -L "$1" ]]; then
+    _gs_c="$(_rd_run "$1" cat -- "$1" 2>/dev/null | ai_containers_sha256 2>/dev/null)" || _gs_c=""
+  fi
+  [[ "$_gs_c" =~ ^[0-9a-f]{64}$ ]] || _gs_c="?$BASHPID.$SECONDS.$RANDOM$RANDOM"
+}
 # What a launch said of each git directory it protects (_git_seq_exec's words
-# and checksum): when the container exits, one that is as it was is not named
-# again. Your own `git rebase -x "make test"`, stopped, was named twice a
-# launch otherwise (review of the GAP-15 fix, A3).
+# and the digest of the files they are about): when the container exits, one
+# that is as it was is not named again. Your own `git rebase -x "make test"`,
+# stopped, was named twice a launch otherwise (review of the GAP-15 fix, A3).
 declare -A _git_seq_seen=()
 # _git_seq_warn <when> <record>...: the WARNING for them, twenty named.
 _git_seq_warn() {
@@ -7245,6 +7308,7 @@ _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan s
 # and the overlays decided before the scans. The .git files under them, counted,
 # and the first five.
 _gdi_dst="" _gdi_nro=0
+_git_want_n=0 _git_want_new=()   # checkouts behind unsearchable directories this launch (_gdi_blocked)
 _git_ro_dsts=() _gdi_rof=()
 _git_scan_dsts=()          # where each of _git_scan_srcs lands, for the rescan
 _gdi_cost=0                # reads made to tell that a directory is no git directory (_cd_ours, _gdi_loose_refs, _git_dir_nocd)

@@ -3107,6 +3107,18 @@ got322="$(for i in "${!_git_rec_p[@]}"; do printf '%s|%s|%q;' "${_git_rec_k[i]}"
 [[ "$got322" == "dir|2128 33 1794925040|/a/b\\ c/.git;dir|2128 34 0.5|/h/.git;file|2128 37 1|/f/.git;dir|2128 38 1|\$'/n/a\\nb/.git';" ]] \
   && pass "G322 the record's git directories and .git files are taken, wt:, push: and an unread identity are not" \
   || fail "G322 record lines (got: $got322)"
+# A record line is one line: the identity of a link carries its target's text,
+# newline and all, so nothing that is a link is recorded, or a target could
+# write a line of its own (re-review of the fix).
+load_fn _git_reported_load; load_fn _git_report_record; load_fn _git_ident
+( ai_containers_root="$TMP/rec322"; _git_reported_file="$ai_containers_root/git-reported.conf"; _git_reported_loaded=""; _git_rec_lost=""
+  declare -A _git_reported_set=(); _git_rec_p=(); _git_rec_i=(); _git_rec_k=()
+  _git_report_record /p/one "" $'1 2 3 -> x\n0 0 0 want:/forged'
+  _git_report_record /p/two "" '1 2 3 -> y'
+  _git_report_record /p/three "" '4 5 6'
+  [[ "$(cat "$_git_reported_file")" == '4 5 6 /p/three' && "${#_git_rec_p[@]}" == 1 ]] ) \
+  && pass "G322 a link's identity, a newline in it or not, is no line of the record" \
+  || fail "G322 a link's identity was recorded ($(tr '\n' '|' < "$TMP/rec322/git-reported.conf" 2>/dev/null))"
 # End to end: a submodule under a directory with a newline in its name.
 B322="$TMP/b322"; P322="$B322/p"; d322=$'ven\ndor'
 mkdir -p "$P322/vendor/$d322/lib" && "${G[@]}" init -q "$P322" && "${G[@]}" init -q "$P322/vendor/$d322/lib" \
@@ -3220,6 +3232,96 @@ if [[ "$(id -u)" != 0 ]]; then
       || fail "G324 reachable again, and unprotected (rc=$LAUNCH_RC; $(mounts | grep -cF "$P324/vendor/lib/.git/") binds; $(grep -F 'vendor/lib' "$ERR" | head -1))"
   fi
   chmod 700 "$P324/vendor/lib" 2>/dev/null; rm -rf "$B324"
+  # What the .git taken so leads to is followed like anything else: a
+  # submodule of that checkout, which only its own index names, is protected
+  # in the same launch (re-review of the fix, C5).
+  B324="$TMP/b324n"; P324="$B324/p"
+  mkdir -p "$P324/vendor/lib/vendor/sub" && "${G[@]}" init -q "$P324" && "${G[@]}" init -q "$P324/vendor/lib" \
+    && "${G[@]}" init -q "$P324/vendor/lib/vendor/sub" && "${G[@]}" -C "$P324/vendor/lib/vendor/sub" commit -q --allow-empty -m s \
+    && "${G[@]}" -C "$P324/vendor/lib" add vendor/sub 2>/dev/null && "${G[@]}" -C "$P324/vendor/lib" commit -qm x \
+    && "${G[@]}" -C "$P324" add vendor/lib 2>/dev/null && "${G[@]}" -C "$P324" commit -qm sub \
+    && chmod 000 "$P324/vendor/lib" || { printf 'SCAFFOLD-FAILED: G324 nested\n'; exit 1; }
+  FAKE_SESSION='git -C "$P324" update-index --force-remove vendor/lib' EXTRA_MOUNTS="$B324" launch "$TMP/app"
+  chmod 700 "$P324/vendor/lib"
+  EXTRA_MOUNTS="$B324" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && has_mount "$P324/vendor/lib/.git/config:/workspace/b324n/p/vendor/lib/.git/config:ro" \
+    && has_mount "$P324/vendor/lib/vendor/sub/.git/config:/workspace/b324n/p/vendor/lib/vendor/sub/.git/config:ro" \
+    && pass "G324 what a .git taken from the record leads to is followed: its own submodule is protected" \
+    || fail "G324 the nested submodule (rc=$LAUNCH_RC; $(mounts | grep -cF '/vendor/sub/.git/') binds)"
+  rm -rf "$B324"
+  # Whatever the .git of such a checkout is: a file is bound read-only, and a
+  # link is named, as the scan treats one it finds; and with a link on the way
+  # to the checkout nothing is bound through it.
+  for k324 in file link moved; do
+    B324="$TMP/b324$k324"; P324="$B324/p"
+    mkdir -p "$P324/vendor/lib" "$P324/gd" && "${G[@]}" init -q "$P324" \
+      && "${G[@]}" init -q --separate-git-dir "$P324/gd/lib" "$P324/vendor/lib" \
+      && "${G[@]}" -C "$P324/vendor/lib" commit -q --allow-empty -m x \
+      && "${G[@]}" -C "$P324" add vendor/lib 2>/dev/null && "${G[@]}" -C "$P324" commit -qm sub \
+      && chmod 000 "$P324/vendor/lib" || { printf 'SCAFFOLD-FAILED: G324 %s\n' "$k324"; exit 1; }
+    FAKE_SESSION='git -C "$P324" update-index --force-remove vendor/lib' EXTRA_MOUNTS="$B324" launch "$TMP/app"
+    chmod 700 "$P324/vendor/lib"
+    case "$k324" in
+      link) rm -f "$P324/vendor/lib/.git" && ln -s ../../gd/lib "$P324/vendor/lib/.git" ;;
+      moved) mv "$P324/vendor" "$P324/v2" && ln -s v2 "$P324/vendor" ;;
+    esac
+    EXTRA_MOUNTS="$B324" launch "$TMP/app"
+    case "$k324" in
+      file)
+        [[ "$LAUNCH_RC" == 0 ]] && has_mount "$P324/vendor/lib/.git:/workspace/b324file/p/vendor/lib/.git:ro" \
+          && pass "G324 a .git file of a checkout taken from the record is bound read-only" \
+          || fail "G324 a want: checkout's .git file (rc=$LAUNCH_RC; $(mounts | grep -cF 'vendor/lib/.git') binds)" ;;
+      link)
+        [[ "$LAUNCH_RC" == 0 ]] && grep -qF "WARNING: $P324/vendor/lib/.git is a symlink inside a writable mount" "$ERR" \
+          && pass "G324 a .git link of a checkout taken from the record is named" \
+          || fail "G324 a want: checkout's .git link (rc=$LAUNCH_RC; $(grep -cF 'is a symlink' "$ERR") warnings)" ;;
+      moved)
+        [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "$P324/vendor/lib/.git" <<<"$(mounts)" \
+          && pass "G324 a checkout taken from the record is not bound through a link on the way to it" \
+          || fail "G324 a want: checkout through a link (rc=$LAUNCH_RC; $(mounts | grep -F 'lib/.git' | head -2 | tr '\n' ' '))" ;;
+    esac
+    rm -rf "$B324"
+  done
+  # The scan after the session records nothing: what it finds blocked is the
+  # next launch's to record, when it binds it.
+  B324="$TMP/b324s"; P324="$B324/p"
+  mkdir -p "$P324/vendor" && "${G[@]}" init -q "$P324" && "${G[@]}" -C "$P324" commit -q --allow-empty -m i || { printf 'SCAFFOLD-FAILED: G324 rescan\n'; exit 1; }
+  FAKE_SESSION='mkdir -p "$P324/vendor/lib" && git init -q "$P324/vendor/lib" && git -C "$P324/vendor/lib" -c user.email=t@example.invalid -c user.name=t commit -q --allow-empty -m x && git -C "$P324" add vendor/lib 2>/dev/null; chmod 000 "$P324/vendor/lib"' \
+    EXTRA_MOUNTS="$B324" launch "$TMP/app"
+  [[ -n "$("${G[@]}" -C "$P324" ls-files -s vendor/lib)" ]] && ! grep -qF " want:$P324/vendor/lib" "$HOME/.ai-containers/git-reported.conf" \
+    && pass "G324 the scan after the session records nothing" \
+    || fail "G324 the rescan wrote the record ($(grep -cF " want:$P324" "$HOME/.ai-containers/git-reported.conf") lines; index: $("${G[@]}" -C "$P324" ls-files -s vendor/lib | wc -l))"
+  chmod 700 "$P324/vendor/lib"; rm -rf "$B324"
+  # Many checkouts behind one unsearchable directory cost the walk once, not
+  # once each (the `id` it starts is counted here); and past SANDBOX_GIT_MAX of
+  # them a launch is refused, naming five, since each is one index entry and
+  # no directory need exist (re-review of the fix, C3).
+  B324="$TMP/b324m"; P324="$B324/p"; rec324="$HOME/.ai-containers/git-reported.conf"
+  mkdir -p "$P324/vendor/b" "$TMP/bin324" && "${G[@]}" init -q "$P324" && "${G[@]}" -C "$P324" commit -q --allow-empty -m i \
+    && chmod 000 "$P324/vendor/b" || { printf 'SCAFFOLD-FAILED: G324 many\n'; exit 1; }
+  cp "$rec324" "$rec324.324"
+  for i324 in 1 2 3 4 5 6 7 8 9 10; do printf '0 0 0 want:%s/vendor/b/r%s\n' "$P324" "$i324" >> "$rec324"; done
+  id324="$(command -v id)"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$TMP/id324.log" "$id324" > "$TMP/bin324/id" && chmod +x "$TMP/bin324/id"
+  : > "$TMP/id324.log"; PATH="$TMP/bin324:$PATH" EXTRA_MOUNTS="$B324" launch "$TMP/app"; base324="$(grep -c . "$TMP/id324.log" || true)"
+  cp "$rec324.324" "$rec324"; printf '0 0 0 want:%s/vendor/b/r1\n' "$P324" >> "$rec324"
+  : > "$TMP/id324.log"; PATH="$TMP/bin324:$PATH" EXTRA_MOUNTS="$B324" launch "$TMP/app"; one324="$(grep -c . "$TMP/id324.log" || true)"
+  [[ "$LAUNCH_RC" == 0 && "$base324" == "$one324" ]] && has_mount "$P324/vendor/b:/workspace/b324m/p/vendor/b:ro" \
+    && pass "G324 ten recorded checkouts behind one unsearchable directory cost what one does ($one324 calls of id)" \
+    || fail "G324 each recorded checkout behind one directory costs again (rc=$LAUNCH_RC; $base324 calls of id for ten, $one324 for one)"
+  mv "$rec324.324" "$rec324"; chmod 700 "$P324/vendor/b"
+  for i324 in 1 2 3 4 5; do
+    "${G[@]}" -C "$P324" update-index --add --cacheinfo "160000,$(printf '%040d' "$i324"),vendor/b/r$i324" || { printf 'SCAFFOLD-FAILED: G324 gitlinks\n'; exit 1; }
+  done
+  chmod 000 "$P324/vendor/b"
+  SANDBOX_GIT_MAX=4 EXTRA_MOUNTS="$B324" launch "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'ERROR: more than 4 checkouts that an index names lie behind directories that cannot be' "$ERR" \
+    && grep -qF "$P324/vendor/b/r1" "$ERR" \
+    && pass "G324 past SANDBOX_GIT_MAX checkouts behind unsearchable directories the launch is refused, naming them" \
+    || fail "G324 no bound on checkouts behind an unsearchable directory (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$B324" launch "$TMP/app"
+  [[ "$LAUNCH_RC" == 0 ]] && pass "G324 …and within it the launch goes on" || fail "G324 five within a limit of five (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  chmod 700 "$P324/vendor/b"; rm -rf "$B324" "$TMP/bin324"
 else skip_root G324; fi
 
 # ── G331: the record cannot make a launch look at paths without bound ────────
@@ -3236,7 +3338,9 @@ for i331 in 1 2 3 4 5 6; do
 done
 SANDBOX_GIT_MAX=1 EXTRA_MOUNTS="$B331" launch "$TMP/app"
 [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'names more than 5 paths in' "$ERR" && grep -qF "$rec331" "$ERR" \
-  && pass "G331 past five times SANDBOX_GIT_MAX recorded paths to look at, the launch is refused, naming the record" \
+  && grep -qF 'that are still there, but that no index and no .git file leads to any more' "$ERR" \
+  && [[ "$(grep -cE "^ +$B331/vendor/s[0-9]/\.git\$" "$ERR")" == 5 ]] \
+  && pass "G331 past five times SANDBOX_GIT_MAX recorded paths to look at, the launch is refused, naming the record and five of them" \
   || fail "G331 no bound on the record's paths (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 rm -rf "$B331/vendor/s6"
 SANDBOX_GIT_MAX=1 EXTRA_MOUNTS="$B331" launch "$TMP/app"
@@ -3244,6 +3348,18 @@ SANDBOX_GIT_MAX=1 EXTRA_MOUNTS="$B331" launch "$TMP/app"
   && pass "G331 within it they are looked at, and one that is not what was recorded is not taken" \
   || fail "G331 within the bound (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 mv "$rec331.331" "$rec331"; rm -rf "$B331"
+# Only what nothing leads to is looked at, or taken: a recorded git directory
+# that its index still names is in the scan's hands already, and taken once.
+# Taken twice, it would count twice toward SANDBOX_GIT_MAX.
+mkdir -p "$B331/p/vendor/lib" && "${G[@]}" init -q "$B331/p" && "${G[@]}" init -q "$B331/p/vendor/lib" \
+  && "${G[@]}" -C "$B331/p/vendor/lib" commit -q --allow-empty -m x \
+  && "${G[@]}" -C "$B331/p" add vendor/lib 2>/dev/null && "${G[@]}" -C "$B331/p" commit -qm sub || { printf 'SCAFFOLD-FAILED: G331 once\n'; exit 1; }
+EXTRA_MOUNTS="$B331" launch "$TMP/app"
+SANDBOX_GIT_MAX=2 EXTRA_MOUNTS="$B331" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$B331/p/vendor/lib/.git/config:/workspace/b331/p/vendor/lib/.git/config:ro" \
+  && pass "G331 a recorded git directory its index still names is taken once" \
+  || fail "G331 taken twice (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$B331"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

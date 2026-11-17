@@ -1139,9 +1139,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrapper's option the launcher did not know had its argument taken for the
   program (`ionice -c 3 ./x`, `stdbuf -o L ./x`); `env -C dir ./x` was judged
   from the wrong directory; an interpreter given no script
-  (`diff.x.textconv = sh`) runs the file git hands it; and `"~/x"` in quotes,
-  which the shell runs from a directory named `~` in the checkout, was judged
-  in your home. A remote's helper (`remote.<name>.vcs`) and
+  (`diff.x.textconv = sh`) runs the file git hands it; and a `~` that is no
+  home directory to the shell (`"~/x"` in quotes, `perl -I~/lib`,
+  `python3 -m ~.x`), which names a directory called `~` in the checkout, was
+  judged in your home. A remote's helper (`remote.<name>.vcs`) and
   `gc.recentObjectsHook` are among the keys now. A program found on `PATH` is
   still not judged, and its arguments are still not read. One cost: a command
   with any assignment before the program (`LESS=FRX less`) now gets a `NOTE:`
@@ -1162,7 +1163,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   runs the rebase's merge strategy when that is not one of git's own: a
   strategy of `../../x`, beside a directory named `git-merge-..`, ran `./x`
   with no `exec` line at all (measured with git 2.53). And a stopped `git am`
-  hands `git apply` its saved options, one of which writes a file it names.
+  hands `git apply` its saved options, one of which writes a file it names;
+  any but the few that only say how a patch is matched are named, so your own
+  `git am --reject` or `--directory=…`, stopped, is named at each launch.
   At a launch that finds a rebase, a cherry-pick or a `git am` stopped, and
   when the container exits if the session stopped one or changed what one
   would run, a `WARNING:` names each such repository, with the number of

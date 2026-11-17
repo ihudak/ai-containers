@@ -539,7 +539,13 @@ EXTRA_MOUNTS="$D330" launch "$TMP/app"
 grep -qF "$R330/.git (rebase-apply/apply-opt: options for git apply that are not known to write nothing)" "$ERR" \
   && pass "G330 a stopped git am whose saved options could write a file is named" \
   || fail "G330 apply-opt ($(grep -A7 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
-printf " '--whitespace=fix' '-C1' '-p2' '--ignore-whitespace' '--reject'\n" > "$R330/.git/rebase-apply/apply-opt"
+# --reject writes .rej files, so it is none of those (re-review, C6).
+printf " '--whitespace=fix' '--reject'\n" > "$R330/.git/rebase-apply/apply-opt"
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+grep -qF "$R330/.git (rebase-apply/apply-opt: options for git apply that are not known to write nothing)" "$ERR" \
+  && pass "G330 a stopped git am with --reject, which writes files, is named" \
+  || fail "G330 --reject not named"
+printf " '--whitespace=fix' '-C1' '-p2' '--ignore-whitespace' '--ignore-space-change'\n" > "$R330/.git/rebase-apply/apply-opt"
 EXTRA_MOUNTS="$D330" launch "$TMP/app"
 ! grep -qF 'is stopped in these git directories' "$ERR" && pass "G330 a stopped git am with options that only match a patch is not named" \
   || fail "G330 harmless apply-opt named ($(grep -A7 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
@@ -564,7 +570,36 @@ FAKE_SESSION='printf "pick 1234567 a\nexec make test\npick 89abcde b\nexec ./evi
   && grep -qF 'is stopped in these git directories now that the container has exited.' "$ERR" \
   && pass "G330 …and again on exit when the session swapped one exec line for another" \
   || fail "G330 a changed todo with the same count ($(grep -cF 'is stopped in these git directories' "$ERR") warnings)"
-rm -rf "$D330"
+# By what the todo holds, not by a CRC: a todo with one exec line swapped and
+# four bytes of its comment adjusted has the cksum and the length of the one
+# the launch saw, and was taken for unchanged (re-review of the fix, C2).
+printf 'pick 1234567 a\nexec make test\npick 89abcde b\nexec make test\n# pad: AAAA\n' > "$R330/.git/rebase-merge/git-rebase-todo"
+printf 'pick 1234567 a\nexec make test\npick 89abcde b\nexec ./evil   \n# pad: \117\163\320\215\n' > "$TMP/forged330"
+if command -v cksum >/dev/null 2>&1; then
+  [[ "$(cksum < "$TMP/forged330")" == "$(cksum < "$R330/.git/rebase-merge/git-rebase-todo")" ]] \
+    || { printf 'SCAFFOLD-FAILED: G330 the forged todo has another cksum\n'; exit 1; }
+fi
+export F330="$TMP/forged330"
+FAKE_SESSION='cat "$F330" > "$R330/.git/rebase-merge/git-rebase-todo"' EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ "$(grep -cF 'is stopped in these git directories' "$ERR")" == 2 ]] \
+  && pass "G330 a todo forged to the same cksum and length is still named on exit" \
+  || fail "G330 a forged todo passed for unchanged ($(grep -cF 'is stopped in these git directories' "$ERR") warnings)"
+# A digest that cannot be taken is no proof of anything: the rebase is named
+# again on exit, the session having done nothing.
+mkdir -p "$TMP/bin330" && printf '#!/bin/sh\nexit 127\n' > "$TMP/bin330/sha256sum" && cp "$TMP/bin330/sha256sum" "$TMP/bin330/shasum" \
+  && chmod +x "$TMP/bin330/sha256sum" "$TMP/bin330/shasum" || { printf 'SCAFFOLD-FAILED: G330 digest shim\n'; exit 1; }
+PATH="$TMP/bin330:$PATH" EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ "$(grep -cF 'is stopped in these git directories' "$ERR")" == 2 ]] \
+  && pass "G330 where no digest can be taken, an unchanged rebase is named again rather than trusted" \
+  || fail "G330 no digest, and taken for unchanged ($(grep -cF 'is stopped in these git directories' "$ERR") warnings)"
+# The strategy counts as the todo does: another one that is not git's own gets
+# the same words, and is named on exit all the same.
+printf 'pick 1234567 a\n' > "$R330/.git/rebase-merge/git-rebase-todo" && printf 'mine\n' > "$R330/.git/rebase-merge/strategy"
+FAKE_SESSION='printf "../../x\n" > "$R330/.git/rebase-merge/strategy"' EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ "$(grep -cF 'is stopped in these git directories' "$ERR")" == 2 ]] \
+  && pass "G330 a strategy swapped for another that is not git's own is named on exit" \
+  || fail "G330 a swapped strategy ($(grep -cF 'is stopped in these git directories' "$ERR") warnings)"
+rm -rf "$D330" "$TMP/bin330" "$TMP/forged330"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

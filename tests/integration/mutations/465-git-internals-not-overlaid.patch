@@ -14,12 +14,12 @@
 diff --git a/sandbox.sh b/sandbox.sh
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -848,7 +848,7 @@
-       printf '      your host'\''s git may run what changes there.\n' >&2
+@@ -851,7 +851,7 @@ launcher_ro_overlay() {
      fi
      gdirs=(); gfiles=(); glinks=(); gunr=()
+     _gdi_dst="$dst"
 -    git_dirs_in gdirs gfiles glinks gunr "$src"
 +    :
-     _git_scan_srcs+=("$src"); _git_bsrc=(${bsrc[@]+"${bsrc[@]}"}); _git_uid="$uid" _git_gid="$gid"
+     _gdi_dst=""
+     _git_scan_srcs+=("$src"); _git_scan_dsts+=("$dst"); _git_bsrc=(${bsrc[@]+"${bsrc[@]}"}); _git_uid="$uid" _git_gid="$gid"
      # Not once a scan stopped past SANDBOX_GIT_MAX: the launch is refused below,
-     # and a stat for each of 20,000 planted directories took it over a minute
