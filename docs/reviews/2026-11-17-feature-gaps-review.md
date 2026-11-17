@@ -108,7 +108,7 @@ Checked and found sound (no finding): the registry edits (`_prj_edit()`, `_prj_r
 ## 4. Repo volumes, env layers, version and build
 
 ### GAP-21: nothing tests that `inspect` leaves a nested `.git` unread
-- Status: OPEN (filed 2026-11-17).
+- Status: FIXED (2026-11-17, WSL native agent): the fixture runs through `inspect` in `tests/test-repo-git-reset.sh` (REPO-19's test), under `p_timeout` with the FIFO writer, and requires `WORKTREE|?` and `END|inspect` before the writer opens the FIFO. Was: OPEN (filed 2026-11-17).
 - **Area:** repo
 - **Source:** AGENTS.md, "Manage shared repo volumes": "`reset`, which deletes such a repository anyway, lists each in its confirmation (`NESTED|` records) and removes it with `rm -rf` before any git runs"; `repo-git-reset.sh` header: "so git never reads one"
 - **Current state:** `tests/test-repo-git-reset.sh` plants the gitlink-and-FIFO fixture for `reset` only (the block after "remote has a gitlink at sub, checkout reads sub/.git"). The WORKTREE tests (section 1c) run `inspect` on volumes with no nested `.git`. REPO-19 passed the whole file.
@@ -116,7 +116,7 @@ Checked and found sound (no finding): the registry edits (`_prj_edit()`, `_prj_r
 - **Suggested approach:** run that fixture through `inspect` under `p_timeout`, with the FIFO writer, and require `WORKTREE|?` and `END|inspect` before the writer opens the FIFO.
 
 ### GAP-22: `repo.sh reset`'s STALE path has no test
-- Status: OPEN (filed 2026-11-17).
+- Status: FIXED (2026-11-17, WSL native agent): `tests/test-repo-destructive.sh`'s fake helper prints `STALE|…` (`HELPER_STALE`), or nothing at all (`HELPER_INSPECT_FAILS`); the cases assert the reason in the summary, no `volume rm` and a non-zero status (REPO-22's tests). Was: OPEN (filed 2026-11-17).
 - **Area:** repo
 - **Source:** `docs/repos-and-mounts.md`: "leaves the repo **untouched**, with the reason in the summary (`STALE`)"; AGENTS.md: "when the recorded URL cannot be cloned, `inspect` reports `STALE`, names no primary and counts nothing, and the repo is left untouched"
 - **Current state:** `tests/test-repo-git-reset.sh` asserts the helper's `STALE|` record. `tests/test-repo-destructive.sh` has no fake helper that prints one (`grep STALE` finds nothing there), so the summary text, the "LOCAL reset" warning, the removal of working copies and the exit status of REPO-22 are unasserted.
@@ -124,7 +124,7 @@ Checked and found sound (no finding): the registry edits (`_prj_edit()`, `_prj_r
 - **Suggested approach:** a fake `docker run` printing `STALE|x` and `END|inspect`; assert the summary names the reason, no `volume rm` is logged, and the status is non-zero.
 
 ### GAP-23: no test pins what `reset` and `sync` do with a detached HEAD's commits or with `.git/modules`
-- Status: OPEN (filed 2026-11-17).
+- Status: FIXED (2026-11-17, WSL native agent): `tests/test-repo-git-reset.sh` builds both with real git: a deinitialised submodule with an unpushed commit (sync refuses, the commit is still readable, `inspect` prints `MODULE|sub`) and a detached HEAD with commits (`DETACHED|2`); `tests/test-repo-destructive.sh` and `tests/test-project-tool.sh` assert the summary and the risk line (REPO-20's and REPO-21's tests). Was: OPEN (filed 2026-11-17).
 - **Area:** repo
 - **Source:** `repo-git-reset.sh` usage: "pull … Refused when … anything would be lost" (header: "refused if anything would be lost"); AGENTS.md's list of what `sync` refuses and what `reset` lists
 - **Current state:** the detached-HEAD tests assert only `WORKTREE|?` and the no-remote, no-primary case; no fixture has a `.git/modules` directory. REPO-20 and REPO-21 pass the suite.

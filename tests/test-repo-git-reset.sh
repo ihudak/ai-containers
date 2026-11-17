@@ -1719,6 +1719,98 @@ if [[ "$OUT" != *$'\xc2\x9b'* && "$OUT" != *$'\x9b'* ]] && grep -q '^BRANCH|y??3
   pass "an 8-bit (C1) control sequence in a branch file's name is shown as ?"
 else fail "C1 control in the records ($(cat -v <<<"$OUT" | tr '\n' ' '))"; fi
 
+# ── the 2026-11-17 review: REPO-19 to REPO-21, REPO-23 ───────────────────────
+# REPO-19 (GAP-21): inspect used the volume as a work tree with a git repository
+# inside it. Where the branch's own tip has a gitlink at sub, diff-files opened
+# sub/.git's repository and read its config, includes and all, and an include of
+# a FIFO hung inspect, so no reset could ever run. Now inspect lists it and
+# reports WORKTREE|?, and git reads nothing of it. Bounded, as the reset case
+# above is: a writer releases the FIFO after 20 s, so a regression fails here
+# rather than hanging the suite.
+W="$(mk_repo inspgitlink)"
+g "$W" update-index --add --cacheinfo "160000,$(g "$W" rev-parse HEAD),sub" >/dev/null 2>&1
+g "$W" commit -q -m local-gitlink >/dev/null 2>&1
+git init -q --bare "$TMP/inspevil.git"; mkfifo "$TMP/inspevil.fifo"
+printf '[include]\n\tpath = %s\n' "$TMP/inspevil.fifo" >> "$TMP/inspevil.git/config"
+mkdir -p "$W/sub"; printf 'gitdir: %s\n' "$TMP/inspevil.git" > "$W/sub/.git"
+( sleep 20; exec 3<>"$TMP/inspevil.fifo"; sleep 1 ) &
+fifo_writer=$!
+t19=$SECONDS
+OUT="$(AI_REPO_URL="$TMP/inspgitlink.git" p_timeout 60 "$SCRIPT" inspect "$W" 2>&1)"; RC=$?
+t19=$((SECONDS - t19))
+kill "$fifo_writer" 2>/dev/null; wait "$fifo_writer" 2>/dev/null
+if [[ "$RC" == 0 && "$t19" -lt 15 ]] && grep -qx 'NESTED|sub/.git' <<<"$OUT" && grep -qx 'WORKTREE|?' <<<"$OUT" \
+   && [[ "$(tail -n 1 <<<"$OUT")" == 'END|inspect' ]]; then
+  pass "inspect reads no nested .git: it lists it, says WORKTREE|? and ends (REPO-19)"
+else
+  fail "inspect over a nested .git and a local gitlink (rc=$RC; ${t19}s; $OUT)"
+fi
+
+# REPO-20 (GAP-23): a submodule's repository in .git/modules, with a commit
+# never pushed to the submodule's remote, after `git submodule deinit` removed
+# its checkout's .git file. sync replaced .git and lost it; now it refuses, and
+# inspect lists it for reset's confirmation.
+SUBREM="$TMP/modsub.git"; git init -q --bare --initial-branch=main "$SUBREM"
+git init -q --initial-branch=main "$TMP/modsub.seed"; commit_in "$TMP/modsub.seed" s1
+g "$TMP/modsub.seed" push -q "$SUBREM" main >/dev/null 2>&1
+W="$(mk_repo modules)"; S="$TMP/modules.seed"
+g "$S" -c protocol.file.allow=always submodule -q add "$SUBREM" sub >/dev/null 2>&1
+g "$S" commit -qm "add sub" >/dev/null 2>&1; g "$S" push -q origin main >/dev/null 2>&1
+g "$W" pull -q --ff-only >/dev/null 2>&1
+g "$W" -c protocol.file.allow=always submodule -q update --init >/dev/null 2>&1
+commit_in "$W/sub" unpushed-in-sub; sm="$(g "$W/sub" rev-parse HEAD 2>/dev/null)"
+g "$W" submodule -q deinit -f sub >/dev/null 2>&1
+commit_in "$S" after-sub; g "$S" push -q origin main >/dev/null 2>&1      # something to fast-forward to
+if [[ -d "$W/.git/modules/sub" && ! -e "$W/sub/.git" && -n "$sm" ]]; then
+  run_script pull "$W"
+  if [[ "$RC" != 0 && "$OUT" == *"submodule repositories in .git/modules"* ]] \
+     && [[ "$(git --git-dir="$W/.git/modules/sub" cat-file -t "$sm" 2>/dev/null)" == commit ]]; then
+    pass "sync refuses while .git/modules holds a submodule's repository, and its unpushed commit is kept (REPO-20)"
+  else
+    fail "sync over .git/modules (rc=$RC; out: $OUT)"
+  fi
+  run_script inspect "$W"
+  if [[ "$RC" == 0 ]] && grep -qx 'MODULE|sub' <<<"$OUT"; then pass "inspect lists a submodule's repository in .git/modules (REPO-20)"
+  else fail "inspect's MODULE record (rc=$RC; out: $OUT)"; fi
+else
+  fail "SCAFFOLD: no deinitialised submodule repository to test with (modules: $(ls "$W/.git/modules" 2>&1))"
+fi
+
+# REPO-21 (GAP-23): commits made on a detached HEAD are on no branch, so the
+# BRANCH records named none of them and reset's summary counted nothing at risk.
+W="$(mk_repo detwork)"; g "$W" checkout -q --detach >/dev/null 2>&1
+commit_in "$W" det1; commit_in "$W" det2
+run_script inspect "$W"
+if [[ "$RC" == 0 ]] && grep -qx 'DETACHED|2' <<<"$OUT" && [[ "$(tail -n 1 <<<"$OUT")" == 'END|inspect' ]]; then
+  pass "inspect counts a detached HEAD's commits that are on no remote (REPO-21)"
+else
+  fail "inspect over a detached HEAD with commits (rc=$RC; out: $OUT)"
+fi
+W="$(mk_repo detclean)"; g "$W" checkout -q --detach origin/shared >/dev/null 2>&1
+run_script inspect "$W"
+grep -qx 'DETACHED|0' <<<"$OUT" && pass "  … and counts 0 for one on a pushed commit" \
+  || fail "inspect over a detached HEAD on a pushed commit (out: $OUT)"
+W="$(mk_repo detodd)"; printf 'garbage\n' > "$W/.git/HEAD"
+run_script inspect "$W"
+grep -qx 'DETACHED|?' <<<"$OUT" && pass "  … and ? for a HEAD that names neither a branch nor a commit" \
+  || fail "inspect over an unreadable HEAD (out: $OUT)"
+W="$(mk_repo detnone)"
+run_script inspect "$W"
+! grep -q '^DETACHED|' <<<"$OUT" && pass "  … and nothing for a HEAD on a branch" \
+  || fail "a DETACHED record for a HEAD on a branch (out: $OUT)"
+
+# REPO-23: the clone's index is empty, so a checkout over the volume's files
+# applied an untracked .gitattributes of the agent's to every file it wrote, and
+# the clean after it removed the file, leaving every text file CRLF.
+W="$(mk_repo attrs)"; printf '* text eol=crlf\n' > "$W/.gitattributes"
+run_script reset "$W" main
+if [[ "$RC" == 0 && ! -e "$W/.gitattributes" && -z "$(g "$W" status --porcelain 2>/dev/null)" ]] \
+   && ! grep -q $'\r' "$W/first"; then
+  pass "reset writes the remote's bytes whatever untracked .gitattributes the checkout held (REPO-23)"
+else
+  fail "reset through an untracked .gitattributes (rc=$RC; status: $(g "$W" status --porcelain 2>&1 | tr '\n' ' '); first: $(od -c "$W/first" | head -1))"
+fi
+
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then
   printf 'test-repo-git-reset.sh: all checks passed\n'; exit 0

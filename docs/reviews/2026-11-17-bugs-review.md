@@ -373,7 +373,7 @@
 ## 4. Repo volumes, env layers, version and build
 
 ### REPO-19: `inspect` runs git on a volume that still holds nested `.git`s, so the agent can hang every `repo.sh reset` (and `project.sh rm`'s check) for ever
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** MEDIUM
 - **Confidence:** CONFIRMED
 - **Location:** `repo-git-reset.sh`: `worktree_state()`, called from `cmd_inspect()` after `check_volume "$dir" list`
@@ -392,9 +392,11 @@
   Prints `NESTED|sub/.git`, `PRIMARY|main`, `BRANCH|main|1|current`, then nothing; `rc=124`. With `GIT_TRACE` the last line is `git diff-files --ignore-submodules=all --quiet`. With a FIFO include and a writer that opens it after 15 s, inspect takes 16 s and ends `WORKTREE|clean`.
 - **Expected:** no git of `inspect` uses the volume as a work tree while a `.git` below its top level is there; inspect ends, with the state unknown.
 - **Suggested fix:** in `cmd_inspect()`, print `WORKTREE|?` without calling `worktree_state()` when `nested_in` found anything (project.sh already counts `?` as at risk). Add the case to `tests/test-repo-git-reset.sh` beside the REPO-5 gitlink fixture, bounded by `p_timeout`.
+- **Fix:** `cmd_inspect()` prints `WORKTREE|?` without calling `worktree_state()` when `check_volume`'s list mode found a `.git` below the top level (`NESTED_FOUND`), so no git of `inspect` uses the volume as a work tree while one is there. `project.sh` already counts `?` at risk. The header's "so git never reads one" is true again.
+- **Tests:** in `tests/test-repo-git-reset.sh`, the review's shape: a local commit with a gitlink at `sub`, a `sub/.git` naming a git directory whose config includes a FIFO outside the volume, under `p_timeout` with a writer that releases the FIFO after 20 s. It requires `NESTED|sub/.git`, `WORKTREE|?` and `END|inspect` in under 15 s. With the check removed it failed, taking 21 s (the hang, until the writer). Closes GAP-21.
 
 ### REPO-20: `sync` and `reset` delete `.git/modules/<name>` with its unpushed commits, and neither says so
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** MEDIUM
 - **Confidence:** CONFIRMED
 - **Location:** `repo-git-reset.sh`: `cmd_pull()` (the checks before `install_git_dir "$dir"`) and `cmd_inspect()`
@@ -412,9 +414,11 @@
   ```
 - **Expected:** `sync` refuses while `.git/modules` holds a repository (as it does for a stash or `refs/wip/*`), or carries the directory over; `reset`'s summary lists each as lost, counted at risk.
 - **Suggested fix:** in `cmd_pull()`, die when `find "$gd/modules" -mindepth 1 -print -quit` finds anything ("the repository holds submodule repositories in .git/modules; push their work and remove them, or use reset"). In `cmd_inspect()`, emit a record per directory under `.git/modules` and have `collect_inspections()` list it at risk.
+- **Fix:** `cmd_pull()` refuses while `.git/modules` holds anything ("the repository holds submodule repositories in .git/modules; push their work and remove them, or use reset"), a `find` that fails refusing too. `cmd_inspect()` emits `MODULE|<entry>` for each entry there (50, then `MODULE-MORE|<n>`), which `collect_inspections()` lists as `REMOVE .git/modules/<entry>` and `project.sh` as at risk, each counted.
+- **Tests:** in `tests/test-repo-git-reset.sh`, a real submodule with a commit never pushed to its remote, put away with `git submodule deinit -f`: `pull` refuses and the commit is still readable in `.git/modules/sub`; `inspect` prints `MODULE|sub`. In `tests/test-repo-destructive.sh` and `tests/test-project-tool.sh`, the summary and the risk line. Each was seen red with its half of the fix removed. With GAP-23's other half.
 
 ### REPO-21: `reset` drops the commits of a detached HEAD and its summary counts nothing at risk
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** MEDIUM
 - **Confidence:** CONFIRMED
 - **Location:** `repo-git-reset.sh`: `cmd_inspect()` (`volume_head` is used only for the `current` flag); `repo.sh`: `collect_inspections()`
@@ -431,9 +435,11 @@
   ```
 - **Expected:** the confirmation names the detached HEAD with its count of commits on no remote branch or tag (or "unknown"), counted at risk.
 - **Suggested fix:** in `cmd_inspect()`, when HEAD holds an object id, emit `BRANCH|(detached HEAD)|<count>|current` (or a `DETACHED|<count>` record) computed as the branch counts are; render it in `collect_inspections()`.
+- **Fix:** `volume_detached()` reads `HEAD` as text; when it names no branch, `cmd_inspect()` prints `DETACHED|<n>`, the commits on no remote branch or tag counted as the branches are (`?` when they cannot be, or when `HEAD` holds no object id). `collect_inspections()` lists `DROP the detached HEAD — <n> commit(s) not on any remote` (or "unpushed count unknown"), counted at risk, and nothing when the count is 0; `project.sh` likewise.
+- **Tests:** in `tests/test-repo-git-reset.sh`, a detached HEAD with two local commits (`DETACHED|2`), one on a pushed commit (`DETACHED|0`), a `HEAD` holding neither (`DETACHED|?`) and one on a branch (no record). In `tests/test-repo-destructive.sh`, the summary for 2, `?` and 0; in `tests/test-project-tool.sh`, the risk line. Each was seen red with its half of the fix removed. With GAP-23's other half.
 
 ### REPO-22: a reset whose remote cannot be cloned says it continues with a "LOCAL reset", removes every working copy, changes nothing else and ends "OK: reset complete"
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** MEDIUM
 - **Confidence:** CONFIRMED
 - **Location:** `repo.sh`: `cmd_reset()` (`Continuing with the LOCAL reset`), `collect_inspections()` (`no branch to reset onto (detached HEAD, no usable remote)`), `reset_one()`
@@ -451,9 +457,11 @@
   ```
 - **Expected:** the summary gives the reason (`STALE: <reason>`, or "a running container mounts it read-write") before the question; nothing of that repo is removed, its working copies included, as the docs say; the run does not end "OK" with status 0 for a repo it did not reset.
 - **Suggested fix:** in `collect_inspections()` build the STALE summary line from `$stale` and mark the repo skipped; in `reset_one()` return before the working copies when there is no primary; drop the "LOCAL reset" text; exit non-zero when any target was skipped. `tests/test-repo-destructive.sh` has no STALE case: add one.
+- **Fix:** `collect_inspections()` gives the reason in the summary before the question: `STALE: its recorded remote could not be cloned (<reason>)`, `it could not be inspected (the error is above)` (the helper did not run: `git_helper_run()` refused), or `its remote has no primary branch to reset onto (no HEAD, main or master)`, each "will be left untouched, its working copies included". `reset_one()` returns before it removes any working copy when a git repo with a base volume has no primary, saying why. The "LOCAL reset" text is gone, and `cmd_reset()` ends `ERROR: not reset: <names>` with status 1 rather than `OK: reset complete.`. This reverses the REPO-11 fix's choice that the working copies still go, as the docs' "untouched" says. Its review found the working copies were still removed before every other step that can fail (a re-seed with no network, a path source gone, a `reset_git` refused at reset time), so `reset_one()` now removes them only once the base volume's reset has succeeded.
+- **Tests:** in `tests/test-repo-destructive.sh` (GAP-22): a fake helper printing `STALE|…`, one printing nothing and failing, and the existing no-primary case, which now requires a non-zero exit, the reason and nothing removed; and `reset --all` with STALE remotes names every repo. Each was seen red with the skip, the STALE reason or the exit removed. A reset that fails, and a re-seed whose clone fails, remove no working copy: seen red with the removal moved back before the base volume's step.
 
 ### REPO-23: `reset` writes the checkout through the agent's untracked `.gitattributes`, so the "clean checkout" differs from the remote
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `repo-git-reset.sh`: `cmd_reset()` (`checkout --quiet --force -B "$primary"` runs before `clean -ffdxq`)
@@ -469,6 +477,8 @@
   ```
 - **Expected:** after `reset` the files are the remote's bytes and `git status` is clean.
 - **Suggested fix:** empty the work tree first (run the `clean -ffdxq` before the checkout: with the clone's empty index everything is untracked), or check out with `--attr-source="refs/remotes/origin/$primary"` where the seed image's git has it. Assert `git status --porcelain` is empty after a reset over a planted `.gitattributes`.
+- **Fix:** `cmd_reset()` runs `clean -ffdxq` before the checkout: with the clone's empty index everything in the work tree is untracked, so the checkout writes into an empty tree and no untracked `.gitattributes` applies.
+- **Tests:** in `tests/test-repo-git-reset.sh`, an untracked `.gitattributes` holding `* text eol=crlf` before a reset: afterwards `git status --porcelain` is empty and the files hold no CR. Seen red with the clean moved back after the checkout.
 
 ### ENV-10: `version_engine` reads `engine-version` through a link, and a sync copies the first line of the file it names into every project
 - **Status: OPEN** (filed 2026-11-17).
@@ -509,7 +519,7 @@
 - **Suggested fix:** one check at the end of `version_engine()`: `[[ "$v" =~ ^[A-Za-z0-9._+-]{1,128}$ ]] || v=unknown`, for the recorded value and git's alike. `sandbox.conf`'s `nvm-version` and the Dockerfile's `ARG NVM_VERSION`, printed by `version_report()` after `tr -d '[:space:]'`, want the same.
 
 ### REPO-24: `sync --all` stops at the first repo it refuses and never reaches the rest
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `repo.sh`: `cmd_sync()` (`sync_one "$target"` under `set -e`), `sync_from_git()` (`return "$rc"`)
@@ -524,9 +534,11 @@
   ```
 - **Expected:** with `--all`, each repo is tried, each failure is named, and the exit status is non-zero if any failed.
 - **Suggested fix:** in the `--all` loops call `sync_one "$target" || failed+=("$target")` (and the same for `reset_one`), print the list at the end and exit 1 when it is not empty.
+- **Fix:** `cmd_sync()` and `cmd_reset()` call `sync_one`/`reset_one` as `… || failed+=(…)`, print `ERROR: not synced: …` / `not reset: …` at the end and exit 1. Since bash ignores `set -e` in a function called from a `||` list, `sync_one()` and `reset_one()` now check every step themselves (`|| return 1`), and `seed_binds_check()`, `seed_from_path()`, `seed_from_git()` and `sync_from_path()` return where they exited. A working copy `reset` cannot remove is now named too, and fails that repo.
+- **Tests:** in `tests/test-repo-destructive.sh`, the review's shape: the helper refuses the first repo of three; `sync --all` syncs the other two, names the first and exits 1, and `reset --all` does the same. Each was seen red with the `||` removed.
 
 ### REPO-25: `repo.sh rm` reports "OK: removed" and drops the registry line when docker refused to remove the volume
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `repo.sh`: `cmd_rm()` (`docker volume rm "$vol" >/dev/null 2>&1 || true`)
@@ -535,9 +547,11 @@
 - **Repro:** fake `docker` whose `volume rm` exits 1: `PATH=$T/f/bin:$PATH bash WT/repo.sh rm app --yes` prints `OK: removed repo "app".`, `rc=0`, and `repos.conf` no longer holds `app`.
 - **Expected:** each volume that could not be removed is named, the registry line is kept while the base volume exists, and the status is non-zero.
 - **Suggested fix:** check each `docker volume rm`, as `cmd_gc()` does; remove the registry line only once the base volume is gone.
+- **Fix:** `cmd_rm()` checks each `docker volume rm`, removes the base volume only when one exists, keeps the registry line while it is there, names every volume docker refused with the `docker ps -a --filter volume=` that finds its user, and exits 1.
+- **Tests:** in `tests/test-repo-destructive.sh`, a fake `docker` refusing the base volume (the registry line kept, the volume named, status 1, no "OK: removed") and refusing one working copy (named, the rest removed, the line dropped with the base volume). Seen red with the base volume's check removed. The bind-backend case no longer expects a `volume rm` of a volume that does not exist.
 
 ### REPO-26: `repo.sh add` writes a host path holding `|` into the registry, and it reads back as another directory
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `repo.sh`: `cmd_add()`; `sandbox-common.sh`: `repo_registry_upsert()`, `repo_record_field()`
@@ -546,9 +560,11 @@
 - **Repro:** `mkdir -p "$T/src|x" "$T/src"; bash WT/repo.sh add pipe "$T/src|x"` prints "will bind-mount …/src|x"; `bash WT/repo.sh sync pipe` prints "source …/src is live".
 - **Expected:** `add` refuses a source the registry cannot hold, as `reindex` skips one.
 - **Suggested fix:** in `cmd_add()`, after the path is resolved: refuse a `source` matching `*[$'|\n\r']*` with the message `cmd_reindex()` prints.
+- **Fix:** `cmd_add()` refuses a source holding `|`, a newline or a CR, after a path is resolved and before anything is registered or made, as `cmd_reindex()` leaves such a volume out.
+- **Tests:** in `tests/test-repo-destructive.sh`, a directory named `pipe|src` and a URL holding `|`: refused, nothing registered, no `volume create`. Seen red with the check removed.
 
 ### REPO-27: a first clone that fails leaves an empty, labelled base volume that neither `sync` nor `reset` can mend
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** LOW
 - **Confidence:** CONFIRMED (from the code)
 - **Location:** `repo.sh`: `cmd_add()`, `sync_one()` and `reset_one()` (`repo_base_volume_create …` then `seed_from_git …` under `set -e`)
@@ -557,6 +573,8 @@
 - **Repro:** the three call sites quoted above; no cleanup or trap follows any of them.
 - **Expected:** a seed that fails removes the volume it just made (it is empty), so the next run seeds again.
 - **Suggested fix:** `seed_from_git … || { docker volume rm "$vol" >/dev/null 2>&1; exit 1; }` at the three sites (and the same for `seed_from_path`).
+- **Fix:** `seed_new_volume()` makes the base volume and seeds it; a seed that fails removes the volume it just made (or names the `docker volume rm` when that fails too) and returns non-zero. `cmd_add()`, `sync_one()` and `reset_one()` all go through it.
+- **Tests:** in `tests/test-repo-destructive.sh`, a fake `docker` whose clone fails: `add` leaves no volume and no registry line, and a `sync` or `reset` that re-seeds a missing base volume leaves none either. Seen red with the removal skipped.
 
 
 ---
