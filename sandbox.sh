@@ -6168,7 +6168,8 @@ seed_workcopy_volume() {
   # The record, made exclusively: of two launches that both found no volume,
   # one seeds and the other is refused.
   me="$(_seed_proc "$$")"
-  if [[ -z "$me" ]] || ! { { [[ -d "$_seed_dir" ]] || mkdir -m 700 "$_seed_dir" || [[ -d "$_seed_dir" ]]; } \
+  if [[ -z "$me" ]] || ! { { [[ -d "$_seed_dir" ]] || { mkdir -p "$ai_containers_root" && mkdir -m 700 "$_seed_dir"; } \
+                              || [[ -d "$_seed_dir" ]]; } \
                            && ( set -o noclobber; printf '%s\n' "$me" > "$rec" ); } 2>/dev/null; then
     if [[ -n "$me" && ( -e "$rec" || -L "$rec" ) ]]; then
       printf 'ERROR: the working copy "%s" is being seeded by another launch, which has not finished;\n' "$wc_vol" >&2
