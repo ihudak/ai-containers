@@ -1142,11 +1142,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`diff.x.textconv = sh`) runs the file git hands it; and a `~` that is no
   home directory to the shell (`"~/x"` in quotes, `perl -I~/lib`,
   `python3 -m ~.x`), which names a directory called `~` in the checkout, was
-  judged in your home. A remote's helper (`remote.<name>.vcs`) and
-  `gc.recentObjectsHook` are among the keys now. A program found on `PATH` is
-  still not judged, and its arguments are still not read. One cost: a command
-  with any assignment before the program (`LESS=FRX less`) now gets a `NOTE:`
-  at each launch (bugs review GIT-106).
+  judged in your home. The keys git runs with no shell (`core.askpass`,
+  `core.gitproxy`, `gpg.ssh.defaultKeyCommand`) and a credential helper git
+  prefixes with `git-credential-` are read as git runs them. A remote's helper
+  (`remote.<name>.vcs`) and `gc.recentObjectsHook` are among the keys now. A program found on `PATH` is
+  still not judged, and its arguments are still not read. Two costs: a command
+  with any assignment before the program (`LESS=FRX less`), and a
+  `gpg.program = ~/…` in a repository's own config, now get a `NOTE:` at each
+  launch (bugs review GIT-106).
 
 - **Planted `.git` files no longer make a refused launch slow.** Past
   `SANDBOX_GIT_MAX` git directories the scan stops and the launch is refused,

@@ -2193,24 +2193,59 @@ core.fsmonitor|bash --rcfile "~/rc" /usr/bin/x.sh
 gpg.program|~/bin/gpg
 CASES
 )"
-[[ "$o327" == "p:./~/lib;p:/abs/safe.pl;|p:~/lib;p:/abs/safe.pl;|p:./~/x.py;|p:./~/x.py;|p:~/x;p:./~/x;p:/usr/lib/a.rb;|p:./~/lib;p:~/lib;p:/usr/lib/a.rb;|u:a module loaded by name;|p:~/x;p:/usr/lib/a.js;|p:./~/rc;p:/usr/bin/x.sh;|p:~/bin/gpg;p:./~/bin/gpg;|" ]] \
+[[ "$o327" == "p:./~/lib;p:/abs/safe.pl;|p:~/lib;p:/abs/safe.pl;|p:./~/x.py;|p:./~/x.py;|p:~/x;p:./~/x;p:/usr/lib/a.rb;|p:./~/lib;p:~/lib;p:/usr/lib/a.rb;|u:a module loaded by name;|p:~/x;p:/usr/lib/a.js;|p:./~/rc;p:~/rc;p:/usr/bin/x.sh;|p:~/bin/gpg;p:./~/bin/gpg;|" ]] \
   && pass "G327 a ~ is your home only at the start of a word outside quotes; elsewhere it is a directory in the checkout" \
   || fail "G327 where a ~ is a home directory (got: $o327)"
+# Keys git runs with no shell are read as git reads them, quotes and a leading
+# ~ part of the name: core.askpass whole, core.gitproxy up to ` for `,
+# gpg.ssh.defaultKeyCommand's first word. And a credential helper that is
+# neither `!…` nor an absolute path is the program git-credential-<word>, a
+# path from where git runs when the word holds a /. Read as a shell reads a
+# command line, `~/x` was judged in your home, "/usr/bin/x" in quotes at
+# /usr/bin/x, and a helper `.git/hooks/x` at the read-only hooks directory,
+# while git ran a file under the checkout each time (last review, D1).
+o327="$(run327 <<'CASES'
+core.askpass|~/ask
+core.askpass|"/usr/bin/ssh-askpass"
+core.askpass|/usr/bin/ssh-askpass
+core.askpass|ssh-askpass
+core.askpass|./my tools/ask
+core.gitproxy|~/proxy for example.com
+core.gitproxy|proxy-command for example.com
+gpg.ssh.defaultkeycommand|~/keycmd arg
+gpg.ssh.defaultkeycommand|ssh-add -L
+credential.helper|~/helper
+credential.helper|.git/hooks/x
+credential.helper|store
+credential.helper|cache --timeout=3600
+credential.helper|x; ./evil
+credential.helper|sub/h arg | ./evil
+credential.helper|/abs/h --x
+credential.helper|!./h.sh
+credential.https://example.com.helper|sub/helper
+CASES
+)"
+[[ "$o327" == 'p:./~/ask;|p:"/usr/bin/ssh-askpass";|p:/usr/bin/ssh-askpass;|none;|p:./my tools/ask;|p:./~/proxy;|none;|p:./~/keycmd;|none;|p:git-credential-~/helper;|p:git-credential-.git/hooks/x;|none;|none;|u:a shell expansion, quoting or an operator;|p:git-credential-sub/h;u:another command after it;|p:/abs/h;|p:./h.sh;|p:git-credential-sub/helper;|' ]] \
+  && pass "G327 a key git runs with no shell, and a credential helper it prefixes, are read as git runs them" \
+  || fail "G327 keys run with no shell (got: $o327)"
 rm -f "$fns327"
 # End to end, as the review ran it: the NOTE the launch gave for
 # `fsmonitor = ./evil.sh` it did not give for `. ./evil.sh`.
 H327="$TMP/h327"
+# shellcheck disable=SC2088  # the ~ is meant as it is written: git runs core.askpass with no shell, which is the point
 mkdir -p "$H327" && "${G[@]}" init -q "$H327/r" && "${G[@]}" -C "$H327/r" config core.fsmonitor '. ./evil.sh' \
   && "${G[@]}" -C "$H327/r" config core.sshCommand 'PATH=./bin ssh' \
   && "${G[@]}" -C "$H327/r" config core.pager '"~/bin/tool"' && "${G[@]}" -C "$H327/r" config remote.o.vcs a/x \
   && "${G[@]}" -C "$H327/r" config gc.recentObjectsHook /bin/true \
   && "${G[@]}" -C "$H327/r" config uploadpack.packObjectsHook /bin/true \
+  && "${G[@]}" -C "$H327/r" config core.askpass '~/ask' \
   && "${G[@]}" -C "$H327/r" config diff.t.textconv 'perl -I~/lib /usr/bin/true' || { printf 'SCAFFOLD-FAILED: G327 launch\n'; exit 1; }
 [[ "$("${G[@]}" -C "$H327/r" config core.pager)" == '"~/bin/tool"' ]] || { printf 'SCAFFOLD-FAILED: G327 the quotes are not in the value\n'; exit 1; }
 EXTRA_MOUNTS="$H327" launch "$TMP/app"
 n327="$(grep -A1 -F 'NOTE: /workspace/h327/r/.git is protected for the first time, and its config already sets' "$ERR" | tail -1)"
 [[ "$n327" == *remote.o.vcs* && "$n327" == *gc.recentobjectshook* && "$n327" == *uploadpack.packobjectshook* ]] \
   && grep -qF "has your host's git run /workspace/h327/r/~/lib (diff.t.textconv), which leads somewhere the agent can change:" "$ERR" \
+  && grep -qF "has your host's git run /workspace/h327/r/~/ask (core.askpass), which leads somewhere the agent can change:" "$ERR" \
   && grep -qF "has your host's git run /workspace/h327/r/~/bin/tool (core.pager), which leads somewhere the agent can change:" "$ERR" \
   && grep -qF "has your host's git run /workspace/h327/r/git-remote-a/x (remote.o.vcs), which leads somewhere the agent can change:" "$ERR" \
   && pass "G327 a quoted ~ is judged in the checkout, and a remote's helper and gc's hook are named and judged" \

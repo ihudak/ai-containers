@@ -4440,22 +4440,31 @@ _gdi_blocked() {
   # the scan takes a recorded path only where it is the directory's own, and
   # the other pointers (a core.worktree, a gitdir) are in files a launch binds
   # read-only, so they lead here again by themselves.
-  if [[ -z "${_gb_norec:-}" && "/$1/" != *"/./"* && "/$1/" != *"/../"* && "$1" != *"//"* ]] \
-     && (( BASH_SUBSHELL == 0 && ${#1} <= 4096 )); then
-    # Past SANDBOX_GIT_MAX of them a launch the launch is refused, as for any
-    # number the agent can plant at no cost: an index entry each, behind one
-    # directory it made unsearchable, and a thousand of them took a launch
-    # from 2 s to 44 s, and every later one 20 s (re-review of the fix, C3).
-    if (( ${#_git_want_new[@]} < 5 )); then _git_want_new+=("$1"); fi
-    if (( ++_git_want_n > ${gitmax:-200} )); then
-      printf 'ERROR: more than %d checkouts that an index names lie behind directories that cannot be\n' "${gitmax:-200}" >&2
-      printf '       searched, so none of them can be looked at; refusing the launch. Among them:\n' >&2
+  if [[ -z "${_gb_norec:-}" ]] && (( BASH_SUBSHELL == 0 )); then
+    # Past SANDBOX_GIT_MAX of them the launch is refused, as for any number the
+    # agent can plant at no cost: an index entry each, behind one directory it
+    # made unsearchable, and a thousand of them took a launch from 2 s to 44 s,
+    # and every later one 20 s (re-review of the fix, C3). Each path once,
+    # however many mounts expose it, and whatever its length: one too long to
+    # record cost the same walk (last review, D2).
+    if [[ -z "${_git_want_had[$1]:-}" ]]; then
+      _git_want_had[$1]=1; _git_want_n=$((_git_want_n + 1))
+      if (( ${#_git_want_new[@]} < 5 )); then _git_want_new+=("$1"); fi
+      [[ -n "$_git_want_dir" ]] || _git_want_dir="$_gb_b"
+    fi
+    if (( _git_want_n > ${gitmax:-200} )); then
+      printf 'ERROR: more than %d checkouts that an index, a core.worktree or a gitdir names lie behind\n' "${gitmax:-200}" >&2
+      printf '       directories that cannot be searched, so none of them can be looked at; refusing the\n' >&2
+      printf '       launch. Among them:\n' >&2
       for _gb_c in "${_git_want_new[@]}"; do printf '         %s\n' "$(_q "$_gb_c")" >&2; done
-      printf '       Make the directory in their way searchable (the WARNING naming it has the chmod), or\n' >&2
-      printf '       remove the entries from the index if they are not yours, or raise SANDBOX_GIT_MAX.\n' >&2
+      printf '       The first such directory is %s.\n' "$(_q "$_git_want_dir")" >&2
+      _unlistable_hint "$_git_want_dir" '       ' "${uid:-$(id -u)}"
+      printf '       Or remove the entries from the index if they are not yours, or raise SANDBOX_GIT_MAX.\n' >&2
       exit 1
     fi
-    _git_report_record "$1" want "0 0 0"
+    if [[ "/$1/" != *"/./"* && "/$1/" != *"/../"* && "$1" != *"//"* ]] && (( ${#1} <= 4096 )); then
+      _git_report_record "$1" want "0 0 0"
+    fi
   fi
   return 0
 }
@@ -5885,7 +5894,9 @@ _git_prog_iopt() {
 # (PATH=, BASH_ENV=, NODE_OPTIONS=; the program after it is still read), an
 # option of a wrapper or an interpreter that is not known to be inert, a
 # module loaded by name, a wrapper that changes directory, and an interpreter
-# given no script, which runs what git hands it. Not: a boolean
+# given no script, which runs what git hands it. A key git runs with no shell
+# is read as git reads it (core.askpass, core.gitproxy,
+# gpg.ssh.defaultKeyCommand, a credential helper it prefixes). Not: a boolean
 # core.fsmonitor, an alias or submodule update that is not a shell command.
 # Bytes, in the C locale, and every step linear in the value, which the agent
 # writes: a strip by pattern took 17 s for one with 64000 leading spaces
@@ -5914,6 +5925,38 @@ _git_prog() {
     remote.*.vcs)
       [[ "$_gp_v" =~ / ]] || return 1
       _gp_o=("p:git-remote-$_gp_v"); return 0 ;;
+    # Keys git runs with no shell, each read as git reads it: quotes and a
+    # leading ~ are part of the name, so `~/x` is the file x in a directory
+    # named ~ under the checkout, and "/usr/bin/x" in quotes a path under a
+    # directory named ". Read as a command line, both were judged somewhere
+    # git never looks (last review of the GIT-106 fix, D1; git 2.53, measured).
+    #   core.askpass: the whole value is the program. core.gitproxy: the value
+    # up to ` for `. gpg.ssh.defaultKeyCommand: its first word, split at blanks.
+    core.askpass|core.gitproxy|gpg.ssh.defaultkeycommand)
+      case "$1" in
+        core.gitproxy) _gp_w="${_gp_v%% for *}" ;;
+        gpg.ssh.defaultkeycommand)
+          [[ "$_gp_v" =~ ^[[:space:]]*([^[:space:]]*) ]]; _gp_w="${BASH_REMATCH[1]}" ;;
+        *) _gp_w="$_gp_v" ;;
+      esac
+      [[ "$_gp_w" =~ / ]] || return 1
+      if [[ "$_gp_w" == '~'* ]]; then _gp_w="./$_gp_w"; fi
+      _gp_o=("p:$_gp_w"); return 0 ;;
+    # A credential helper that neither starts with ! nor is an absolute path is
+    # run as `git credential-<value>`, through the shell: its first word, with
+    # a / in it, is the file git-credential-<word> from where git runs, whatever
+    # the word starts with, and what follows the word is the shell's to read.
+    credential.helper|credential.*.helper)
+      [[ "$_gp_v" =~ $_gp_rw ]]; _gp_w="${_gp_v:${#BASH_REMATCH[0]}}"
+      if [[ -n "$_gp_w" && "$_gp_w" != '!'* && "$_gp_w" != /* ]]; then
+        [[ "$_gp_w" =~ $_gp_rn ]]; _gp_p="${BASH_REMATCH[0]}"
+        if [[ "$_gp_p" == *$'\n'* ]]; then _gp_o=("u:another command after it"); return 0; fi
+        if [[ "$_gp_p" =~ [[:cntrl:]] ]]; then _gp_o=("u:a control character"); return 0; fi
+        if [[ "$_gp_p" =~ $_gp_rm ]]; then _gp_o=("u:$_gp_x"); return 0; fi
+        if [[ "$_gp_p" =~ / ]]; then _gp_o=("p:git-credential-$_gp_p"); fi
+        if [[ "${_gp_w:${#_gp_p}}" =~ $_gp_ro ]]; then _gp_o+=("u:another command after it"); fi
+        (( ${#_gp_o[@]} )); return
+      fi ;;
     mergetool.*.path|difftool.*.path|man.*.path|browser.*.path|gpg.program|gpg.*.program|lfs.customtransfer.*.path)
       [[ "$_gp_v" =~ / ]] || return 1
       _gp_o=("p:$_gp_v")
@@ -5989,8 +6032,9 @@ _git_prog() {
         _gp_o+=("p:$_gp_p"); _gp_t=1; break ;;
       dir)
         _gp_o+=("p:$_gp_p")
-        # ruby may expand a ~ itself: judged in your home as well.
-        if [[ "$_gp_s" == ruby && "$_gp_p" != "$_gp_w" ]]; then _gp_o+=("p:$_gp_w"); fi
+        # ruby may expand a ~ itself, and bash does for --rcfile: judged in your
+        # home as well.
+        if [[ ( "$_gp_s" == ruby || "$_gp_s" == sh ) && "$_gp_p" != "$_gp_w" ]]; then _gp_o+=("p:$_gp_w"); fi
         continue ;;
       mod|rlib)
         # By a path it is that file; by name it is found where the interpreter
@@ -7308,7 +7352,8 @@ _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan s
 # and the overlays decided before the scans. The .git files under them, counted,
 # and the first five.
 _gdi_dst="" _gdi_nro=0
-_git_want_n=0 _git_want_new=()   # checkouts behind unsearchable directories this launch (_gdi_blocked)
+_git_want_n=0 _git_want_new=() _git_want_dir=""   # checkouts behind unsearchable directories this launch (_gdi_blocked)
+declare -A _git_want_had=()
 _git_ro_dsts=() _gdi_rof=()
 _git_scan_dsts=()          # where each of _git_scan_srcs lands, for the rescan
 _gdi_cost=0                # reads made to tell that a directory is no git directory (_cd_ours, _gdi_loose_refs, _git_dir_nocd)
