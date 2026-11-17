@@ -449,5 +449,157 @@ SLOW229_CFG="$S229/.git/config" SLOW229_GIT="$REAL_GIT229" PATH="$TMP/sg229:$PAT
   || fail "G229 slow config in the rescan (rc=$LAUNCH_RC; $(grep -A6 -F 'WARNING: the session' "$ERR" | tr '\n' ' '))"
 rm -rf "$S229" "$TMP/sg229"
 
+# ── G330: a rebase the session leaves stopped, its todo holding exec lines ───
+# A rebase's todo is a file under .git that stays writable, and `git rebase
+# --continue` on the host runs each `exec` line of it; `git status` shows the
+# next two lines only. A session that left a rebase stopped, an exec placed
+# third, had the host run it, and nothing named it (feature-gaps review
+# GAP-15). Named when the container exits, and by the next launch while it is
+# still stopped; a stopped rebase with no exec line is not.
+D330="$TMP/d330"; R330="$D330/r"
+mkdir -p "$D330" && "${G[@]}" init -q "$R330" && for i330 in 1 2 3 4; do
+  printf '%s\n' "$i330" > "$R330/f$i330" && "${G[@]}" -C "$R330" add "f$i330" && "${G[@]}" -C "$R330" commit -qm "c$i330" || exit 1
+done || { printf 'SCAFFOLD-FAILED: G330\n'; exit 1; }
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+! grep -qF 'is stopped in these git directories' "$ERR" && pass "G330 no rebase, nothing said" \
+  || fail "G330 a false warning ($(grep -F 'is stopped in these git directories' "$ERR" | head -1))"
+# A real rebase, stopped by an exec that fails, and a line added third, as an
+# agent would add one: git's own state, not a file made to look like it.
+export R330 T330="$TMP"
+FAKE_SESSION='cd "$R330" && git -c user.email=t@example.invalid -c user.name=t rebase -q -x false HEAD~3 >/dev/null 2>&1; printf "exec echo RAN > %s/ran330\n" "$T330" >> "$R330/.git/rebase-merge/git-rebase-todo"' \
+  EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ -f "$R330/.git/rebase-merge/git-rebase-todo" ]] || { printf 'SCAFFOLD-FAILED: G330 the rebase did not stop with a todo\n'; exit 1; }
+n330="$(grep -a -c -E $'^[ \t]*(exec|x)([ \t\r]|$)' "$R330/.git/rebase-merge/git-rebase-todo")"
+w330="$(grep -A5 -F 'WARNING: a rebase, a cherry-pick or a git am is stopped in these git directories now that the container has exited.' "$ERR")"
+[[ "$n330" -ge 2 ]] && grep -qF "$R330/.git (rebase-merge/git-rebase-todo: $n330 exec lines)" <<<"$w330" \
+  && grep -qF 'Continuing it on your host (git rebase --continue, git am --continue) acts on what its' <<<"$w330" \
+  && pass "G330 a rebase the session left stopped is named on exit, with its exec lines counted ($n330)" \
+  || fail "G330 not named on exit (exec lines: $n330; stderr: $(grep -A6 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+# The next launch says it too, while the rebase is still stopped.
+FAKE_SESSION='' EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ "$(grep -cF 'a git am is stopped in these git directories.' "$ERR")" == 1 ]] \
+  && grep -qF "$R330/.git (rebase-merge/git-rebase-todo: $n330 exec lines)" "$ERR" \
+  && pass "G330 the next launch names it as well" \
+  || fail "G330 not named at launch ($(grep -A6 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+# One line, an x after blanks and before a CR, is one; a word that only starts
+# so (exclude, xargs) and a comment are none.
+printf 'pick 1234567 a\n \tx\r\n#exec no\nexecute no\nxargs no\npick 89abcde b\n' > "$R330/.git/rebase-merge/git-rebase-todo"
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+grep -qF "$R330/.git (rebase-merge/git-rebase-todo: 1 exec line)" "$ERR" \
+  && pass "G330 lines are counted as git reads them" \
+  || fail "G330 counting ($(grep -A6 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+# No exec line: a stopped rebase runs nothing of the agent's when continued.
+printf 'pick 1234567 a\npick 89abcde b\n' > "$R330/.git/rebase-merge/git-rebase-todo"
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+! grep -qF 'is stopped in these git directories' "$ERR" && pass "G330 a stopped rebase with no exec line is not named" \
+  || fail "G330 named with no exec line ($(grep -A6 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+# A todo that is a link is not read through, and is named as not read.
+printf 'exec true\n' > "$D330/elsewhere" && rm -f "$R330/.git/rebase-merge/git-rebase-todo" \
+  && ln -s "$D330/elsewhere" "$R330/.git/rebase-merge/git-rebase-todo" || { printf 'SCAFFOLD-FAILED: G330 link\n'; exit 1; }
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+grep -qF "$R330/.git (rebase-merge/git-rebase-todo, a link or no regular file: not read)" "$ERR" \
+  && pass "G330 a todo that is a link is named as not read" \
+  || fail "G330 a linked todo ($(grep -A6 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+# The merge strategy is run too: one that is not git's own is the program
+# git-merge-<name>, and a name with a / in it is a path from the checkout.
+# `../../x` beside a directory named git-merge-.. ran ./x at `git rebase
+# --continue`, with no exec line (measured with git 2.53 while fixing GAP-15).
+rm -f "$R330/.git/rebase-merge/git-rebase-todo" && printf 'pick 1234567 a\n' > "$R330/.git/rebase-merge/git-rebase-todo" \
+  && printf '../../x\n' > "$R330/.git/rebase-merge/strategy" || { printf 'SCAFFOLD-FAILED: G330 strategy\n'; exit 1; }
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+grep -qF "$R330/.git (rebase-merge/strategy: a merge strategy that is not git's own, which git runs as a program)" "$ERR" \
+  && pass "G330 a stopped rebase whose strategy is not git's own is named" \
+  || fail "G330 the strategy ($(grep -A6 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+ok330=1
+for s330 in ort recursive resolve octopus ours subtree; do
+  printf '%s\n' "$s330" > "$R330/.git/rebase-merge/strategy"
+  EXTRA_MOUNTS="$D330" launch "$TMP/app"
+  ! grep -qF 'is stopped in these git directories' "$ERR" || { ok330=""; printf '  named for %s\n' "$s330"; }
+done
+[[ -n "$ok330" ]] && pass "G330 git's own strategies are not named" || fail "G330 git's own strategies"
+# A cherry-pick's or a revert's is among its options (sequencer/opts).
+rm -rf "$R330/.git/rebase-merge" && mkdir "$R330/.git/sequencer" && printf 'pick 1234567 a\n' > "$R330/.git/sequencer/todo" \
+  && printf '[options]\n\tstrategy = ../../x\n' > "$R330/.git/sequencer/opts" || { printf 'SCAFFOLD-FAILED: G330 sequencer\n'; exit 1; }
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+grep -qF "$R330/.git (sequencer/opts: a merge strategy that is not git's own, which git runs as a program)" "$ERR" \
+  && pass "G330 a stopped cherry-pick whose strategy is not git's own is named" \
+  || fail "G330 sequencer/opts ($(grep -A6 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+printf '[options]\n\tstrategy = ort\n\tmainline = 1\n' > "$R330/.git/sequencer/opts"
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+! grep -qF 'is stopped in these git directories' "$ERR" && pass "G330 a stopped cherry-pick with git's own strategy is not named" \
+  || fail "G330 sequencer/opts with ort ($(grep -A6 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+# A git am's saved options go to git apply as they are: `--build-fake-ancestor`
+# there had `git am --continue` write an index over the file it names (review
+# of the GAP-15 fix, A2; measured, git 2.53). Anything but the options that
+# only say how a patch is matched is named; those, as git am writes them, are
+# not.
+rm -rf "$R330/.git/sequencer" && mkdir "$R330/.git/rebase-apply" \
+  && printf " '--build-fake-ancestor=%s/clobbered'\n" "$D330" > "$R330/.git/rebase-apply/apply-opt" || { printf 'SCAFFOLD-FAILED: G330 am\n'; exit 1; }
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+grep -qF "$R330/.git (rebase-apply/apply-opt: options for git apply that are not known to write nothing)" "$ERR" \
+  && pass "G330 a stopped git am whose saved options could write a file is named" \
+  || fail "G330 apply-opt ($(grep -A7 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+# --reject writes .rej files, so it is none of those (re-review, C6).
+printf " '--whitespace=fix' '--reject'\n" > "$R330/.git/rebase-apply/apply-opt"
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+grep -qF "$R330/.git (rebase-apply/apply-opt: options for git apply that are not known to write nothing)" "$ERR" \
+  && pass "G330 a stopped git am with --reject, which writes files, is named" \
+  || fail "G330 --reject not named"
+printf " '--whitespace=fix' '-C1' '-p2' '--ignore-whitespace' '--ignore-space-change'\n" > "$R330/.git/rebase-apply/apply-opt"
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+! grep -qF 'is stopped in these git directories' "$ERR" && pass "G330 a stopped git am with options that only match a patch is not named" \
+  || fail "G330 harmless apply-opt named ($(grep -A7 -F 'is stopped in these git directories' "$ERR" | tr '\n' ' '))"
+: > "$R330/.git/rebase-apply/apply-opt"
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+! grep -qF 'is stopped in these git directories' "$ERR" && pass "G330 …nor one with none" \
+  || fail "G330 empty apply-opt named"
+rm -rf "$R330/.git/rebase-apply"
+# Your own rebase, stopped with exec lines, is said once a launch, when the
+# agent gets to write its todo; when the container exits it is said again only
+# if what it would run has changed, a line swapped for another included
+# (review of the GAP-15 fix, A3).
+mkdir "$R330/.git/rebase-merge" && printf 'pick 1234567 a\nexec make test\npick 89abcde b\nexec make test\n' > "$R330/.git/rebase-merge/git-rebase-todo" \
+  || { printf 'SCAFFOLD-FAILED: G330 own\n'; exit 1; }
+EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ "$(grep -cF 'is stopped in these git directories' "$ERR")" == 1 ]] && grep -qF 'a git am is stopped in these git directories.' "$ERR" \
+  && pass "G330 a rebase stopped before the launch, and left as it was, is named once" \
+  || fail "G330 named $(grep -cF 'is stopped in these git directories' "$ERR") times for a rebase the session left alone"
+FAKE_SESSION='printf "pick 1234567 a\nexec make test\npick 89abcde b\nexec ./evil\n" > "$R330/.git/rebase-merge/git-rebase-todo"' \
+  EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ "$(grep -cF 'is stopped in these git directories' "$ERR")" == 2 ]] \
+  && grep -qF 'is stopped in these git directories now that the container has exited.' "$ERR" \
+  && pass "G330 …and again on exit when the session swapped one exec line for another" \
+  || fail "G330 a changed todo with the same count ($(grep -cF 'is stopped in these git directories' "$ERR") warnings)"
+# By what the todo holds, not by a CRC: a todo with one exec line swapped and
+# four bytes of its comment adjusted has the cksum and the length of the one
+# the launch saw, and was taken for unchanged (re-review of the fix, C2).
+printf 'pick 1234567 a\nexec make test\npick 89abcde b\nexec make test\n# pad: AAAA\n' > "$R330/.git/rebase-merge/git-rebase-todo"
+printf 'pick 1234567 a\nexec make test\npick 89abcde b\nexec ./evil   \n# pad: \117\163\320\215\n' > "$TMP/forged330"
+if command -v cksum >/dev/null 2>&1; then
+  [[ "$(cksum < "$TMP/forged330")" == "$(cksum < "$R330/.git/rebase-merge/git-rebase-todo")" ]] \
+    || { printf 'SCAFFOLD-FAILED: G330 the forged todo has another cksum\n'; exit 1; }
+fi
+export F330="$TMP/forged330"
+FAKE_SESSION='cat "$F330" > "$R330/.git/rebase-merge/git-rebase-todo"' EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ "$(grep -cF 'is stopped in these git directories' "$ERR")" == 2 ]] \
+  && pass "G330 a todo forged to the same cksum and length is still named on exit" \
+  || fail "G330 a forged todo passed for unchanged ($(grep -cF 'is stopped in these git directories' "$ERR") warnings)"
+# A digest that cannot be taken is no proof of anything: the rebase is named
+# again on exit, the session having done nothing.
+mkdir -p "$TMP/bin330" && printf '#!/bin/sh\nexit 127\n' > "$TMP/bin330/sha256sum" && cp "$TMP/bin330/sha256sum" "$TMP/bin330/shasum" \
+  && chmod +x "$TMP/bin330/sha256sum" "$TMP/bin330/shasum" || { printf 'SCAFFOLD-FAILED: G330 digest shim\n'; exit 1; }
+PATH="$TMP/bin330:$PATH" EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ "$(grep -cF 'is stopped in these git directories' "$ERR")" == 2 ]] \
+  && pass "G330 where no digest can be taken, an unchanged rebase is named again rather than trusted" \
+  || fail "G330 no digest, and taken for unchanged ($(grep -cF 'is stopped in these git directories' "$ERR") warnings)"
+# The strategy counts as the todo does: another one that is not git's own gets
+# the same words, and is named on exit all the same.
+printf 'pick 1234567 a\n' > "$R330/.git/rebase-merge/git-rebase-todo" && printf 'mine\n' > "$R330/.git/rebase-merge/strategy"
+FAKE_SESSION='printf "../../x\n" > "$R330/.git/rebase-merge/strategy"' EXTRA_MOUNTS="$D330" launch "$TMP/app"
+[[ "$(grep -cF 'is stopped in these git directories' "$ERR")" == 2 ]] \
+  && pass "G330 a strategy swapped for another that is not git's own is named on exit" \
+  || fail "G330 a swapped strategy ($(grep -cF 'is stopped in these git directories' "$ERR") warnings)"
+rm -rf "$D330" "$TMP/bin330" "$TMP/forged330"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

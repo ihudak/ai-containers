@@ -1109,6 +1109,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   config whose includes were not all followed: two spellings of a
   self-include made the first version of this walk take minutes.
 
+- **A submodule the launcher protected stays protected when a session drops
+  it from the index.** A git directory under `vendor/` or `node_modules/`, or
+  deeper than the scan goes, is found only through its repository's index,
+  which stays writable in the container. A session that dropped the entry
+  (`git update-index --force-remove`, a checkout of a branch without the
+  submodule) left it with no read-only binds at the next launch and no word
+  said; the session after that could write its `config`, and once you put the
+  entry back, your host's `git status` ran the `core.fsmonitor` it had set. The
+  launcher's record of what it protected (`~/.ai-containers/git-reported.conf`)
+  now leads the scan to such a directory, and to a `.git` file a launch bound,
+  while it is still the one recorded; a directory on the way that the session
+  made unsearchable is bound read-only whole, and what lies behind it is
+  protected once it can be reached. A record that cannot be written is said in
+  a `WARNING:`. The record is this home's: removing `~/.ai-containers` loses it
+  (bugs review GIT-105).
+
+- **A config key's program is named when the shell reaches it another way.**
+  The launch names a program that a git config key runs when the agent can
+  change it, and says so when it cannot follow the command. It said nothing
+  for `. ./x`, `eval ./x`, `time ./x`, `PATH=./bin tool`,
+  `BASH_ENV=./x bash …`, `node -r ./x.js …`, `perl -I ./lib …`,
+  `ruby -r ./x …` or `php -d auto_prepend_file=…`, and your host's `git status`
+  ran the file in each case. Now what the shell itself runs or reads, an
+  assignment before the program, an option that is not known to load nothing
+  and a module loaded by name are named as not followed, and what an option
+  loads by path is judged like the program. Found on the way, and closed the
+  same way: a wrapper named by a path (`./env true`) was not judged; a
+  wrapper's option the launcher did not know had its argument taken for the
+  program (`ionice -c 3 ./x`, `stdbuf -o L ./x`); `env -C dir ./x` was judged
+  from the wrong directory; an interpreter given no script
+  (`diff.x.textconv = sh`) runs the file git hands it; and a `~` that is no
+  home directory to the shell (`"~/x"` in quotes, `perl -I~/lib`,
+  `python3 -m ~.x`), which names a directory called `~` in the checkout, was
+  judged in your home. The keys git runs with no shell (`core.askpass`,
+  `core.gitproxy`, `gpg.ssh.defaultKeyCommand`) and a credential helper git
+  prefixes with `git-credential-` are read as git runs them. A remote's helper
+  (`remote.<name>.vcs`) and `gc.recentObjectsHook` are among the keys now. A program found on `PATH` is
+  still not judged, and its arguments are still not read. Two costs: a command
+  with any assignment before the program (`LESS=FRX less`), and a
+  `gpg.program = ~/…` in a repository's own config, now get a `NOTE:` at each
+  launch (bugs review GIT-106).
+
+- **Planted `.git` files no longer make a refused launch slow.** Past
+  `SANDBOX_GIT_MAX` git directories the scan stops and the launch is refused,
+  but `.git` files were not counted: 3000 of them were each read and resolved
+  first, 43 seconds for a refusal. They count with the directories now. Those
+  inside a launcher directory, which is read-only whole, count toward no limit
+  as before and are still read; past the limit a `NOTE:` says how many there
+  are and where (bugs review GIT-107).
+
+- **A rebase the agent left stopped is named, with what continuing it would
+  run.** `git rebase --continue` on your host runs every `exec` line of the
+  rebase's todo, a file in `.git` that stays writable because a rebase in the
+  container needs it, and `git status` shows only its next two lines. It also
+  runs the rebase's merge strategy when that is not one of git's own: a
+  strategy of `../../x`, beside a directory named `git-merge-..`, ran `./x`
+  with no `exec` line at all (measured with git 2.53). And a stopped `git am`
+  hands `git apply` its saved options, one of which writes a file it names;
+  any but the few that only say how a patch is matched are named, so your own
+  `git am --reject` or `--directory=…`, stopped, is named at each launch.
+  At a launch that finds a rebase, a cherry-pick or a `git am` stopped, and
+  when the container exits if the session stopped one or changed what one
+  would run, a `WARNING:` names each such repository, with the number of
+  `exec` lines, a strategy that is not git's own, and options that could write
+  a file; read the todo (`git rebase --edit-todo`) before you continue, or
+  abort (feature-gaps review GAP-15).
+
+- **git-lfs's own program keys are named and judged.** git-lfs reads
+  `lfs.customtransfer.<name>.path` from the repository's config and runs it
+  when a checkout has to fetch an object; `lfs.standalonetransferagent` chooses
+  it, and an `lfs.extension`'s `clean` and `smudge` are commands too. They are
+  now among the keys a first protection names, a launch judges, and the check
+  after a session reads (feature-gaps review GAP-16).
+
 ### Security
 
 - **The Copilot token is no longer read through a link the agent planted.**
