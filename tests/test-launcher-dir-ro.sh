@@ -2579,5 +2579,19 @@ w77="$(printf '         %s\n' "$X77/a/.ai-containers" "$X77/y/p/.ai-containers" 
   || fail "T77 launcher cap listing (rc=$LAUNCH_RC; named: $(tr '\n' '|' <<<"$l77"))"
 rm -rf "$X77"
 
+# ── T91: the launcher's exit status for what it does not run ─────────────────
+# `sandbox.sh build`, removed, and a command it does not know both say so on
+# stderr and exit 1, never 0, and run no container: a caller (runme.sh, a
+# script) reads the status, not the words (feature-gaps review GAP-2, the
+# whole-file run, batch 7, item 4).
+for c91 in build nonsense; do
+  : > "$CAPTURE"
+  ( cd "$LAUNCHER" && bash ./sandbox.sh "$c91" ) >/dev/null 2>"$ERR" </dev/null; rc91=$?
+  if [[ "$c91" == build ]]; then w91='ERROR: "sandbox.sh build" has been removed. Use ./build.sh instead.'; else w91='Usage:'; fi
+  [[ "$rc91" == 1 && ! -s "$CAPTURE" ]] && grep -qF -- "$w91" "$ERR" \
+    && pass "T91 sandbox.sh $c91 exits 1, says why and runs no container" \
+    || fail "T91 sandbox.sh $c91 (rc=$rc91; $(head -2 "$ERR" | tr '\n' ' '))"
+done
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

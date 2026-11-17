@@ -2019,5 +2019,24 @@ grep -aqF "inc208.cfg" < <(grep -a -A2 -F '/workspace/r208/i/.git/config' "$ERR"
   || fail "G208 includeIf with a non-UTF-8 condition not walked ($(grep -a -F 'r208/i' "$ERR" | head -2 | tr '\n' ' '))"
 rm -rf "$R208"
 
+# ── G300: a quoted word, and env -S, in a value that has git run a program ───
+# _git_prog() reads a value as a shell reads a command line: a word in quotes,
+# double or single, is the program whole, spaces and all, and a tab after it
+# ends it; a quote that does not close, or more of the word after the closing
+# quote, is not followed; env -S, which splits its own argument, is named. A
+# status of 1 would have the one caller drop what is named (feature-gaps
+# review GAP-2, the whole-file run, batch 6, item 1).
+fns300="$TMP/fns300.sh"
+awk 'index($0, "_git_prog() {") == 1 {p = 1} p {print} p && /^}/ {exit}' "$ENGINE/sandbox.sh" > "$fns300"
+o300="$(bash -c 'source "$1"; for v in "!\"./my tools/x.sh\" arg" "!'"'"'./my tools/y.sh'"'"'" "!\"./x\"y" "!\"./unterminated" \
+    "!env -S \"./x a\"" "!'"'"'./x'"'"'y" "!'"'"'./unterminated" "!\"./x\""$'"'"'\t'"'"'"a"; do
+    o=(); if _git_prog alias.x "$v" o; then printf "%s;" "${o[@]}"; else printf "none;"; fi; printf "|"; done' _ "$fns300" 2>&1)"
+u300="u:a shell expansion, quoting or an operator;"
+want300="p:./my tools/x.sh;|p:./my tools/y.sh;|$u300|$u300|u:env -S;|$u300|$u300|p:./x;|"
+[[ "$o300" == "$want300" ]] \
+  && pass "G300 a quoted word is the program whole; an open quote, a word after one and env -S are named" \
+  || fail "G300 quoting (got: $(printf '%q' "$o300"))"
+rm -f "$fns300"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
