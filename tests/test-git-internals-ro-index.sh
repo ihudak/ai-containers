@@ -334,9 +334,10 @@ rm -rf "$TMP/other47/.git" "$TMP/other47/node_modules/g/sub"
   && "${G[@]}" -C "$TMP/other47/main" worktree add -q "$PROJ/wt47c" -b feat \
   || { printf 'SCAFFOLD-FAILED: cannot create the G47 worktree\n'; exit 1; }
 EXTRA_MOUNTS="$TMP/other47/main" launch ..
-! grep -qF "a git directory in another writable mount" "$ERR" \
+# A refused launch mounts nothing and names nothing: these absences count only for one that ran (GAP-26).
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF "a git directory in another writable mount" "$ERR" \
   && pass "G47 a target the other mount's own scan protects is not named" \
-  || fail "G47 false 'another writable mount' WARNING ($(grep -F 'another writable mount' "$ERR" | head -1))"
+  || fail "G47 false 'another writable mount' WARNING (rc=$LAUNCH_RC; $(grep -F 'another writable mount' "$ERR" | head -1))"
 rm -rf "$PROJ/wt47c"
 # Five decoys that name nothing do not push the real one into a count: it has
 # its own path, once per target, never capped (security review of 82183d8).

@@ -87,7 +87,12 @@ jobs:
         if: steps.update.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # A pull request opened with GITHUB_TOKEN starts no workflow, so the
+          # checks that block a merge never ran on it until someone reopened it
+          # (feature-gaps review GAP-27). NVM_BUMP_TOKEN, a fine-grained token
+          # with Contents and Pull requests write on this repository, opens it as
+          # a user, whose pull requests run them. Without it, as before.
+          token: ${{ secrets.NVM_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
           branch: update/nvm-${{ steps.latest.outputs.tag }}
           commit-message: "chore: update nvm to ${{ steps.latest.outputs.tag }}"
           title: "chore: update nvm to ${{ steps.latest.outputs.tag }}"
@@ -98,5 +103,7 @@ jobs:
             - `Dockerfile` — `ARG NVM_VERSION` default updated
 
             Release notes: https://github.com/nvm-sh/nvm/releases/tag/${{ steps.latest.outputs.tag }}
+
+            If no checks show on this pull request, it was opened with `GITHUB_TOKEN`, which starts no workflow: close and reopen it to run them, or give the repository an `NVM_BUMP_TOKEN` secret (see `.github/workflows/update-nvm-version.yml`).
           labels: dependencies
           delete-branch: true

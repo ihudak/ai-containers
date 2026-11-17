@@ -902,9 +902,10 @@ OUT38="$TMP/out38"; mkdir -p "$OUT38" "$LAUNCHER/.agent-blocked"
 ln -s "$OUT38/x" "$LAUNCHER/.agent-blocked/planted"
 EXTRA_MOUNTS="$OUT38" launch "$LAUNCHER" ..
 rm -f "$LAUNCHER/.agent-blocked/planted"
-! grep -q 'leads somewhere the agent can change' "$ERR" \
+# A refused launch mounts nothing and names nothing: these absences count only for one that ran (GAP-26).
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -q 'leads somewhere the agent can change' "$ERR" \
   && pass "T38 a link planted in the launcher's output directory is not walked" \
-  || fail "T38 planted output-dir link (stderr: $(grep -F 'leads somewhere' "$ERR" | tr '\n' ' '))"
+  || fail "T38 planted output-dir link (rc=$LAUNCH_RC; stderr: $(grep -F 'leads somewhere' "$ERR" | tr '\n' ' '))"
 ln -s "$OUT38/x" "$LAUNCHER/outward.conf"
 EXTRA_MOUNTS="$OUT38" launch "$LAUNCHER" .
 rm -f "$LAUNCHER/outward.conf"

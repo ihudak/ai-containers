@@ -413,6 +413,23 @@ grep -q 'RESULT: FAILED' "$TMP/out.log" && grep -q 'names no phase' "$TMP/out.lo
   || fail "TST-38 PHASES=\" \": verdict line says FAILED, naming why"
 r="$(mk_repo 0)"
 expect_rc "TST-38 PHASES=0, the environment banner alone, still passes as documented" 0 "$(run_verify "$r" 0)"
+# Words that a newline or a tab separates are phases all the same: the check
+# took them as named, want_phase() matched none, and only Phase 0 ran, PASSED
+# (review of the TST-38 fix). Here both phases fail, so running them is seen.
+for sep in $'\n' $'\t'; do
+  r="$(SUITE_RC=1 DIALECT_RC=1 mk_repo 0)"
+  expect_rc "TST-38 PHASES with phases separated by $(printf '%q' "$sep") runs them, and both fail" 1 "$(run_verify "$r" "5${sep}7")"
+  grep -q 'PHASE 5 FAILED' "$TMP/out.log" && grep -q 'PHASE 7 FAILED' "$TMP/out.log" \
+    && pass "TST-38 PHASES separated by $(printf '%q' "$sep"): phases 5 and 7 both ran" \
+    || fail "TST-38 PHASES separated by $(printf '%q' "$sep"): phases 5 and 7 both ran"
+done
+# A glob is a word, not this directory's files: a file named 5 beside it does
+# not turn `[5]` into phase 5.
+r="$(mk_repo 0)"
+: > "$r/5"
+expect_rc "TST-38 PHASES=\"[5]\" is refused as a phase name, not globbed to a file named 5" 1 "$(cd "$r" && run_verify "$r" "[5]")"
+grep -qF 'names phase [5]' "$TMP/out.log" \
+  && pass "TST-38 PHASES=\"[5]\": named as it was written" || fail "TST-38 PHASES=\"[5]\": named as it was written"
 
 # The empty case is NOT affected — ${PHASES:-4 5 7} must still default cleanly
 # to every real phase this script has, with no phase_fail firing for a

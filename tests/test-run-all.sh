@@ -560,5 +560,18 @@ has "$out" '^PASS: env unset$' \
   && pass "RA_ORDER is not passed on to the tests" \
   || fail "RA_ORDER leaked into a test's environment — got: $out"
 
+# A checkout whose path holds a space (bugs review TST-40): the selection was one
+# string of absolute paths split again by word, so each half ran as a script and
+# every test exited 127. It is kept by name, and each test run from tests/.
+SP="$TMP/sp ace/tests"; mkdir -p "$SP" || { printf 'SCAFFOLD-FAILED: mkdir sp ace\n'; exit 1; }
+cp "$RUN_ALL" "$SP/run-all.sh"
+printf 'printf "PASS: a\\n"\n' > "$SP/test-a.sh"; printf 'printf "PASS: b\\n"\n' > "$SP/test-b.sh"
+out="$(cd "$TMP" && RA_ORDER="test-b.sh" bash "$SP/run-all.sh" 2>&1)"; rc=$?
+[[ "$rc" == 0 ]] && grep -q '2 test(s), 2 passed, 0 failed' <<<"$out" && ! grep -q 'exit 127' <<<"$out" \
+  && [[ "$(grep '^── ' <<<"$out" | tr '\n' ' ')" == "── test-b.sh ── test-a.sh " ]] \
+  && pass "TST-40 a checkout under a path with a space runs every test, in RA_ORDER's order" \
+  || fail "TST-40 a path with a space (rc=$rc): $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
+rm -rf "$TMP/sp ace"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

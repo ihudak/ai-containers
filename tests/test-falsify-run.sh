@@ -1310,7 +1310,7 @@ esac
 # holds was reaped already — it returns 127 and, on bash 5.2, leaves its -p
 # variable UNSET ("The variable will be unset initially", bash(1)), whatever it
 # held before the call. run.sh runs under `set -u`, so the next read of it ended
-# the whole run: measured in CI, `run.sh: line 1657: reaped: unbound variable`,
+# the whole run: measured in CI, `run.sh: line 1657: reaped: unbound variable`,  # ref-lint: allow: a quoted error message
 # every later target unscored. A slot whose worker was reaped elsewhere is that
 # state, made on purpose.
 u_out="$( { set +u

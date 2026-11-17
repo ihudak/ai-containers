@@ -678,7 +678,7 @@
 ## 6. Test harness and CI
 
 ### TST-38: `verify-on-host.sh` prints `RESULT: PASSED` and exits 0 for a `PHASES` value that selects no phase
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `verify-on-host.sh` reads the words `PHASES` names, whatever whitespace separates them and never as a glob, rejoins them for `want_phase()`, and records a failure when there is none. `PHASES=0`, the banner alone, is documented in the script and still passes. The review of the fix found that a newline or a tab between phases passed the check and then ran no phase but 0. `tests/test-verify-exit-code.sh`: `PHASES=" "` fails naming why, `PHASES=0` passes, phases separated by a newline or a tab both run (both made to fail), and `[5]` beside a file named 5 is refused as written; seen failing first.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `verify-on-host.sh`: `PHASES="${PHASES:-4 5 6 7}"` and `for _requested_phase in $PHASES; do`
@@ -689,7 +689,7 @@
 - **Suggested fix:** after the validation loop, count the requested phases that are in `4 5 6 7`; when the count is zero, `phase_fail` with "PHASES selects no phase". Add the two values to `tests/test-verify-exit-code.sh`.
 
 ### TST-39: `update-nvm-version.yml` pastes the upstream release tag into a shell script and a `sed` program, unchecked, in a job with `contents: write`
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `.github/workflows/update-nvm-version.yml`: the fetch step refuses a tag that is not `vX.Y.Z`, and the update step takes both tags through `env:`, checking the shape again. `tests/test-nvm-update-workflow.sh` runs both steps' own scripts with a fake `curl`: a tag holding a command substitution, or an `&` that sed would take for the matched text, is refused, nothing runs and nothing changes; the update step runs with the environment its own `env:` mapping gives, rendered, so a mapping that swapped or lost the tags fails. Each was seen failing against its mutant (the review of the fix found that the test set the names itself, and that a slash was refused by sed with no check at all).
 - **Severity:** LOW
 - **Confidence:** CONFIRMED (from the code; not run)
 - **Location:** `.github/workflows/update-nvm-version.yml`: `latest="${{ steps.latest.outputs.tag }}"` and `sed -i "s/^ARG NVM_VERSION=.*/ARG NVM_VERSION=${latest}/" Dockerfile`
@@ -700,7 +700,7 @@
 - **Suggested fix:** in the `latest` step refuse a tag that does not match `^v[0-9]+\.[0-9]+\.[0-9]+$`; pass both outputs to the update step as `env:` variables instead of `${{ }}` inside `run:`. Pin the rule in `tests/test-nvm-update-workflow.sh`.
 
 ### TST-40: `tests/run-all.sh` runs no test when the checkout's path holds whitespace
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `tests/run-all.sh` keeps the selection by name and runs each test as `"$tests_dir/$name"`. `tests/test-run-all.sh`: two tests under `sp ace/tests/` run, in `RA_ORDER`'s order; seen failing first.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `tests/run-all.sh`: `selected="${selected:+$selected }$t"` and `for t in $selected; do`
@@ -716,7 +716,7 @@
 ## 7. Documentation vs code
 
 ### DOC-14: troubleshooting.md still says Codex cannot update itself and is reinstalled at every start
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). docs/troubleshooting.md names Codex with Claude Code and Copilot as never printing it, Gemini as the one the reconcile reinstalls, and what a Codex that prints it means.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `docs/troubleshooting.md`: `**Codex** does hit it, and **Gemini** has no updater at all, which is why the reconcile re-installs either one at container start`
@@ -727,7 +727,7 @@
 - **Suggested fix:** rewrite the sentence; "re-installs either one" becomes Gemini only.
 
 ### DOC-15: the Unreleased CHANGELOG says `repo.sh gc` does not read the owner label, and 160 lines later that it does
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). The Added entry's false sentence is gone.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `CHANGELOG.md`: `` `repo.sh gc` and `repo.sh list --copies` do not read the label yet. `` (Unreleased, Added) against `**\`repo.sh gc\` keeps another home's working copies.**` (Unreleased, Fixed)
@@ -738,7 +738,7 @@
 - **Suggested fix:** delete the last sentence of the Added entry (the design spec's copy of it is a dated record and can stay, or take a "since built" note).
 
 ### DOC-16: the group-mount table in docs/repos-and-mounts.md leaves out five mounts the launcher makes
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). docs/repos-and-mounts.md's table has the five rows, and acli is in the footnote, docs/overview.md and AGENTS.md's list.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `docs/repos-and-mounts.md`: `| Host source (within group root) | Container path | Mode | Component |` and footnote `currently \`dtctl\`, \`dtmgd\``
@@ -749,7 +749,7 @@
 - **Suggested fix:** add the five rows; say "currently `dtctl`, `dtmgd`, `acli`".
 
 ### DOC-17: two counts in AGENTS.md no longer match the code
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). AGENTS.md drops the counts of the scripts that source bash-floor.sh, and names the five that source version.sh.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `AGENTS.md`: `nine other entry points that don't need the rest of \`sandbox-common.sh\` source it directly` (and "the same reasoning that has nine entry points sourcing `bash-floor.sh` directly"); `AGENTS.md`: `` `version.sh` is sourced by `sandbox.sh`, `project-init.sh` and `sync-to-projects.sh` **directly** ``

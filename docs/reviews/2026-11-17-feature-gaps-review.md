@@ -148,7 +148,7 @@ Checked and found sound (no finding): the registry edits (`_prj_edit()`, `_prj_r
 ## 6. Test harness and CI
 
 ### GAP-25: the code-citation lint checks one of the three spellings in use; about 350 citations are never looked at
-- Status: OPEN (filed 2026-11-17).
+- Status: DONE (2026-11-17, review agent). `tests/test-code-references.sh` checks the two other spellings (`` `<file>: snippet` `` and `` `<file>`: `snippet` ``) as it checks the first, a path that is no tracked file there being prose; the fixture has a good and a stale citation of each. Each spelling is refused when wrapped or split across lines, as the first is. Five quoted error messages written that way carry the `ref-lint: allow:` marker or were reworded. The review logs in docs/reviews/ are checked for the first spelling, as before, but not the other two, in which their entries quote the code each found wrong, which its fix removes: the first fix skipped docs/reviews/ whole, which its review found checked 87 fewer citations than before. AGENTS.md, "Citing code", and docs/testing.md say so.
 - **Area:** TST (`tests/test-code-references.sh`)
 - **Source:** AGENTS.md, "Citing code": "`tests/test-code-references.sh` checks that every such snippet still occurs in the file it names."
 - **Current state:** `ref_check()`'s `cite_re` matches only a bare file name followed by `: ` and a backticked snippet. Two other spellings are common, AGENTS.md's own among them, and match nothing. One has file and snippet inside one pair of backticks, as in `sandbox.sh: _pointer_missing()` or `entrypoint.sh: as_sandbox_user()`: about 310 in the scanned files. The other backticks the file on its own, as in `sandbox.sh`: `repos_path_in_container()`: about 37. A function renamed tomorrow leaves those citations stale and the test green. None is stale today: I resolved every one of both forms against the tree, and the only misses were quoted error messages, which are not citations.
@@ -156,7 +156,7 @@ Checked and found sound (no finding): the registry edits (`_prj_edit()`, `_prj_r
 - **Suggested approach:** teach `cite_re` the two other forms (same resolution, same `grep -qF`), with fixture lines for each; treat a snippet that names no tracked file as prose, as the numbered rule already does.
 
 ### GAP-26: a handful of "nothing is named / nothing is mounted" checks pass when their launch is refused outright
-- Status: OPEN (filed 2026-11-17).
+- Status: DONE (2026-11-17, review agent). Each of the eight checks also requires `LAUNCH_RC` 0. Six pass here; the two G117 checks run only where `tests/test-git-internals-ro-casefold.sh` does (a casefold tmpfs in a user namespace, or macOS), which neither this host nor CI offers, so they have not been seen to pass yet; the Mac agent's row in the platform-issues table asks for that run.
 - **Area:** TST (git-internals and launcher tests)
 - **Source:** AGENTS.md, "Every case must have been seen failing"; the brief's "a fixture that never reaches the code path its name claims".
 - **Current state:** `launch()` leaves an empty mount list and only an `ERROR:` in `$ERR` when the launcher refuses, and these checks assert only absences, with no `LAUNCH_RC` and no positive check on the same launch:
@@ -171,7 +171,7 @@ Checked and found sound (no finding): the registry edits (`_prj_edit()`, `_prj_r
 - **Suggested approach:** add `[[ "$LAUNCH_RC" == 0 ]] &&` to each, as the neighbouring checks have. A lint in the style of `tests/test-grep-q-pipelines.sh` could refuse a check whose every conjunct is negated.
 
 ### GAP-27: the weekly nvm bump PR is opened with `GITHUB_TOKEN`, so no `pull_request` workflow runs on it
-- Status: OPEN (filed 2026-11-17).
+- Status: DONE (2026-11-17, review agent; the user added the `NVM_BUMP_TOKEN` secret the same day). Confirmed first: the checks on the bump PRs #245 and #335 were started by the user (their runs' triggering actor), not by the job. The job now opens the PR with an `NVM_BUMP_TOKEN` secret where the repository has one (a fine-grained token with Contents and Pull requests write), falling back to `GITHUB_TOKEN` as before, and the PR body says to close and reopen it when no checks show.
 - **Area:** CI (`.github/workflows/update-nvm-version.yml`)
 - **Source:** AGENTS.md, "Execution layers": the PR layer is "every pull request … blocks merge".
 - **Current state:** the PR is created by `peter-evans/create-pull-request` with `token: ${{ secrets.GITHUB_TOKEN }}`. GitHub starts no workflow run for events caused by that token (other than `workflow_dispatch` and `repository_dispatch`), so `tests.yml` and `integration.yml` do not run on the one PR that changes the Dockerfile's nvm pin. Either it shows no checks and is merged unverified (the first real run is the push to main), or required checks keep it unmergeable until someone closes and reopens it. PLAUSIBLE: this is GitHub's documented behaviour; I could not look at this repository's PR history or branch protection.
@@ -191,7 +191,7 @@ Checked and found sound (no finding): the registry edits (`_prj_edit()`, `_prj_r
 - **Suggested approach:** split tests/test-project-tool.sh by command (rm, mv, gc, plumbing) so each oracle fits a shard, activate the row per `--target` shard as `repo-git-reset.sh` has, and note the deferral in the spec's status line until then.
 
 ### GAP-29: `REPO_HELPER_MEMORY` is documented only in AGENTS.md
-- Status: OPEN (filed 2026-11-17).
+- Status: DONE (2026-11-17, review agent). docs/configuration.md's table has the row.
 - **Area:** docs / repo.sh
 - **Source:** docs/reviews/2026-10-26-bugs-review.md, REPO-7: "Status: FIXED (batch 4) … `REPO_HELPER_MEMORY` validated, documented and machine-only"; docs/multiple-projects.md says `sandbox.env` may set only the launcher's own variables, "those in configuration.md".
 - **Current state:** the variable is in AGENTS.md's table and in repo.sh: `git_helper_run()` (default `4g`), and in no user doc: `grep -rn REPO_HELPER_MEMORY docs/*.md docs/components README.md` prints nothing. It is the only row of AGENTS.md's variable table missing from docs/configuration.md (diffed by script). A user learns of it only from the out-of-memory error text.

@@ -284,9 +284,10 @@ rm -rf "$PROJ/src117b"
 mkdir -p "$HOME/.ai-containers/default/.agents/m117" && "${G[@]}" init -q "$HOME/.ai-containers/default/.agents/m117" \
   || { printf 'SCAFFOLD-FAILED: G117 group\n'; exit 1; }
 HOME="${HOME%/*}/HOME" launch ..
-! grep -qF 'm117' <<<"$(git_mounts)" \
+# A refused launch mounts nothing and names nothing: these absences count only for one that ran (GAP-26).
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'm117' <<<"$(git_mounts)" \
   && pass "G117 the group's directories are not scanned with HOME written in another case" \
-  || fail "G117 group scanned ($(git_mounts | grep -F m117 | head -2 | tr '\n' ' '))"
+  || fail "G117 group scanned (rc=$LAUNCH_RC; $(git_mounts | grep -F m117 | head -2 | tr '\n' ' '))"
 rm -rf "$HOME/.ai-containers/default/.agents/m117"
 
 # A walk that ends where a directory does not exist yet, written in another
@@ -374,9 +375,10 @@ OW="$TMP/ow117"; "${G[@]}" -C "$PROJ" worktree add -q "$OW" 2>/dev/null \
   && "${G[@]}" -C "$OW" update-index --add --cacheinfo "160000,$(printf '%040d' 1),vendor/n" \
   || { printf 'SCAFFOLD-FAILED: G117 worktree\n'; exit 1; }
 launch ..
-! grep -qF 'no worktree is known' "$ERR" \
+# A refused launch mounts nothing and names nothing: these absences count only for one that ran (GAP-26).
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'no worktree is known' "$ERR" \
   && pass "G117 a worktree outside the mounts, its gitdir in another case, is known" \
-  || fail "G117 worktree gitdir in another case ($(grep -F 'no worktree' "$ERR" | head -1))"
+  || fail "G117 worktree gitdir in another case (rc=$LAUNCH_RC; $(grep -F 'no worktree' "$ERR" | head -1))"
 "${G[@]}" -C "$PROJ" worktree remove --force "$OW" 2>/dev/null; rm -rf "$OW"; "${G[@]}" -C "$PROJ" worktree prune
 
 # A core.hooksPath directory two repositories name, one in another case, is one

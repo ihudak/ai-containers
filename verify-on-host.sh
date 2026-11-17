@@ -277,6 +277,13 @@ CHECK_SANDBOX_VERSION_SH="$REPO/check-sandbox-version.sh"
 #   PHASES=0 bash verify-on-host.sh      # environment banner only
 #   PHASES="5 7" bash verify-on-host.sh  # skip the phases that need Docker
 PHASES="${PHASES:-4 5 6 7}"
+# The words PHASES names, however whitespace separates them, and never a glob:
+# want_phase() matches space-separated words only, so `$'5\n7'` passed the check
+# below and then ran no phase but 0, and `*` named this directory's files
+# (review of the TST-38 fix). Rejoined with single spaces for want_phase().
+_phase_words=()
+read -r -d '' -a _phase_words < <(printf '%s' "$PHASES") || true
+PHASES="${_phase_words[*]}"
 want_phase() { case " $PHASES " in (*" $1 "*) return 0 ;; (*) return 1 ;; esac; }
 
 # A PHASES value naming only phases this script does not have must not verify
@@ -294,7 +301,7 @@ want_phase() { case " $PHASES " in (*" $1 "*) return 0 ;; (*) return 1 ;; esac; 
 # instead of silently verifying nothing.
 VALID_PHASES="0 4 5 6 7"
 _named_phases=0
-for _requested_phase in $PHASES; do
+for _requested_phase in ${_phase_words[@]+"${_phase_words[@]}"}; do
   _named_phases=$(( _named_phases + 1 ))
   case " $VALID_PHASES " in
     (*" $_requested_phase "*) : ;;

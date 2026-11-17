@@ -84,7 +84,27 @@ if ! grep -q '\${{' "$TMP/step.sh"; then
 else
   fail "TST-39 the step's script holds \${{ }} (left: $(grep -o '\${{[^}]*}}' "$TMP/step.sh" | head -n 1))"
 fi
-( cd "$TMP/r" && GITHUB_OUTPUT="$TMP/out" LATEST=v9.9.9 CURRENT="$current" bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
+# The step's environment is its own env: mapping, rendered as GitHub would, not
+# names this test sets: a mapping that swapped the two, or was lost, must fail
+# here (review of the TST-39 fix).
+stepenv=()
+while IFS= read -r kv; do
+  kv="${kv//'${{ steps.latest.outputs.tag }}'/v9.9.9}"
+  kv="${kv//'${{ steps.current.outputs.dockerfile }}'/$current}"
+  stepenv+=("${kv%%: *}=${kv#*: }")
+done < <(awk -v step="$STEP" '
+  $0 == "      - name: " step { instep = 1; next }
+  instep && /^      - / { exit }
+  instep && /^        env:[[:space:]]*$/ { inenv = 1; next }
+  instep && inenv && /^          [A-Za-z_][A-Za-z0-9_]*: / { sub(/^          /, ""); print; next }
+  inenv { inenv = 0 }
+' "$WF")
+if (( ${#stepenv[@]} )) && ! printf '%s\n' "${stepenv[@]}" | grep -q '\${{'; then
+  pass "the step's env: mapping is read and every value in it rendered (${#stepenv[@]} names)"
+else
+  fail "the step's env: mapping is read and every value in it rendered (got: ${stepenv[*]:-nothing})"
+fi
+( cd "$TMP/r" && env -u LATEST -u CURRENT ${stepenv[@]+"${stepenv[@]}"} GITHUB_OUTPUT="$TMP/out" bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
 if [[ "$rc" == 0 ]] && grep -qx 'changed=true' "$TMP/out" 2>/dev/null; then
   pass "the step updates the version and reports changed=true"
 else
@@ -99,8 +119,10 @@ else
 fi
 
 # A tag that is not nvm's shape is refused before anything uses it (TST-39):
-# one with a quote and a command substitution, and one with a slash for sed.
-for bad in 'v1.0.0"$(touch "$PWN")"' 'v1/0.0'; do
+# one with a quote and a command substitution, and one with an & that sed would
+# take for the matched text, writing a line nobody asked for (a slash, which sed
+# refuses by itself, would pass with no check at all).
+for bad in 'v1.0.0"$(touch "$PWN")"' 'v1.0.0&'; do
   ( cd "$TMP/r" && git checkout -q -- . && PWN="$TMP/pwned" GITHUB_OUTPUT="$TMP/out2" LATEST="$bad" CURRENT="$current" \
       bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
   if [[ "$rc" != 0 && ! -e "$TMP/pwned" ]] && [[ -z "$(cd "$TMP/r" && git diff --name-only)" ]]; then

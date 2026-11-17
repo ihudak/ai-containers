@@ -421,15 +421,21 @@ latest cannot be resolved at build time behind a rate limit, and
 `ARG NVM_VERSION` current. The key is empty by default and defers to that ARG,
 so the field normally reports the job's output, labelled as the Dockerfile
 default: the question is what the image will get. A project that sets the key
-pins its own version, which the job never touches.
+pins its own version, which the job never touches. The job takes the release tag as
+data: one that is not `vX.Y.Z` is refused, and it reaches the update step
+through `env:`, never pasted into the script (bugs review TST-39). Its pull
+request is opened with the `NVM_BUMP_TOKEN` secret where the repository has one:
+one opened with `GITHUB_TOKEN` starts no workflow, so the checks that block a
+merge do not run until it is reopened (feature-gaps review GAP-27).
 
-`version.sh` is sourced by `sandbox.sh`, `project-init.sh` and
-`sync-to-projects.sh` **directly**, not via `sandbox-common.sh`. That was tried
+`version.sh` is sourced by `sandbox.sh`, `project-init.sh`,
+`sync-to-projects.sh`, `project.sh` and `ai-containers-report.sh` **directly**,
+not via `sandbox-common.sh`. That was tried
 and reverted the same hour: several test fixtures copy a hand-picked set of
 engine files into an isolated tree, and a new hard dependency inside
 `sandbox-common.sh` broke twelve of them at once. Only the entry points that call
-into it need it — the same reasoning that has nine entry points sourcing
-`bash-floor.sh` directly.
+into it need it — the same reasoning that has the entry points that need no
+more of `sandbox-common.sh` sourcing `bash-floor.sh` directly.
 
 **Key env vars for `sandbox.sh`:** set inline for one run (`VAULT_PATH=/path ./sandbox.sh restricted`)
 or export in the host shell profile to default for every container. The **In container** column
@@ -646,7 +652,7 @@ To add domains not tied to any component (e.g. `google.com`, internal registries
 
 ### Conditional installs in the Dockerfile
 
-Every optional component still baked into the image has a corresponding `ARG INSTALL_<COMPONENT>=0|1` (or, for Angular CLI, `ARG ANGULAR_CLI_VERSION`) declared immediately before its `RUN` block — e.g. Angular CLI, Yarn, Kiro — each with its own `RUN` layer so toggling one doesn't invalidate the others. The seven agent-tier tools (Copilot, Claude Code, Codex, Gemini, `graphify`, `vale`, `mkdocs`) have **no** `ARG`/`RUN` pair at all: they are not part of the Dockerfile build, only scaffolding (`PATH`/`uv` env, the `npm-agent-tools` wrapper function — deliberately no baked npm prefix, see "Agent-tier tools" above) is baked, and the tools themselves install at container start into `~/.ai-tools` (see "Agent-tier tools" above). `tools.d/`-described tools (`dtctl`, `dtmgd`) are the exception among the still-baked components: instead of one `ARG`/`RUN` pair per tool, a single `ARG TOOL_VERSIONS=""` feeds one `RUN` block that copies `tools.d/`, `tools-lib.sh`, and `install-tools.sh` into the image and lets the script loop over every `name=version` pair in `TOOL_VERSIONS`. A tool with no entry in `TOOL_VERSIONS` (its `sandbox.conf` key was `OFF`) is skipped by the script itself, not by a Dockerfile conditional. That one `RUN` layer always mounts the `github_token` BuildKit secret (`--mount=type=secret,id=github_token`), used for both public-tool rate-limit auth and — when a descriptor sets `private=yes` — required private-tool auth; this repo ships no private tool, so today the secret is only ever the optional rate-limit convenience. `install-agent-skills.sh` is copied into the image (`/usr/local/bin/install-agent-skills.sh`) alongside the installer but is not run at build time — it runs at container start (see [Container startup flow](#container-startup-flow)).
+Every optional component still baked into the image has a corresponding `ARG INSTALL_<COMPONENT>=0|1` (or, for Angular CLI, `ARG ANGULAR_CLI_VERSION`) declared immediately before its `RUN` block — e.g. Angular CLI, Yarn, Kiro — each with its own `RUN` layer so toggling one doesn't invalidate the others. The seven agent-tier tools (Copilot, Claude Code, Codex, Gemini, `graphify`, `vale`, `mkdocs`) have **no** `ARG`/`RUN` pair at all: they are not part of the Dockerfile build, only scaffolding (`PATH`/`uv` env, the `npm-agent-tools` wrapper function — deliberately no baked npm prefix, see "Agent-tier tools" above) is baked, and the tools themselves install at container start into `~/.ai-tools` (see "Agent-tier tools" above). `tools.d/`-described tools (`dtctl`, `dtmgd`, `acli`) are the exception among the still-baked components: instead of one `ARG`/`RUN` pair per tool, a single `ARG TOOL_VERSIONS=""` feeds one `RUN` block that copies `tools.d/`, `tools-lib.sh`, and `install-tools.sh` into the image and lets the script loop over every `name=version` pair in `TOOL_VERSIONS`. A tool with no entry in `TOOL_VERSIONS` (its `sandbox.conf` key was `OFF`) is skipped by the script itself, not by a Dockerfile conditional. That one `RUN` layer always mounts the `github_token` BuildKit secret (`--mount=type=secret,id=github_token`), used for both public-tool rate-limit auth and — when a descriptor sets `private=yes` — required private-tool auth; this repo ships no private tool, so today the secret is only ever the optional rate-limit convenience. `install-agent-skills.sh` is copied into the image (`/usr/local/bin/install-agent-skills.sh`) alongside the installer but is not run at build time — it runs at container start (see [Container startup flow](#container-startup-flow)).
 
 ### SELinux daemons
 
@@ -708,7 +714,7 @@ The phases, and the order they actually run in, are tabulated in [docs/testing.m
 
 ### The bash floor
 
-The floor is **5.1**, declared exactly once, in `bash-floor.sh` — a small sourced file, not asserted redundantly wherever it matters. `sandbox-common.sh` sources it (so the entry points that already pulled in the whole library inherit it for free); nine other entry points that don't need the rest of `sandbox-common.sh` source it directly. Raised from the 4.3 this guard enforced before increment 4, because 4.3 was one of three mutually contradictory claims in the repo (`sandbox-common.sh` said ≥4.3, `README.md` said ≥4.4, and three test files claimed to be "written for bash 3.2" while using `local -A`/`local -n` that fails outright below 4.3 — a claim nothing exercised or could exercise, since the product itself refuses to start below 4.3).
+The floor is **5.1**, declared exactly once, in `bash-floor.sh` — a small sourced file, not asserted redundantly wherever it matters. `sandbox-common.sh` sources it (so the entry points that already pulled in the whole library inherit it for free); the other entry points that don't need the rest of `sandbox-common.sh` source it directly. Raised from the 4.3 this guard enforced before increment 4, because 4.3 was one of three mutually contradictory claims in the repo (`sandbox-common.sh` said ≥4.3, `README.md` said ≥4.4, and three test files claimed to be "written for bash 3.2" while using `local -A`/`local -n` that fails outright below 4.3 — a claim nothing exercised or could exercise, since the product itself refuses to start below 4.3).
 
 What 5.1 excludes, and the symlinked-`TMPDIR` arm that stands in for a Mac CI cannot provide, are in [docs/testing.md](docs/testing.md).
 
@@ -748,10 +754,16 @@ Comments, docs and this file cite code by what it **says**, never by line
 number. Write `<file>: ` followed by a backticked snippet, on one line: a
 function as `name()`, or a short literal copied from the line meant.
 `tests/test-code-references.sh` checks that every such snippet still occurs in
-the file it names. It refuses a numbered reference to any tracked file unless
-the line carries `ref-lint: allow: <reason>`, and it refuses a citation split
+the file it names, in each of the three spellings in use: `` <file>: `snippet` ``,
+`` `<file>: snippet` `` and `` `<file>`: `snippet` `` (feature-gaps review GAP-25;
+in the last two a path that is no tracked file there is prose). It refuses a
+numbered reference to any tracked file unless the line carries
+`ref-lint: allow: <reason>`, which a quoted error message that names its file
+takes too, and it refuses a citation in any of the three spellings that is split
 across two lines, which it could not check. CHANGELOG.md and docs/superpowers/
-are dated records and keep their numbers.
+are dated records and keep their numbers. The review logs in docs/reviews/ are
+checked for the first spelling only: in the other two their entries quote the
+code they found wrong, which their fixes remove.
 
 Numbers rot on every edit above them, and one number cannot be right in this
 repo and mgd-ai-containers at once. On 2026-10-02, 21 of the ~55 in `tests/`

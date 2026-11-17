@@ -40,7 +40,7 @@ trap '[[ "$BASHPID" == "$TMP_OWNER" ]] && rm -rf "$TMP"' EXIT
 #
 # AND SO IS bash-floor.sh, WHICH THE SCRIPT SOURCES FROM BESIDE ITSELF. Copying
 # the tool alone builds a world the tool cannot run in: the source fails, bash
-# prints `bash-floor.sh: No such file or directory` into every assertion's
+# prints `bash-floor.sh: No such file or directory` into every assertion's  # ref-lint: allow: a quoted error message, not a citation
 # captured output, and — because the script does not `set -e` — execution
 # carries on with the floor guard never loaded. Fourteen assertions passed that
 # way, and deleting the source line outright would not have failed one of them.

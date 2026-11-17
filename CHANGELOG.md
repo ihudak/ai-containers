@@ -32,7 +32,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   alone, and `gc` offers a copy with no label, made before it, only under a
   path this home's registries know; `./project.sh gc --all` offers the rest,
   for copies from before the label or from a distro that no longer exists.
-  `repo.sh gc` and `repo.sh list --copies` do not read the label yet.
 
 - **`repo-git-reset.sh inspect` reports `WORKTREE|clean|changed|?`**, so a caller
   can tell whether a volume's checkout has uncommitted changes. `repo.sh` can
@@ -204,6 +203,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   would not remove and keeps its registry line; `add` refuses a source holding
   `|`; and a first clone that fails removes the volume it made, so the next run
   seeds it again.
+- **`verify-on-host.sh` fails a `PHASES` that names no phase.** A `PHASES` of
+  only whitespace was set, so not defaulted, and named nothing: the run checked
+  nothing and reported `RESULT: PASSED`. It is now a recorded failure. Phases
+  separated by a newline or a tab, which passed that check and then ran none
+  but Phase 0, now run, and a glob is read as written. `PHASES=0`, the
+  environment banner alone, still passes (bugs review TST-38).
+- **The weekly nvm update takes the release tag as data.** The tag from
+  nvm-sh/nvm's latest release was pasted into the job's script and a `sed`
+  program unchecked, in a job that can write to the repository. A tag that is
+  not `vX.Y.Z` is now refused, and the update step takes it through `env:`
+  (bugs review TST-39). Its pull request is opened with an `NVM_BUMP_TOKEN`
+  secret where the repository has one, so that its checks run: one opened with
+  `GITHUB_TOKEN` starts none until it is reopened (feature-gaps review GAP-27).
+- **The hermetic suite runs from a path with a space.** `tests/run-all.sh` split
+  every test's path at the space and ran each half (bugs review TST-40).
+- **`tests/test-code-references.sh` checks every spelling of a citation.** File
+  and snippet inside one pair of backticks, and a backticked file before a
+  backticked snippet, were not checked, and nor was either one split across
+  lines. They are now, outside the review logs, which quote in them the code
+  each entry found wrong (feature-gaps review GAP-25).
 - **`project.sh rm` and `mv` no longer take a directory here for another
   project of its name.** A bare name was matched against the registered
   projects' basenames even when it was an unregistered directory in the
