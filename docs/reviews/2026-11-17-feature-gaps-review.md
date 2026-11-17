@@ -156,7 +156,7 @@ Checked and found sound (no finding): the registry edits (`_prj_edit()`, `_prj_r
 - **Suggested approach:** teach `cite_re` the two other forms (same resolution, same `grep -qF`), with fixture lines for each; treat a snippet that names no tracked file as prose, as the numbered rule already does.
 
 ### GAP-26: a handful of "nothing is named / nothing is mounted" checks pass when their launch is refused outright
-- Status: DONE (2026-11-17, review agent). Each of the eight checks also requires `LAUNCH_RC` 0. Six pass here; the two G117 checks run only where `tests/test-git-internals-ro-casefold.sh` does (a casefold tmpfs in a user namespace, or macOS), which neither this host nor CI offers, so they have not been seen to pass yet; the Mac agent's row in the platform-issues table asks for that run.
+- Status: DONE (2026-11-17, review agent). Each of the eight checks also requires `LAUNCH_RC` 0. Six pass here; the two G117 checks run only where `tests/test-git-internals-ro-casefold.sh` does (a casefold tmpfs in a user namespace, or macOS), which neither this host nor CI offers, so the Mac agent ran them (2026-11-17, at `859662f`, macOS 26.7.3, APFS `TMPDIR`): the file passes with 0 failures, both G117 checks included.
 - **Area:** TST (git-internals and launcher tests)
 - **Source:** AGENTS.md, "Every case must have been seen failing"; the brief's "a fixture that never reaches the code path its name claims".
 - **Current state:** `launch()` leaves an empty mount list and only an `ERROR:` in `$ERR` when the launcher refuses, and these checks assert only absences, with no `LAUNCH_RC` and no positive check on the same launch:
