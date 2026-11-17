@@ -672,6 +672,7 @@ repo-git-reset.sh:return-flip:b73014221ca338b40fd35301b6284611fa3a10be
 repo-git-reset.sh:return-flip:e9010fd23d8d40b20a673f837cc76b2f61ff559c
 repo-git-reset.sh:return-flip:58d8b10ae5d6476af1fdc5cf137421df23328c93
 repo-git-reset.sh:return-flip:9d7c988cf3bdae6cd2abe2e7113b07531c473153
+repo-git-reset.sh:return-flip:222cbd21dcb0c3e25e9e718ebf955bb9443cde34
   git config --global --add safe.directory "$1" >/dev/null 2>&1 || true
   git … update-index -q --ignore-submodules --refresh >/dev/null 2>&1 || true
   git -C "$F" branch --quiet --set-upstream-to="origin/$b" "$b" >/dev/null 2>&1 || true
@@ -683,6 +684,7 @@ repo-git-reset.sh:return-flip:9d7c988cf3bdae6cd2abe2e7113b07531c473153
   [[ -f "$gd/packed-refs" ]] || return 0           (volume_refs and other_ref)
   [[ -f "$1/.git/HEAD" ]] || return 0              (volume_head)
   return 0                                         (the end of volume_head)
+  [[ "$line" == 'ref: refs/heads/'* ]] && return 0 (volume_detached, REPO-21)
   worktree_state()'s `printf '?'; return 0` exits (the guards on cloned/branch, the
                                                    tip's shape, read-tree, the
                                                    ls-files status) and its
@@ -704,7 +706,8 @@ repo-git-reset.sh:return-flip:9d7c988cf3bdae6cd2abe2e7113b07531c473153
   an `if` body whose status nothing reads. volume_refs and
   volume_head are read only through `< <(…)` or `$(…)`, whose status is
   dropped: `local x; x="$(volume_head …)"` keeps an assignment's status, and
-  nothing tests it. other_ref is read the same way. Their output is the
+  nothing tests it. volume_detached is read the same way, by
+  `detached="$(volume_detached "$dir")"`, and only what it printed is tested. other_ref is read the same way. Their output is the
   same either way.
   This is a claim about the two ENDS of the chain, not just the middle: the
   status is not read at the call site AND it cannot reach `set -e`, so there is
@@ -792,7 +795,9 @@ tests/portability.sh:return-flip:ab48601bc043d3f71135560f6f580cf13e73f33c
 # ── 20 ────────────────────────────────────────────────────────────────────────
 GROUP: inspect's unpushed count is guarded twice, and either guard alone gives '?'
 repo-git-reset.sh:logic-flip:32431e659d38deead4af297715701e4c493d4218
-    if [[ -n "$cloned" && "$oid" != '?' ]]; then
+repo-git-reset.sh:logic-flip:7be89bf264a60fcf267bbbe164579af697e1d1be
+    if [[ -n "$cloned" && "$oid" != '?' ]]; then          (a branch's count)
+    if [[ -n "$cloned" && "$detached" != '?' ]]; then     (a detached HEAD's, REPO-21)
   damaged:  `||` — the count is attempted when only one of the two holds.
   EQUIVALENT: both ways out of the guard print the same `?`. With no clone, F
   names a directory git clone removed when it failed, so `git -C "$F" rev-list`
@@ -804,7 +809,9 @@ repo-git-reset.sh:logic-flip:32431e659d38deead4af297715701e4c493d4218
   would be 0, the record would say so, and a test could kill the mutant. Reorder
   that call and this entry must be re-measured. Either failure takes the `|| unpushed='?'` fallback,
   and the regex check that follows does the same. So the BRANCH record is
-  byte-identical, and no test could tell the guard from its damage. The guard
+  byte-identical, and no test could tell the guard from its damage. The
+  DETACHED count (REPO-21) copies the call, argument order included, so the
+  same holds for its record. The guard
   saves a doomed git call, not a wrong answer. A clone killed by a signal, which
   leaves its directory behind, would still fail in rev-list: it has no refs
   under origin and may lack the object.
