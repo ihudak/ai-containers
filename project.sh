@@ -566,6 +566,15 @@ prj_copy_risk() {
         fi ;;
       NESTED) items+=("$rest: a git repository inside the checkout"); held+=("$rest: a git repository inside the checkout") ;;
       NESTED-MORE) items+=("$rest more git repositories inside the checkout"); held+=("$rest more git repositories inside the checkout") ;;
+      # Lost with the copy as with a reset: commits made on a detached HEAD, and a
+      # submodule's repository in .git/modules (bugs review REPO-21, REPO-20).
+      DETACHED)
+        if [[ ! "$rest" =~ ^[0-9]+$ ]]; then items+=("a detached HEAD: unpushed count unknown")
+        elif (( 10#$rest > 0 )); then
+          items+=("a detached HEAD: $rest unpushed commit(s)"); held+=("a detached HEAD: $rest unpushed commit(s)")
+        fi ;;
+      MODULE) items+=(".git/modules/$rest: a submodule's repository"); held+=(".git/modules/$rest: a submodule's repository") ;;
+      MODULE-MORE) items+=("$rest more submodule repositories in .git/modules"); held+=("$rest more submodule repositories in .git/modules") ;;
       WORKTREE)
         wt_got=1
         case "$rest" in

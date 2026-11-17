@@ -52,7 +52,11 @@ inspect  Clone the recorded remote privately, then report on stdout, one
            PRIMARY|<branch>                the remote's default branch
            STALE|<reason>                  only when the remote could not be cloned
            BRANCH|<name>|<unpushed>|<flags> one per local branch of the volume
+           DETACHED|<unpushed>             only when HEAD is detached: its commits on no
+                                           remote branch or tag, ? when not counted
            STASH|<entries>                 only when the volume has a stash
+           MODULE|<name>                   a submodule's repository in .git/modules
+           MODULE-MORE|<n>                 how many more past the first 50
            TAG|<name>|<kept>|<on-remote>   one per local tag of the volume:
                                            <kept> yes, no, moved (the remote has
                                            it on another commit), same (on the
@@ -62,7 +66,8 @@ inspect  Clone the recorded remote privately, then report on stdout, one
            WORKTREE|<state>                clean, changed (a tracked file differs from the
                                            branch's tip, or an untracked file the checkout's
                                            own ignore rules do not cover exists) or ? (not
-                                           cloned, detached HEAD, or a git step failed)
+                                           cloned, detached HEAD, a git repository inside
+                                           the checkout, or a git step failed)
            END|inspect                     last, once everything was reported
          reset: DELETED|<branch>, ON|<branch>, AT|<commit>, DELETED-COUNT|<n>,
            REMOVED|<path> for each git repository inside the checkout it removed
@@ -77,7 +82,8 @@ pull     Fast-forward the checked-out branch to the remote's tip, keeping
          untracked files and every branch already on the remote. Refused when
          the checkout has uncommitted or staged changes, any local branch has
          commits on no remote branch or tag, or anything the fast-forward would
-         replace holds untracked or ignored files.
+         replace holds untracked or ignored files, or .git/modules holds a
+         submodule's repository.
 EOF
 }
 
@@ -185,7 +191,8 @@ check_volume() {
         n=$(( n + 1 ))
         (( n <= 50 )) && printf 'NESTED|%s\n' "$(shown "${p#"$dir/"}")"
       done
-      (( n > 50 )) && printf 'NESTED-MORE|%s\n' "$(( n - 50 ))" ;;
+      (( n > 50 )) && printf 'NESTED-MORE|%s\n' "$(( n - 50 ))"
+      NESTED_FOUND="$n" ;;
     defer) NESTED_PENDING=1 ;;   # reset removes them itself, once it knows it will go ahead
   esac
 }
@@ -237,6 +244,8 @@ F="" CLONE_ERR=""
 UNDO_DIR="" UNDO_FROM="" UNDO_TO=""
 # Set by check_volume's defer mode until remove_nested has run (reset).
 NESTED_PENDING=""
+# Set by check_volume's list mode: how many git repositories it listed (inspect).
+NESTED_FOUND=0
 fresh_clone() {
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/repo-git.XXXXXX")" || die "cannot make a private directory"
   F="$WORK/clone"
@@ -303,6 +312,19 @@ volume_head() {
   line="$(head -c 300 "$1/.git/HEAD" 2>/dev/null)"; line="${line%%$'\n'*}"
   [[ "$line" == 'ref: refs/heads/'* ]] && printf '%s' "${line#ref: refs/heads/}"
   return 0
+}
+
+# volume_detached <dir>: a detached HEAD's commit, from HEAD as text; `?` for
+# a HEAD that names no branch and holds no object id either; nothing for a HEAD
+# on a branch, or none. reset replaces .git, and the commits made on a detached
+# HEAD went with it, while the confirmation listed only the branches (bugs
+# review REPO-21).
+volume_detached() {
+  local line
+  [[ -f "$1/.git/HEAD" ]] || return 0
+  line="$(head -c 300 "$1/.git/HEAD" 2>/dev/null)"; line="${line%%$'\n'*}"
+  [[ "$line" == 'ref: refs/heads/'* ]] && return 0
+  if [[ "$line" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then printf '%s' "$line"; else printf '?'; fi
 }
 
 # A name for the records and the terminal: a | or a newline would split the
@@ -403,6 +425,16 @@ cmd_inspect() {
     flags=""; [[ "$name" == "$current" ]] && flags="current"
     printf 'BRANCH|%s|%s|%s\n' "$(shown "$name")" "$unpushed" "$flags"
   done < <(volume_branches "$dir")
+  local detached; detached="$(volume_detached "$dir")"
+  if [[ -n "$detached" ]]; then
+    unpushed='?'
+    if [[ -n "$cloned" && "$detached" != '?' ]]; then
+      unpushed="$(git -C "$F" -c core.commitGraph=false -c core.multiPackIndex=false \
+        rev-list --count "$detached" --not --remotes=origin --tags 2>/dev/null)" || unpushed='?'
+      [[ "$unpushed" =~ ^[0-9]+$ ]] || unpushed='?'
+    fi
+    printf 'DETACHED|%s\n' "$unpushed"
+  fi
   # What else replacing .git loses besides branches, for the confirmation (bugs
   # review REPO-8): the stash, with its entry count, and every local tag — kept
   # when the remote has it at the same object (the clone brings it back), and
@@ -414,6 +446,20 @@ cmd_inspect() {
     [[ "$n" =~ ^[1-9][0-9]*$ ]] || n='?'
     printf 'STASH|%s\n' "$n"
   fi
+  # A submodule's repository, with any commit never pushed to the submodule's
+  # remote, lives in .git/modules, which reset replaces with .git (bugs review
+  # REPO-20). One record per entry there: a module named a/b is a/, and a
+  # directory that is no repository is listed too.
+  local -a mods=(); local m
+  if [[ -d "$gd/modules" ]]; then
+    mapfile -d '' mods < <(find "$gd/modules" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  fi
+  n=0
+  for m in ${mods[@]+"${mods[@]}"}; do
+    n=$(( n + 1 ))
+    (( n <= 50 )) && printf 'MODULE|%s\n' "$(shown "${m#"$gd/modules/"}")"
+  done
+  (( n > 50 )) && printf 'MODULE-MORE|%s\n' "$(( n - 50 ))"
   while IFS=$'\t' read -r name oid; do
     [[ -n "$name" ]] || continue
     kept='?'; on='?'
@@ -446,7 +492,16 @@ cmd_inspect() {
     fi
     printf 'TAG|%s|%s|%s\n' "$(shown "$name")" "$kept" "$on"
   done < <(volume_refs "$dir" tags)
-  printf 'WORKTREE|%s\n' "$(worktree_state "$dir" "$current" "$cloned")"
+  # Not while a git repository lies inside the checkout: the clone's git, using
+  # the volume as a work tree, opened one where the branch has a gitlink, read
+  # its config and includes, and an include of the helper's own stdout hung
+  # inspect, and every reset after it, for ever (bugs review REPO-19). The state
+  # is unknown, which every reader counts at risk.
+  if (( NESTED_FOUND > 0 )); then
+    printf 'WORKTREE|?\n'
+  else
+    printf 'WORKTREE|%s\n' "$(worktree_state "$dir" "$current" "$cloned")"
+  fi
   # Last, so a reader can tell a finished inspection from one cut short: repo.sh
   # reads these records through a process substitution and never sees this
   # script's exit status (REPO-16).
@@ -487,11 +542,15 @@ cmd_reset() {
   # removal has not run (a guard against an edit that drops the call).
   [[ -z "$NESTED_PENDING" ]] || die "the git repositories inside the checkout were not removed; refusing"
   mark_safe_directory "$dir"
-  # The volume is only a worktree here: the clone's git checks the remote's tree
-  # out into it, then removes everything else — .git is never touched by clean.
+  # The volume is only a worktree here: the clone's git empties it, then checks
+  # the remote's tree out into it — .git is never touched by clean. Emptied
+  # FIRST: the clone's index is empty, so everything there is untracked, and a
+  # checkout over it applied an untracked .gitattributes of the agent's (eol=crlf,
+  # working-tree-encoding) to every file it wrote, which the clean after it then
+  # removed, leaving no trace of why (bugs review REPO-23).
+  git --git-dir="$F/.git" --work-tree="$dir" clean -ffdxq || die "could not clean the working tree"
   git --git-dir="$F/.git" --work-tree="$dir" checkout --quiet --force -B "$primary" "refs/remotes/origin/$primary" \
     || die "could not check out $primary"
-  git --git-dir="$F/.git" --work-tree="$dir" clean -ffdxq || die "could not clean the working tree"
   local b
   while IFS= read -r b; do
     [[ -n "$b" && "$b" != "refs/heads/$primary" ]] && git -C "$F" update-ref -d "$b"
@@ -561,6 +620,17 @@ cmd_pull() {
   done
   [[ -z "$(find "$gd/worktrees" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] \
     || die "the repository has linked worktrees; remove them (git worktree remove), or use reset"
+  # A submodule's repository lives in .git/modules, with any commit never pushed
+  # to the submodule's remote; once its checkout's .git file was gone (`git
+  # submodule deinit`), sync replaced .git and lost it, in silence (bugs review
+  # REPO-20). A find that fails refuses too.
+  local mods
+  if [[ -e "$gd/modules" ]]; then
+    mods="$(find "$gd/modules" -mindepth 1 -print -quit 2>/dev/null)" \
+      || die "cannot search .git/modules; use reset"
+    [[ -z "$mods" ]] \
+      || die "the repository holds submodule repositories in .git/modules; push their work and remove them, or use reset"
+  fi
   local other; other="$(other_ref "$dir")"
   [[ -z "$other" ]] || die "$(shown "$other") holds commits sync would drop with .git; delete it, or use reset"
   local tname toid

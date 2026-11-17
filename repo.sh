@@ -138,29 +138,29 @@ seed_binds_check() {
   local -a t=()
   # An empty source is no path: resolve_path "" is the current directory, which
   # a re-seed would copy into the volume (bugs review REPO-18).
-  [[ -n "$2" ]] || { printf 'ERROR: no source is recorded for this repo; refusing to seed it.\n' >&2; exit 1; }
+  [[ -n "$2" ]] || { printf 'ERROR: no source is recorded for this repo; refusing to seed it.\n' >&2; return 1; }
   if [[ "$1" == git ]]; then
-    if [[ -d "$HOME/.ssh" ]]; then docker_bind t "$HOME/.ssh" /root/.ssh-host ro "Your ~/.ssh" || exit 1; fi
+    if [[ -d "$HOME/.ssh" ]]; then docker_bind t "$HOME/.ssh" /root/.ssh-host ro "Your ~/.ssh" || return 1; fi
   else
     local real; real="$(resolve_path "$2")"
     # A source gone since it was registered: said now, not after its volume is made.
-    [[ -d "$real" ]] || { printf 'ERROR: source path does not exist or is not a directory: %s\n' "$2" >&2; exit 1; }
-    docker_bind t "$real" /src ro "The source path" || exit 1
+    [[ -d "$real" ]] || { printf 'ERROR: source path does not exist or is not a directory: %s\n' "$2" >&2; return 1; }
+    docker_bind t "$real" /src ro "The source path" || return 1
   fi
 }
 
 # Seed a fresh volume from a local host path (one-time copy through virtiofs).
 seed_from_path() {
   local vol="$1" src="$2"
-  [[ -n "$src" ]] || { printf 'ERROR: no source path is recorded for this repo; refusing to seed it.\n' >&2; exit 1; }
+  [[ -n "$src" ]] || { printf 'ERROR: no source path is recorded for this repo; refusing to seed it.\n' >&2; return 1; }
   local real; real="$(resolve_path "$src")"
   if [[ ! -d "$real" ]]; then
     printf 'ERROR: source path does not exist or is not a directory: %s\n' "$src" >&2
-    exit 1
+    return 1
   fi
   # A path docker cannot be handed intact (a ':' through -v, a name that is
   # not UTF-8) is refused rather than copied from somewhere else (LNCH-23).
-  local -a hb=(); docker_bind hb "$real" /src ro "The source path" || exit 1
+  local -a hb=(); docker_bind hb "$real" /src ro "The source path" || return 1
   printf 'Seeding volume "%s" from host path %s ...\n' "$vol" "$real"
   docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     "${hb[@]}" \
@@ -171,13 +171,13 @@ seed_from_path() {
 # Refresh a volume from its local host path source.
 sync_from_path() {
   local vol="$1" src="$2"
-  [[ -n "$src" ]] || { printf 'ERROR: no source path is recorded for this repo; refusing to sync it.\n' >&2; exit 1; }
+  [[ -n "$src" ]] || { printf 'ERROR: no source path is recorded for this repo; refusing to sync it.\n' >&2; return 1; }
   local real; real="$(resolve_path "$src")"
   if [[ ! -d "$real" ]]; then
     printf 'ERROR: source path no longer exists: %s\n' "$src" >&2
-    exit 1
+    return 1
   fi
-  local -a hb=(); docker_bind hb "$real" /src ro "The source path" || exit 1
+  local -a hb=(); docker_bind hb "$real" /src ro "The source path" || return 1
   printf 'Syncing volume "%s" from host path %s ...\n' "$vol" "$real"
   # Prefer rsync (mirror with deletes) if available in the image; fall back to cp.
   docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
@@ -199,7 +199,7 @@ seed_from_git() {
   # Only one that exists: -v made a missing ~/.ssh, root-owned, and --mount (a
   # HOME holding ':') refuses one (final review of the LNCH-23 fix).
   local -a hb=()
-  if [[ -d "$HOME/.ssh" ]]; then docker_bind hb "$HOME/.ssh" /root/.ssh-host ro "Your ~/.ssh" || exit 1; fi
+  if [[ -d "$HOME/.ssh" ]]; then docker_bind hb "$HOME/.ssh" /root/.ssh-host ro "Your ~/.ssh" || return 1; fi
   printf 'Cloning %s into volume "%s" (auth via host ~/.ssh) ...\n' "$url" "$vol"
   docker run --rm --entrypoint bash ${seed_selinux_opt:+"$seed_selinux_opt"} \
     "${hb[@]}" \
@@ -212,6 +212,27 @@ seed_from_git() {
       export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"
       git clone "$1" /dst
       chown -R "$2" /dst' _ "$url" "${host_uid}:${host_gid}"
+}
+
+# seed_new_volume <name> <type> <source>: make the repo's base volume and copy
+# its source into it. A copy that fails (no network, a wrong key) removes the
+# volume it was made for: left empty and labelled, every later sync ran the git
+# helper on it, which refused it as no repository, and reset left it untouched,
+# so only rm and add again mended it, which nothing said (bugs review REPO-27).
+# Returns non-zero on any failure; the caller ends or goes on to the next repo.
+seed_new_volume() {
+  local name="$1" type="$2" source="$3" vol rc=0
+  vol="$(repo_volume_name "$name")"
+  repo_base_volume_create "$name" "$type" "$source" || return 1
+  if [[ "$type" == git ]]; then seed_from_git "$vol" "$source" || rc=$?
+  else seed_from_path "$vol" "$source" || rc=$?; fi
+  (( rc != 0 )) || return 0
+  if docker volume rm "$vol" >/dev/null 2>&1; then
+    printf 'ERROR: the first copy into volume "%s" failed; that volume is removed again, so the next run seeds it afresh.\n' "$vol" >&2
+  else
+    printf 'ERROR: the first copy into volume "%s" failed, and the volume could not be removed: docker volume rm %s\n' "$vol" "$vol" >&2
+  fi
+  return 1
 }
 
 # Pull latest into an existing git volume — through repo-git-reset.sh's pull,
@@ -390,6 +411,15 @@ cmd_add() {
     fi
   fi
 
+  # The registry is one line per repo, fields split at '|': a source holding one
+  # read back as another directory, which a REPOS attach then bound writable
+  # (bugs review REPO-26). Refused, as reindex leaves such a volume out.
+  if [[ "$source" == *[$'|\n\r']* ]]; then
+    printf "ERROR: the source %s holds a | or a line break, which the registry (one line per repo,\n" "$(_ac_term "$source")" >&2
+    printf "       fields split at '|') cannot hold; refusing it. Use a path or URL without one.\n" >&2
+    exit 1
+  fi
+
   local backend; backend="$(repo_effective_backend "$type")"
   local now; now="$(date +%s)"
 
@@ -417,13 +447,8 @@ cmd_add() {
     exit 1
   fi
 
-  seed_binds_check "$type" "$source"
-  repo_base_volume_create "$name" "$type" "$source"
-  if [[ "$type" == "git" ]]; then
-    seed_from_git "$vol" "$source"
-  else
-    seed_from_path "$vol" "$source"
-  fi
+  seed_binds_check "$type" "$source" || exit 1
+  seed_new_volume "$name" "$type" "$source" || exit 1
 
   repo_registry_upsert "$name" "$type" "$source" "$now" "$now" "$backend"
   printf 'OK: repo "%s" (%s) seeded into volume "%s" and registered.\n' "$name" "$type" "$vol"
@@ -457,19 +482,23 @@ sync_one() {
     return 0
   fi
 
+  # Every step is checked here, not left to `set -e`: cmd_sync calls this in a
+  # `||` list, so that one repo it cannot sync does not end the run before the
+  # rest (bugs review REPO-24), and bash ignores `set -e` in such a call.
   ensure_seed_image
   if ! docker volume inspect "$vol" >/dev/null 2>&1; then
     printf "  %s: base volume missing — re-seeding from source.\n" "$name" >&2
-    seed_binds_check "$type" "$source"
-    repo_base_volume_create "$name" "$type" "$source"
-    if [[ "$type" == "git" ]]; then seed_from_git "$vol" "$source"; else seed_from_path "$vol" "$source"; fi
+    seed_binds_check "$type" "$source" || return 1
+    seed_new_volume "$name" "$type" "$source" || return 1
+  elif [[ "$type" == "git" ]]; then
+    sync_from_git "$vol" || return 1
   else
-    if [[ "$type" == "git" ]]; then sync_from_git "$vol"; else sync_from_path "$vol" "$source"; fi
+    sync_from_path "$vol" "$source" || return 1
   fi
 
   local now added; now="$(date +%s)"
   added="$(repo_record_field "$record" 4)"
-  repo_registry_upsert "$name" "$type" "$source" "$added" "$now" "$backend"
+  repo_registry_upsert "$name" "$type" "$source" "$added" "$now" "$backend" || return 1
   printf '  OK: %s synced.\n' "$name"
 }
 
@@ -508,11 +537,17 @@ cmd_sync() {
     targets+=("$name")
   fi
 
-  local target
+  # Each repo is tried, and each that fails is named: one refusal (uncommitted
+  # changes, a stash) ended `sync --all` before the repos after it (REPO-24).
+  local target; local -a failed=()
   for target in "${targets[@]}"; do
-    sync_one "$target"
+    sync_one "$target" || failed+=("$target")
   done
   printf 'NOTE: :rw / :rwcopy working copies are NOT updated by sync — use ./repo.sh reset <name>, or remove the working-copy volumes to re-seed.\n'
+  if (( ${#failed[@]} )); then
+    printf 'ERROR: not synced: %s (the reason for each is above).\n' "${failed[*]}" >&2
+    exit 1
+  fi
 }
 
 # wc_owner <volume> <this HOME's id, or empty>: whose working copy it is, by its
@@ -706,12 +741,26 @@ cmd_rm() {
     fi
   fi
 
-  docker volume rm "$vol" >/dev/null 2>&1 || true
-  local wc
+  # Each removal is checked: docker refuses a volume a container uses, a stopped
+  # one too, and rm said "OK: removed" and dropped the registry line with the
+  # volume still there (bugs review REPO-25). The line is kept while the base
+  # volume is.
+  local wc base_left=0; local -a stuck=()
+  if (( has_base )) && ! docker volume rm "$vol" >/dev/null 2>&1; then stuck+=("$vol"); base_left=1; fi
   for wc in $workcopies; do
-    docker volume rm "$wc" >/dev/null 2>&1 || true
+    docker volume rm "$wc" >/dev/null 2>&1 || stuck+=("$wc")
   done
-  repo_registry_remove "$name"
+  (( base_left )) || repo_registry_remove "$name"
+  if (( ${#stuck[@]} )); then
+    printf 'ERROR: could not remove %d volume(s) of repo "%s"; a container, a stopped one too, may still use them:\n' "${#stuck[@]}" "$name" >&2
+    for wc in "${stuck[@]}"; do printf '         %s   (see: docker ps -a --filter volume=%s)\n' "$wc" "$wc" >&2; done
+    if (( base_left )); then
+      printf '       Its registry entry is kept while its base volume exists. Remove those containers, then run ./repo.sh rm %s again.\n' "$name" >&2
+    else
+      printf '       Its base volume and registry entry are gone. Remove those containers, then: docker volume rm <volume>\n' >&2
+    fi
+    exit 1
+  fi
   printf 'OK: removed repo "%s".\n' "$name"
 }
 
@@ -742,37 +791,55 @@ reset_one() {
     return 0
   fi
 
+  # Every step is checked here, not left to `set -e`, which bash ignores in
+  # cmd_reset's `||` list: one repo that fails no longer ends `reset --all`
+  # before the rest (bugs review REPO-24).
   ensure_seed_image
-  # Drop per-workspace writable working copies (that is where active edits live).
-  local workcopies wc
+  local base=0
+  docker volume inspect "$vol" >/dev/null 2>&1 && base=1
+  # A git repo with no branch to reset onto — the remote could not be cloned
+  # (STALE), the inspection did not run, or the remote names no primary — is
+  # left untouched, its working copies included, before anything is removed:
+  # they were removed, unchecked, and the run ended "OK" (bugs review REPO-22).
+  # Guessing a branch would be inventing the target of a destructive operation.
+  if (( base )) && [[ "$type" == "git" && -z "$primary" ]]; then
+    printf '  %s: %s — left untouched, its working copies included.\n' "$name" "${RESET_SKIP[$name]:-no branch to reset onto}" >&2
+    return 1
+  fi
+
+  if (( ! base )); then
+    printf '  %s: base volume missing — re-seeding clean from source.\n' "$name"
+    seed_binds_check "$type" "$source" || return 1
+    seed_new_volume "$name" "$type" "$source" || return 1
+  elif [[ "$type" != "git" ]]; then
+    sync_from_path "$vol" "$source" || return 1
+  else
+    reset_git "$vol" "$primary" || return 1
+  fi
+
+  # Drop per-workspace writable working copies (that is where active edits live)
+  # only once the base volume is reset: removed first, they were lost whenever
+  # that step then failed — a re-seed with no network, a path source gone, a
+  # remote that refused the clone this time — and the repo was otherwise left
+  # as it was (review of the REPO-22 fix).
+  local workcopies wc wc_left=0
   workcopies="$(repo_workcopy_volumes "$name")"
   for wc in $workcopies; do
-    docker volume rm "$wc" >/dev/null 2>&1 && printf '  %s: removed working copy %s\n' "$name" "$wc" || true
-  done
-
-  if ! docker volume inspect "$vol" >/dev/null 2>&1; then
-    printf '  %s: base volume missing — re-seeding clean from source.\n' "$name"
-    seed_binds_check "$type" "$source"
-    repo_base_volume_create "$name" "$type" "$source"
-    if [[ "$type" == "git" ]]; then seed_from_git "$vol" "$source"; else seed_from_path "$vol" "$source"; fi
-  else
-    if [[ "$type" != "git" ]]; then
-      sync_from_path "$vol" "$source"
-    elif [[ -n "$primary" ]]; then
-      reset_git "$vol" "$primary"
+    if docker volume rm "$wc" >/dev/null 2>&1; then
+      printf '  %s: removed working copy %s\n' "$name" "$wc"
     else
-      # detect_primary falls back all the way to the checked-out branch, so an
-      # empty answer means a detached HEAD with no usable remote. Guessing a
-      # branch there would be inventing the target of a destructive operation.
-      printf '  %s: no branch to reset onto (detached HEAD, no usable remote) — left untouched.\n' "$name"
-      printf '         Inspect it directly, or re-add the repo to re-clone it.\n'
-      return 0
+      printf '  WARNING: %s: could not remove working copy %s; a container, a stopped one too, may still use it.\n' "$name" "$wc" >&2
+      wc_left=1
     fi
-  fi
+  done
 
   local now added; now="$(date +%s)"
   added="$(repo_record_field "$record" 4)"
-  repo_registry_upsert "$name" "$type" "$source" "$added" "$now" "$backend"
+  repo_registry_upsert "$name" "$type" "$source" "$added" "$now" "$backend" || return 1
+  if (( wc_left )); then
+    printf '  %s: reset, but a working copy is still there (named above).\n' "$name" >&2
+    return 1
+  fi
   printf '  OK: %s reset to a clean state.\n' "$name"
 }
 
@@ -782,7 +849,9 @@ reset_one() {
 # the branch named in the summary is the branch reset is handed — not a second
 # derivation that could disagree with what was approved.
 declare -A RESET_PRIMARY=()
-declare -A RESET_STALE=()
+# Why a git repo with a base volume has no primary: reset_one says it, and
+# leaves the repo untouched.
+declare -A RESET_SKIP=()
 RESET_SUMMARY=()
 RESET_AT_RISK=0
 
@@ -817,7 +886,7 @@ collect_inspections() {   # $@ = repo names
     fi
 
     ensure_seed_image
-    local branches=() tags=() nested=() primary="" stale="" stash_n="" nested_more="" ended=""
+    local branches=() tags=() nested=() modules=() primary="" stale="" stash_n="" nested_more="" modules_more="" detached="" ended=""
     while IFS= read -r line; do
       kind="${line%%|*}"; rest="${line#*|}"
       case "$kind" in
@@ -832,26 +901,30 @@ collect_inspections() {   # $@ = repo names
         TAG)   tags+=("$rest") ;;
         NESTED) nested+=("$rest") ;;
         NESTED-MORE) nested_more="$rest" ;;
+        DETACHED) detached="$rest" ;;
+        MODULE) modules+=("$rest") ;;
+        MODULE-MORE) modules_more="$rest" ;;
         END) ended=1 ;;
       esac
     done < <(inspect_git "$vol")
 
     [[ -n "$primary" ]] && RESET_PRIMARY["$name"]="$primary"
-    [[ -n "$stale"   ]] && RESET_STALE["$name"]="$stale"
 
     if [[ -z "$primary" ]]; then
-      # Its working copies are still removed, as reset_one does for every repo
-      # it resets: only the base volume's checkout is skipped.
-      RESET_SUMMARY+=("  - ${name}: no branch to reset onto (detached HEAD, no usable remote) — its base volume will be left untouched; its working copies are still removed")
+      # No branch to reset onto, and the reason, in the summary the user
+      # approves: the helper prints no PRIMARY when the remote could not be
+      # cloned (STALE), and none at all when it did not run (git_helper_run's
+      # ERROR is on stderr, above). Nothing of the repo is removed (REPO-22).
+      local why
+      if [[ -n "$stale" ]]; then why="STALE: its recorded remote could not be cloned ($(_ac_term "$stale"))"
+      elif [[ -z "$ended" ]]; then why="it could not be inspected (the error is above)"
+      else why="its remote has no primary branch to reset onto (no HEAD, main or master)"; fi
+      RESET_SKIP["$name"]="$why"
+      RESET_SUMMARY+=("  - ${name}: ${why} — will be left untouched, its working copies included")
       continue
     fi
-    # Built as a plain variable, not inlined as $( … ): a command substitution
-    # that exits non-zero sets the status of the assignment containing it, and
-    # under `set -e` that ends the script — here, on the ordinary path where
-    # the fetch SUCCEEDED and $stale is empty.
-    local stale_note="" entry
-    [[ -n "$stale" ]] && stale_note=" (STALE: fetch failed)"
-    RESET_SUMMARY+=("  - ${name}: switches to '${primary}'${stale_note}")
+    local entry
+    RESET_SUMMARY+=("  - ${name}: switches to '${primary}'")
     # The helper's last record. Without it the inspection was cut short (the
     # helper killed, out of memory say), and whatever it had not reported yet —
     # the branches after the last one listed, the stash, the tags — is unknown
@@ -891,6 +964,28 @@ collect_inspections() {   # $@ = repo names
         RESET_SUMMARY+=("      DELETE ${br} — pushed")
       fi
     done
+    # Commits made on a detached HEAD are on no branch, and replacing .git drops
+    # them: the summary listed only the branches (bugs review REPO-21).
+    if [[ -n "$detached" ]]; then
+      if [[ ! "$detached" =~ ^[0-9]+$ ]]; then
+        RESET_SUMMARY+=("      DROP the detached HEAD — unpushed count unknown  <-- may hold unpushed work")
+        RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+      elif (( 10#$detached > 0 )); then
+        RESET_SUMMARY+=("      DROP the detached HEAD — ${detached} commit(s) not on any remote  <-- unpushed work")
+        RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+      fi
+    fi
+    # A submodule's repository in .git/modules goes with .git, and with it any
+    # commit never pushed to the submodule's remote (bugs review REPO-20).
+    local mp
+    for mp in ${modules[@]+"${modules[@]}"}; do
+      RESET_SUMMARY+=("      REMOVE .git/modules/${mp} — a submodule's repository  <-- its commits are not on this repo's remote")
+      RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+    done
+    if [[ -n "$modules_more" ]]; then
+      RESET_SUMMARY+=("      REMOVE ${modules_more} more submodule repositories in .git/modules  <-- not listed")
+      [[ "$modules_more" =~ ^[0-9]+$ ]] && RESET_AT_RISK=$(( RESET_AT_RISK + modules_more )) || RESET_AT_RISK=$(( RESET_AT_RISK + 1 ))
+    fi
     # A git repository inside the checkout (an initialised submodule, an editable
     # install's clone) is removed before reset runs git; its own history is not
     # on this repository's remote, so it is counted at risk (REPO-5).
@@ -1008,15 +1103,17 @@ cmd_reset() {
   fi
 
   # ensure_seed_image runs lazily inside reset_one (only for non-bind repos).
-  local target
+  # Each repo is tried, and each not reset is named, with a non-zero status: a
+  # repo left untouched ended "OK: reset complete" (REPO-22), and one that
+  # failed ended `reset --all` before the rest (REPO-24).
+  local target; local -a failed=()
   for target in "${targets[@]}"; do
-    if [[ -n "${RESET_STALE[$target]:-}" ]]; then
-      printf 'WARNING: %s: fetch failed (%s).\n' "$target" "${RESET_STALE[$target]}" >&2
-      printf '         Continuing with the LOCAL reset: the tree will be clean and on the\n' >&2
-      printf '         primary branch, but at the remote tip as last fetched, not as of now.\n' >&2
-    fi
-    reset_one "$target" "${RESET_PRIMARY[$target]:-}"
+    reset_one "$target" "${RESET_PRIMARY[$target]:-}" || failed+=("$target")
   done
+  if (( ${#failed[@]} )); then
+    printf 'ERROR: not reset: %s (the reason for each is above).\n' "${failed[*]}" >&2
+    exit 1
+  fi
   printf 'OK: reset complete.\n'
 }
 

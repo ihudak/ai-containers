@@ -181,6 +181,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`repo.sh reset` and `sync` no longer lose work they did not name** (bugs
+  review REPO-19 to REPO-23). `reset`'s summary lists the commits of a detached
+  HEAD and the submodule repositories in `.git/modules`, counted at risk, and
+  `sync` refuses while `.git/modules` holds one. A remote that cannot be cloned
+  leaves the repo untouched, its working copies included, with the reason in
+  the summary, where it said "LOCAL reset", removed the working copies and
+  ended "OK". `inspect` no longer runs git over a repository inside the
+  checkout, which could hang every `reset` of the volume, and `reset` writes the
+  remote's bytes whatever untracked `.gitattributes` the checkout held.
+- **`repo.sh` says what it could not do** (bugs review REPO-24 to REPO-27).
+  `sync --all` and `reset --all` go on past a repo they cannot sync or reset and
+  name each one at the end, with a non-zero exit; `rm` names a volume docker
+  would not remove and keeps its registry line; `add` refuses a source holding
+  `|`; and a first clone that fails removes the volume it made, so the next run
+  seeds it again.
 - **On Colima, the launch checks are read through held directories too.** The
   ids recorded for the container's own check are read in Colima's VM from the
   directory that holds each path, while it is held, as on a Linux host, so a

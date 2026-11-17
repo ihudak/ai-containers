@@ -583,6 +583,14 @@ ok "rm lists a stash, tags whose commit may be on no remote, a nested repository
 risk git $'PRIMARY|main\nBRANCH|main|0|current\nTAG|v1|yes|yes\nTAG|v2|same|no\nTAG|v3|moved|yes\nTAG|v4|no|yes\nWORKTREE|clean\nEND|inspect\n'
 ok "rm lists a copy whose tags the remote keeps as nothing at risk" \
   bash -c '[[ "$1" == *"nothing at risk"* ]] && ! grep -q "at risk or not checked" "$2"' _ "$(copy_line 1)" "$TMP/out"
+# REPO-21, REPO-20: commits on a detached HEAD, and a submodule's repository in
+# .git/modules, go with the copy as with a reset
+risk git $'PRIMARY|main\nBRANCH|main|0|current\nDETACHED|2\nMODULE|sub\nWORKTREE|?\nEND|inspect\n'
+ok "rm lists a detached HEAD's unpushed commits and a submodule's repository as at risk" \
+  bash -c '[[ "$1" == *"AT RISK"* && "$1" == *"a detached HEAD: 2 unpushed"* && "$1" == *".git/modules/sub: a submodule"* ]]' _ "$(copy_line 1)"
+risk git $'PRIMARY|main\nBRANCH|main|0|current\nDETACHED|0\nWORKTREE|clean\nEND|inspect\n'
+ok "rm lists a detached HEAD whose commits are all on the remote as nothing at risk" \
+  bash -c '[[ "$1" == *"nothing at risk"* ]]' _ "$(copy_line 1)"
 risk git $'PRIMARY|main\nBRANCH|main|0|current\n'
 ok "rm lists a copy whose inspection was cut short as not checked" \
   bash -c '[[ "$1" == *"NOT CHECKED"*"cut short"* ]] && grep -qxF "1 working cop(y/ies) at risk or not checked." "$2"' _ "$(copy_line 1)" "$TMP/out"

@@ -144,7 +144,15 @@ case "$1 $2" in
     [[ -n "$name" ]] && { : > "$VOLS/$name"; cp "$TMP_LABELS" "$VOLS/$name.labels"; }
     exit 0 ;;
   "volume rm")
-    for a in "${@:3}"; do [[ "$a" == --* ]] || rm -f "$VOLS/$a"; done
+    for a in "${@:3}"; do
+      [[ "$a" == --* ]] && continue
+      # FAKE_RM_FAILS: docker refuses this one volume, as it does one a container
+      # (a stopped one too) uses (REPO-25).
+      if [[ -n "${FAKE_RM_FAILS:-}" && "$a" == "$FAKE_RM_FAILS" ]]; then
+        printf 'Error response from daemon: remove %s: volume is in use\n' "$a" >&2; exit 1
+      fi
+      rm -f "$VOLS/$a"
+    done
     exit 0 ;;
   "image inspect")
     # SEED_IMAGE_MISSING: the seed helper image is not on this machine — the
@@ -171,12 +179,23 @@ fi
 if [[ "$1" == "run" ]]; then
   # HELPER_EXIT: the git helper's container exits with this status (137: OOM kill).
   [[ -z "${HELPER_EXIT:-}" || "$*" != *repo-git-reset.sh* ]] || exit "$HELPER_EXIT"
+  # FAKE_CLONE_FAILS: the first clone of a seed fails (no network, a wrong key;
+  # REPO-27).
+  [[ -z "${FAKE_CLONE_FAILS:-}" || "$*" != *"git clone"* ]] || { printf 'fatal: Could not read from remote repository.\n' >&2; exit 128; }
   case "$*" in
     *" inspect /dst"*)
-      # HELPER_NO_PRIMARY: the helper found no branch to reset onto — a detached
-      # HEAD with no usable remote. repo.sh must leave that repo untouched and
-      # still report SUCCESS: a skip is not a failure, and under --all one such
-      # repo must not fail the whole run.
+      # HELPER_INSPECT_FAILS: the helper did not run (git_helper_run refused, a
+      # running container mounting the volume read-write, say): nothing on
+      # stdout, an ERROR on stderr (REPO-22).
+      [[ -z "${HELPER_INSPECT_FAILS:-}" ]] || { printf 'ERROR: volume is mounted read-write by a running container; stop it first.\n' >&2; exit 1; }
+      # HELPER_STALE: the recorded remote could not be cloned (REPO-22).
+      if [[ -n "${HELPER_STALE:-}" ]]; then
+        printf 'STALE|ssh: Could not resolve hostname example.invalid\nBRANCH|main|?|current\nWORKTREE|?\nEND|inspect\n'
+        exit 0
+      fi
+      # HELPER_NO_PRIMARY: the helper found no branch to reset onto — the remote
+      # names no HEAD, main or master. repo.sh must leave that repo untouched,
+      # its working copies included, and say it was not reset (REPO-22).
       [[ -n "${HELPER_NO_PRIMARY:-}" ]] || printf 'PRIMARY|main\n'
       # HELPER_MAIN_UNPUSHED: commits on the primary branch itself on no remote.
       printf 'BRANCH|main|%s|current\n' "${HELPER_MAIN_UNPUSHED:-0}"
@@ -188,12 +207,19 @@ if [[ "$1" == "run" ]]; then
       [[ -z "${HELPER_LOSSES:-}" ]] || printf 'STASH|2\nTAG|v1|yes|yes\nTAG|onpushed|no|yes\nTAG|lonely|no|no\nTAG|murky|?|?\n'
       # HELPER_NESTED: git repositories inside the checkout (REPO-5).
       [[ -z "${HELPER_NESTED:-}" ]] || printf 'NESTED|vendor/lib/.git\nNESTED-MORE|3\n'
+      # HELPER_DETACHED: a detached HEAD and its commits on no remote (REPO-21).
+      [[ -z "${HELPER_DETACHED:-}" ]] || printf 'DETACHED|%s\n' "$HELPER_DETACHED"
+      # HELPER_MODULES: submodule repositories in .git/modules (REPO-20).
+      [[ -z "${HELPER_MODULES:-}" ]] || printf 'MODULE|sub\nMODULE-MORE|2\n'
       # HELPER_MOVED: tags the remote has at another object (REPO-15).
       [[ -z "${HELPER_MOVED:-}" ]] || printf 'TAG|mvkept|moved|yes\nTAG|mvlost|moved|no\nTAG|mvmurky|moved|?\nTAG|retyped|same|yes\n'
       # HELPER_NO_END: the helper was cut short before its last record (REPO-16).
       [[ -n "${HELPER_NO_END:-}" ]] || printf 'END|inspect\n'
       exit 0 ;;
     *" pull /dst"*)
+      # HELPER_PULL_FAIL_VOL: the helper refuses this one volume (REPO-24).
+      [[ -z "${HELPER_PULL_FAIL_VOL:-}" || "$*" != *"$HELPER_PULL_FAIL_VOL:/dst"* ]] \
+        || { printf 'repo-git-reset: the checkout has uncommitted changes; commit and push them, or use reset\n' >&2; exit 1; }
       # HELPER_PULL_WARN: sync kept the checkout but could not keep a tag.
       [[ -z "${HELPER_PULL_WARN:-}" ]] || printf 'WARN|could not keep tag release/1\n'
       # HELPER_PULL_NEW: a record type this repo.sh does not know (REPO-10).
@@ -207,6 +233,8 @@ if [[ "$1" == "run" ]]; then
       # opposite obligation to the one above — a destructive command that could
       # not do the work must never exit 0.
       [[ -z "${HELPER_RESET_FAILS:-}" ]] || exit 1
+      # HELPER_RESET_FAIL_VOL: it fails for this one volume only (REPO-24).
+      [[ -z "${HELPER_RESET_FAIL_VOL:-}" || "$*" != *"$HELPER_RESET_FAIL_VOL:/dst"* ]] || exit 1
       # The records repo.sh renders into prose. SOMETHING-NEW is deliberate: a
       # record type this version of repo.sh does not know must still reach the
       # user, because silence is the one thing a destructive command must never
@@ -1346,13 +1374,11 @@ check "rm of a bind-backend repo succeeds" "0" "$RC"
 grep -q 'host source is left untouched' "$OUT" \
   && pass "the summary states the host source survives a bind-backend removal" \
   || fail "the summary states the host source survives (got: $(tr '\n' ' ' < "$OUT"))"
-# NOT "nothing was removed": cmd_rm issues `docker volume rm "$vol" || true`
-# unconditionally, which for a bind-backend repo asks docker to remove a volume
-# that does not exist. That is deliberate defensive cleanup — a repo re-registered
-# from volume to bind would otherwise strand its old volume — and asserting
-# "nothing" would pin a bug rather than the behaviour. What must hold is that
-# nothing belonging to ANOTHER repo is touched.
-check "removing a bind-backend repo touches no other repo's volume" "ai-containers-repo-localsrc|" "$(removed)"
+# Nothing at all: cmd_rm removes the base volume only when one exists (a repo
+# re-registered from volume to bind still has its old one listed and removed),
+# since every removal is now checked and a volume that is not there would read
+# as one docker refused (REPO-25). Above all, nothing of ANOTHER repo is touched.
+check "removing a bind-backend repo touches no volume" "" "$(removed)"
 check "the host source directory still exists afterwards" "uncommitted work" "$(cat "$TMP/hostsrc/DIRTY" 2>/dev/null)"
 
 # gc's summary is a COUNT, which is the same promise in a shorter form: the
@@ -1477,32 +1503,161 @@ printf '%s\n' ai-containers-repo-docs--wc-projA \
                ai-containers-repo-docs-archive--wc-projA > "$INUSE"
 noop_ok '`gc --unused --yes` when every copy is in use'      gc --unused --yes # :776
 
-# A repo the helper cannot resolve a primary branch for is LEFT UNTOUCHED, and
-# that is a success: reset skips it rather than inventing the target of a
-# destructive operation.
+# A repo the helper cannot resolve a primary branch for is LEFT UNTOUCHED, its
+# working copies included, and the run says it was not reset: reset skips it
+# rather than inventing the target of a destructive operation. Until REPO-22 the
+# working copies were removed anyway and the run ended "OK", status 0.
 setup_world
 export HELPER_NO_PRIMARY=1
 run_repo reset docs --yes                                                      # :571
-if [[ "$RC" -eq 0 ]]; then
-  pass '`reset --yes` on a repo with no branch to reset onto exits 0'
+if [[ "$RC" -ne 0 ]] && grep -q 'not reset: docs' "$ERR" && ! grep -q 'OK: reset complete' "$OUT"; then
+  pass '`reset --yes` on a repo with no branch to reset onto exits non-zero, naming it (REPO-22)'
 else
   fail "\`reset --yes\` on a repo with no branch to reset onto exits $RC (stderr: $(tr '\n' ' ' < "$ERR"))"
 fi
-# Deliberately NOT noop_ok: this one is not a no-op. `reset` removes the repo's
-# working copies BEFORE it learns the helper has no primary branch to offer, so
-# `destroys nothing` is false here — measured, not assumed. The skip is about
-# the base volume's checkout, not about the working copies, whose removal is
-# reset's contract either way. Asserting emptiness here would have been an
-# assertion about an ordering this slice has no opinion on.
-grep -q 'no branch to reset onto' "$OUT" \
-  && pass 'the run says WHY the repo was left untouched' \
-  || fail "the run does not explain the skip (stdout: $(tr '\n' ' ' < "$OUT"))"
-# …and the summary the user approves says the working copies still go, since
-# they do (review of the REPO-11 fix: it said the repo would be left untouched).
-grep -q 'its working copies are still removed' "$OUT" && grep -q '^volume rm.*docs--wc-projA' "$DOCKER_LOG" \
-  && pass 'the summary says the working copies are still removed, and they are' \
-  || fail "the no-primary summary and what reset removes disagree ($(grep 'no branch' "$OUT" | head -1))"
+grep -qF -- '- docs: its remote has no primary branch to reset onto (no HEAD, main or master) — will be left untouched, its working copies included' "$OUT" \
+  && pass 'the summary says WHY the repo will be left untouched' \
+  || fail "the summary does not explain the skip (stdout: $(tr '\n' ' ' < "$OUT"))"
+check '  … and nothing of it is removed, its working copies included' "" "$(removed)"
 unset HELPER_NO_PRIMARY
+
+# REPO-22 (GAP-22): a remote that cannot be cloned (STALE) is named, with its
+# reason, in the summary the user approves; nothing of the repo is removed;
+# nothing says a "LOCAL reset" goes ahead; and the run does not end OK.
+setup_world
+HELPER_STALE=1 run_repo reset docs --yes
+grep -qF -- '- docs: STALE: its recorded remote could not be cloned (ssh: Could not resolve hostname example.invalid) — will be left untouched, its working copies included' "$OUT" \
+  && pass "reset's summary names a STALE remote and its reason (REPO-22)" \
+  || fail "reset's summary of a STALE remote ($(grep -- '- docs' "$OUT"))"
+check '  … nothing of that repo is removed, its working copies included' "" "$(removed)"
+if [[ "$RC" -ne 0 ]] && ! grep -q 'OK: reset complete' "$OUT" && ! grep -qi 'LOCAL reset' "$OUT" "$ERR" \
+   && grep -q 'docs: STALE: .* — left untouched, its working copies included' "$ERR"; then
+  pass "  … and the run says it was left untouched, promises no LOCAL reset, and exits non-zero"
+else
+  fail "  … a STALE reset's end (rc=$RC; out: $(tr '\n' ' ' < "$OUT"); err: $(tr '\n' ' ' < "$ERR"))"
+fi
+# The helper did not run at all (git_helper_run refused): no records, and the
+# summary said "detached HEAD" while the working copies were removed.
+setup_world
+HELPER_INSPECT_FAILS=1 run_repo reset docs --yes
+if grep -qF -- '- docs: it could not be inspected (the error is above) — will be left untouched' "$OUT" \
+   && [[ -z "$(removed)" && "$RC" -ne 0 ]]; then
+  pass "a repo the helper could not inspect is named as such and left untouched (REPO-22)"
+else
+  fail "a repo the helper could not inspect (rc=$RC; removed: $(removed); $(grep -- '- docs' "$OUT"))"
+fi
+# Under --all the others are still reset.
+setup_world
+HELPER_STALE=1 run_repo reset --all --yes
+if [[ "$RC" -ne 0 ]] && grep -q 'not reset: docs docs-archive cluster' "$ERR"; then
+  pass "  … and under --all every repo is tried and each one not reset is named"
+else
+  fail "  … reset --all with STALE remotes (rc=$RC; err: $(tr '\n' ' ' < "$ERR"))"
+fi
+
+# REPO-21: commits on a detached HEAD go with .git, so the summary names them
+# and counts them at risk; one on pushed commits only is not listed.
+setup_world
+HELPER_DETACHED=2 run_repo reset docs --yes
+grep -qF 'DROP the detached HEAD — 2 commit(s) not on any remote  <-- unpushed work' "$OUT" && grep -q 'WARNING: 2 item(s) above' "$OUT" \
+  && pass "reset's summary names a detached HEAD's unpushed commits and counts them (REPO-21)" \
+  || fail "reset's summary of a detached HEAD ($(grep -E 'detached|WARNING' "$OUT" | tr '\n' ';'))"
+setup_world
+HELPER_DETACHED='?' run_repo reset docs --yes
+grep -qF 'DROP the detached HEAD — unpushed count unknown' "$OUT" && grep -q 'WARNING: 2 item(s) above' "$OUT" \
+  && pass "  … an unknown count is at risk too" || fail "  … a detached HEAD with an unknown count ($(grep -E 'detached|WARNING' "$OUT" | tr '\n' ';'))"
+setup_world
+HELPER_DETACHED=0 run_repo reset docs --yes
+! grep -q 'detached HEAD' "$OUT" && grep -q 'WARNING: 1 item(s) above' "$OUT" \
+  && pass "  … and one whose commits are all on the remote is not listed" || fail "  … a detached HEAD on pushed commits ($(grep -E 'detached|WARNING' "$OUT" | tr '\n' ';'))"
+
+# REPO-20: a submodule's repository in .git/modules goes with .git.
+setup_world
+HELPER_MODULES=1 run_repo reset docs --yes
+grep -qF "REMOVE .git/modules/sub — a submodule's repository" "$OUT" \
+  && grep -qF 'REMOVE 2 more submodule repositories in .git/modules' "$OUT" && grep -q 'WARNING: 4 item(s) above' "$OUT" \
+  && pass "reset's summary names the submodule repositories in .git/modules, and counts them (REPO-20)" \
+  || fail "reset's summary of .git/modules ($(grep -E 'modules|WARNING' "$OUT" | tr '\n' ';'))"
+
+# REPO-24: sync --all and reset --all try every repo. One the helper refuses
+# (the first in the registry) ended the run before the rest.
+setup_world
+HELPER_PULL_FAIL_VOL=ai-containers-repo-docs run_repo sync --all
+if [[ "$RC" -ne 0 ]] && grep -q 'OK: docs-archive synced' "$OUT" && grep -q 'OK: cluster synced' "$OUT" \
+   && ! grep -q 'OK: docs synced' "$OUT" && grep -q 'not synced: docs ' "$ERR"; then
+  pass "sync --all syncs the rest after a repo it cannot sync, names it, and exits non-zero (REPO-24)"
+else
+  fail "sync --all past a refused repo (rc=$RC; out: $(tr '\n' ' ' < "$OUT"); err: $(tr '\n' ' ' < "$ERR"))"
+fi
+setup_world
+HELPER_RESET_FAIL_VOL=ai-containers-repo-docs run_repo reset --all --yes
+if [[ "$RC" -ne 0 ]] && grep -q 'OK: docs-archive reset' "$OUT" && grep -q 'OK: cluster reset' "$OUT" \
+   && grep -q 'not reset: docs ' "$ERR" && ! grep -q 'OK: reset complete' "$OUT"; then
+  pass "reset --all resets the rest after a repo it cannot reset, names it, and exits non-zero (REPO-24)"
+else
+  fail "reset --all past a failed repo (rc=$RC; out: $(tr '\n' ' ' < "$OUT"); err: $(tr '\n' ' ' < "$ERR"))"
+fi
+
+# REPO-25: rm checks each removal. A base volume docker refuses keeps the
+# registry line, and the run names it and exits non-zero.
+setup_world
+FAKE_RM_FAILS=ai-containers-repo-docs run_repo rm docs --yes
+if [[ "$RC" -ne 0 ]] && ! grep -q 'OK: removed' "$OUT" && grep -q '^docs|' "$HOME/.ai-containers/repos.conf" \
+   && grep -q 'ai-containers-repo-docs   (see: docker ps -a --filter volume=ai-containers-repo-docs)' "$ERR"; then
+  pass "rm names a base volume docker would not remove, keeps its registry line and exits non-zero (REPO-25)"
+else
+  fail "rm with a base volume docker refuses (rc=$RC; out: $(tr '\n' ' ' < "$OUT"); err: $(tr '\n' ' ' < "$ERR"))"
+fi
+setup_world
+FAKE_RM_FAILS=ai-containers-repo-docs--wc-projA run_repo rm docs --yes
+if [[ "$RC" -ne 0 ]] && ! grep -q '^docs|' "$HOME/.ai-containers/repos.conf" && grep -q 'docs--wc-projA' "$ERR" \
+   && [[ ! -f "$VOLS/ai-containers-repo-docs" && ! -f "$VOLS/ai-containers-repo-docs--wc-projB" ]]; then
+  pass "  … and a working copy it would not remove is named, the rest removed, the line dropped with the base volume"
+else
+  fail "  … rm with a working copy docker refuses (rc=$RC; err: $(tr '\n' ' ' < "$ERR"))"
+fi
+
+# REPO-26: the registry splits fields at '|': a source holding one is refused,
+# before anything is registered or made.
+setup_empty_world
+mkdir -p "$TMP/pipe|src" "$TMP/pipe"
+run_repo add pipe "$TMP/pipe|src"
+if [[ "$RC" -ne 0 ]] && grep -q 'holds a | or a line break' "$ERR" && ! grep -q '^pipe|' "$HOME/.ai-containers/repos.conf" \
+   && ! grep -q '^volume create' "$DOCKER_LOG"; then
+  pass "add refuses a source path holding | (REPO-26)"
+else
+  fail "add with a source holding | (rc=$RC; err: $(tr '\n' ' ' < "$ERR"); registry: $(cat "$HOME/.ai-containers/repos.conf"))"
+fi
+run_repo add pipeurl 'https://example.invalid/a|b.git'
+[[ "$RC" -ne 0 ]] && grep -q 'holds a | or a line break' "$ERR" && ! grep -q '^volume create' "$DOCKER_LOG" \
+  && pass "  … and a git URL holding one" || fail "  … add with a URL holding | (rc=$RC; err: $(tr '\n' ' ' < "$ERR"))"
+
+# REPO-27: a first clone that fails removes the empty volume it was made for, so
+# the next run seeds it again: from add, and from a sync that re-seeds.
+setup_empty_world
+FAKE_CLONE_FAILS=1 run_repo add newrepo git@example.invalid:new.git
+if [[ "$RC" -ne 0 && ! -f "$VOLS/ai-containers-repo-newrepo" ]] && grep -q '^volume rm ai-containers-repo-newrepo$' "$DOCKER_LOG" \
+   && ! grep -q '^newrepo|' "$HOME/.ai-containers/repos.conf" && grep -q 'is removed again' "$ERR"; then
+  pass "add whose first clone fails removes the volume it made and registers nothing (REPO-27)"
+else
+  fail "add with a failing clone (rc=$RC; vols: $(ls "$VOLS" | tr '\n' ' '); err: $(tr '\n' ' ' < "$ERR"))"
+fi
+setup_world
+rm -f "$VOLS/ai-containers-repo-cluster" "$VOLS/ai-containers-repo-cluster.labels"
+FAKE_CLONE_FAILS=1 run_repo sync cluster
+if [[ "$RC" -ne 0 && ! -f "$VOLS/ai-containers-repo-cluster" ]] && ! grep -q 'OK: cluster synced' "$OUT"; then
+  pass "  … and so does a sync that re-seeds a missing base volume"
+else
+  fail "  … sync re-seed with a failing clone (rc=$RC; vols: $(ls "$VOLS" | tr '\n' ' '))"
+fi
+setup_world
+rm -f "$VOLS/ai-containers-repo-cluster" "$VOLS/ai-containers-repo-cluster.labels"
+FAKE_CLONE_FAILS=1 run_repo reset cluster --yes
+if [[ "$RC" -ne 0 && ! -f "$VOLS/ai-containers-repo-cluster" ]] && ! grep -q 'OK: cluster reset' "$OUT"; then
+  pass "  … and a reset that re-seeds one"
+else
+  fail "  … reset re-seed with a failing clone (rc=$RC; vols: $(ls "$VOLS" | tr '\n' ' '))"
+fi
 
 # REPO-8: the summary the user approves names the stash and the tags reset
 # drops, and counts what is on no remote in its WARNING; a tag the remote has
@@ -1579,6 +1734,21 @@ grep -q 'OK: reset complete' "$OUT" \
   && fail "repo.sh printed 'OK: reset complete.' after the reset had failed" \
   || pass "repo.sh does not claim the reset completed after it failed"
 unset HELPER_RESET_FAILS
+# …and the working copies survive it: they were removed before the base
+# volume's reset, and lost when it then failed (review of the REPO-22 fix).
+setup_world
+HELPER_RESET_FAILS=1 run_repo reset docs --yes
+check "a reset that failed removes no working copy" "" "$(removed)"
+# Likewise a re-seed whose first clone fails (a git repo whose base volume is
+# gone, offline).
+setup_world
+rm -f "$VOLS/ai-containers-repo-docs" "$VOLS/ai-containers-repo-docs.labels"
+FAKE_CLONE_FAILS=1 run_repo reset docs --yes
+if [[ "$RC" -ne 0 && -f "$VOLS/ai-containers-repo-docs--wc-projA" && -f "$VOLS/ai-containers-repo-docs--wc-projB" ]]; then
+  pass "  … nor does a re-seed whose clone fails"
+else
+  fail "  … a failed re-seed removed working copies (rc=$RC; vols: $(ls "$VOLS" | tr '\n' ' '))"
+fi
 
 # ── THE CONSENT GATE, ON A REAL TTY ──────────────────────────────────────────
 # Every case above feeds stdin from /dev/null, so `[[ -t 0 ]]` is false and
