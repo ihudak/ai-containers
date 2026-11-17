@@ -43,7 +43,7 @@ nl26="$(grep -A1 -F 'NOTE: /workspace/fp/r/.git is protected for the first time,
   || fail "G26 first-protection NOTE (got: $nl26; stderr: $(grep -A3 'first time' "$ERR" | tr '\n' ' '))"
 # An alias that is no shell command is a git command, which may run a program
 # an argument names: named last, as what it is (G332).
-[[ "$nl26" == *", alias.st (a git command, which may run one itself)." ]] \
+[[ "$nl26" == *", alias.st (a git command, which may itself run a program)." ]] \
   && ! grep -q 'fp/clean/.git is protected for the first time, and its config' "$ERR" \
   && pass "G26 an alias that is no shell command is named last, as what it is; git's own fsmonitor daemon and an SMTP server given as a host name are not named" \
   || fail "G26 the plain alias, or benign keys named (got: $nl26; stderr: $(grep 'first time' "$ERR" | tr '\n' ' '))"
@@ -611,33 +611,44 @@ rm -rf "$D330" "$TMP/bin330" "$TMP/forged330"
 # that run programs, as what it is and after the ones that run one for certain;
 # and a repository an earlier engine reported, which named none of them, has
 # them named once (`al:` in the record of reported repositories;
-# sandbox.sh: `_git_alias_once()`).
+# sandbox.sh: `_git_alias_once()`; feature-gaps review GAP-30).
 rec332="$HOME/.ai-containers/git-reported.conf"
 D332="$TMP/al332"; O332="$TMP/ov332"
-pa332='(a git command, which may run one itself)'
+pa332='(a git command, which may itself run a program)'
+ur332='which git could not read: not checked)'
 # G107 left the BSD branch chosen for _git_ident; this host's own again.
 load_fn _git_ident
 if stat -c '%i' / >/dev/null 2>&1; then _launcher_stat_gnu=1; else _launcher_stat_gnu=0; fi
-fp332() {   # <repository under /workspace/al332>: the keys its first protection named
-  grep -A1 -F "NOTE: /workspace/al332/$1/.git is protected for the first time, and its config" "$ERR" | tail -1
+fp332() {   # <repository under /workspace/al332> [what happened]: the keys its first report named
+  grep -A1 -F "NOTE: /workspace/al332/$1/.git ${2:-is protected for the first time}, and its config" "$ERR" | tail -1
 }
 al332() {   # <git directory under /workspace>: the aliases named for one reported before
   grep -A1 -F "NOTE: /workspace/$1 was reported by an earlier launch, which named no alias but a shell" "$ERR" | tail -1
 }
+rec332() {  # <kind, with its colon, or nothing> <git directory>: whether the record holds that line for it
+  grep -qxF "$(_git_ident "$2") $1$2" "$rec332"
+}
 # The record as an engine before this one left it.
 unal332() { grep -v ' al:' "$rec332" > "$rec332.n"; mv "$rec332.n" "$rec332"; }
 mkdir -p "$D332" "$O332/l" && : > "$O332/l/sandbox.sh" && : > "$O332/l/sandbox-common.sh" \
-  && for r in only many both none wtc late m; do "${G[@]}" init -q "$D332/$r" || exit 1; done \
+  && for r in only many both none wtc late m esc big; do "${G[@]}" init -q "$D332/$r" || exit 1; done \
   && "${G[@]}" init -q "$O332/l/r" && "${G[@]}" -C "$O332/l/r" config alias.ov log \
+  && "${G[@]}" init -q "$O332/l/w" && "${G[@]}" -C "$O332/l/w" config extensions.worktreeConfig true \
+  && "${G[@]}" -C "$O332/l/w" config --worktree alias.ow log \
+  && "${G[@]}" init -q "$O332/l/m" && "${G[@]}" -C "$O332/l/m" commit -q --allow-empty -m i \
+  && "${G[@]}" -C "$O332/l/m" worktree add -q "$O332/l/wo332" \
+  && printf '[alias]\n\tzo = log\n' > "$O332/l/m/.git/worktrees/wo332/config" \
   && "${G[@]}" -C "$D332/only" config alias.st 'rebase --exec ./x' \
   && for i in 1 2 3 4 5 6 7 8 9 10 11; do "${G[@]}" -C "$D332/many" config "alias.p$i" log || exit 1; done \
   && "${G[@]}" -C "$D332/many" config core.sshCommand 'ssh-332' \
-  && printf '[alias]\n\tb = status\n\tb = !./x\n\tsh = !./y\n\tco = checkout\n\tco = switch\n' >> "$D332/both/.git/config" \
+  && printf '[alias]\n\tb = status\n\tb = !./x\n\tsh = !./y\n\tco = checkout\n\tco = switch\n[submodule "s"]\n\tupdate = !./up\n[submodule "t"]\n\tupdate = rebase\n' >> "$D332/both/.git/config" \
   && "${G[@]}" -C "$D332/wtc" config extensions.worktreeConfig true \
   && "${G[@]}" -C "$D332/wtc" config --worktree filter.x.smudge x-smudge \
   && "${G[@]}" -C "$D332/wtc" config --worktree alias.wa log \
   && "${G[@]}" -C "$D332/m" commit -q --allow-empty -m i && "${G[@]}" -C "$D332/m" worktree add -q "$D332/w332" \
   && printf '[alias]\n\tzz = log\n' > "$D332/m/.git/worktrees/w332/config" \
+  && printf '[alias "a\033[31m"]\n\tx = log\n' >> "$D332/esc/.git/config" \
+  && { printf '[alias]\n'; for (( i = 1; i <= 1250; i++ )); do printf '\tq%d = log --format=%0200d\n' "$i" 0; done; } >> "$D332/big/.git/config" \
   || { printf 'SCAFFOLD-FAILED: G332\n'; exit 1; }
 EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 && "$(fp332 only)" == *"programs: alias.st $pa332." ]] \
@@ -646,27 +657,29 @@ EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
 [[ "$(fp332 many)" == *"programs: core.sshcommand, alias.p1 $pa332, "*"alias.p9 $pa332, and 2 more." ]] \
   && pass "G332 eleven such aliases set before a key that runs a program do not push it out of the ten shown" \
   || fail "G332 the key after eleven aliases (got: $(fp332 many))"
-[[ "$(fp332 both)" == *"programs: alias.b, alias.sh, alias.co $pa332." ]] \
-  && pass "G332 an alias set both ways is named once, as the shell command git takes it for, and one set twice once" \
-  || fail "G332 an alias set both ways, or twice (got: $(fp332 both))"
+[[ "$(fp332 both)" == *"programs: alias.b, alias.sh, submodule.s.update, alias.co $pa332." ]] \
+  && pass "G332 an alias set both ways is named once, as the shell command git takes it for, and one set twice once; a submodule's update only as a shell command" \
+  || fail "G332 an alias set both ways, or twice, or a submodule's update (got: $(fp332 both))"
 [[ "$(grep -A1 -F 'NOTE: /workspace/ov332/l/r/.git lies under a read-only overlay and was not reported before, and its config' "$ERR" | tail -1)" == *"alias.ov $pa332." ]] \
   && pass "G332 one under a read-only overlay has its alias named by the launch that first sees it" \
   || fail "G332 an alias under an overlay (stderr: $(grep -A1 -F 'ov332/l/r' "$ERR" | head -3 | tr '\n' ' '))"
 # What the first report named is not named again as left over by an earlier
 # engine, and a linked worktree's directory reads no config of its own: one
-# planted there is not git's.
-! grep -qF 'which named no alias but a shell' "$ERR" && ! grep -qF 'alias.zz' "$ERR" \
-  && grep -qxF "$(_git_ident "$D332/none/.git") al:$D332/none/.git" "$rec332" \
-  && grep -qxF "$(_git_ident "$D332/only/.git") al:$D332/only/.git" "$rec332" \
+# planted there is not git's, under an overlay either.
+! grep -qF 'which named no alias but a shell' "$ERR" && ! grep -qE 'alias\.z[zo]' "$ERR" \
+  && rec332 al: "$D332/none/.git" && rec332 al: "$D332/only/.git" && rec332 al: "$O332/l/r/.git" \
   && pass "G332 a first report records that the aliases were named, and names none twice" \
   || fail "G332 the first report and the record (stderr: $(grep -A1 -F 'named no alias' "$ERR" | head -4 | tr '\n' ' '); record: $(grep -c ' al:' "$rec332") al lines)"
 EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && ! grep -qE 'which may run one itself|named no alias|protected for the first time' "$ERR" \
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qE 'which may itself run a program|named no alias|protected for the first time' "$ERR" \
   && pass "G332 the next launch names no alias again" \
-  || fail "G332 aliases named twice (rc=$LAUNCH_RC; stderr: $(grep -E 'run one itself|named no alias|first time' "$ERR" | head -3 | tr '\n' ' '))"
-# A record an earlier engine left: no `al:` line. And a config.worktree a
-# container of such an engine wrote into after the launch that made it.
-unal332; printf '[alias]\n\tlate = log\n' >> "$D332/late/.git/config.worktree"
+  || fail "G332 aliases named twice (rc=$LAUNCH_RC; stderr: $(grep -E 'itself run a program|named no alias|first time' "$ERR" | head -3 | tr '\n' ' '))"
+# A record an earlier engine left: no `al:` line, and under the overlay no
+# `wt:` line for a config.worktree that sets only such an alias. And a
+# config.worktree a container of such an engine wrote into after the launch
+# that made it.
+unal332; grep -vF " wt:$O332/l/w/.git" "$rec332" > "$rec332.n"; mv "$rec332.n" "$rec332"
+printf '[alias]\n\tlate = log\n' >> "$D332/late/.git/config.worktree"
 EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 && "$(al332 al332/only/.git)" == *"Its config sets: alias.st $pa332." ]] \
   && grep -qF "git config --file $D332/only/.git/config --get-regexp '^alias\\.'" "$ERR" \
@@ -679,19 +692,49 @@ EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
   && grep -qF "git config --file $D332/wtc/.git/config.worktree --get-regexp '^alias\\.'" "$ERR" \
   && pass "G332 … those of a config.worktree whose keys a launch has named, too" \
   || fail "G332 a named config.worktree's alias (got: $(al332 al332/wtc/.git))"
-[[ "$(al332 ov332/l/r/.git)" == *"Its config sets: alias.ov $pa332." ]] \
-  && pass "G332 … and those of one under a read-only overlay" \
-  || fail "G332 an overlay repository reported before (got: $(al332 ov332/l/r/.git))"
+[[ "$(al332 ov332/l/r/.git)" == *"Its config sets: alias.ov $pa332." && "$(al332 ov332/l/w/.git)" == *"Its config sets: alias.ow $pa332." ]] \
+  && ! grep -qF "$O332/l/r/.git/config.worktree --get-regexp" "$ERR" && ! grep -qF 'alias.zo' "$ERR" \
+  && pass "G332 … and those of one under a read-only overlay, its config.worktree whether a launch named keys there or not; only a file that is there is in the command" \
+  || fail "G332 overlay repositories reported before (r: $(al332 ov332/l/r/.git); w: $(al332 ov332/l/w/.git); stderr: $(grep -F 'ov332' "$ERR" | grep -F -- '--get-regexp' | tr '\n' ' '))"
 [[ "$(grep -A1 -F 'NOTE: /workspace/al332/late/.git/config.worktree, which no launch has named before, sets' "$ERR" | tail -1)" == *"programs: alias.late $pa332." \
    && "$(grep -cF 'alias.late' "$ERR")" == 1 ]] \
-  && ! grep -qF 'NOTE: /workspace/al332/none/.git' "$ERR" && ! grep -qF 'alias.zz' "$ERR" \
-  && grep -qxF "$(_git_ident "$D332/none/.git") al:$D332/none/.git" "$rec332" \
+  && ! grep -qF 'NOTE: /workspace/al332/none/.git' "$ERR" && ! grep -qF 'alias.zz' "$ERR" && rec332 al: "$D332/none/.git" \
   && pass "G332 an alias written into a config.worktree no launch has named is named with that file, once; a repository with none is recorded and not named" \
   || fail "G332 a later config.worktree alias, or one with none (late: $(grep -cF 'alias.late' "$ERR") times; stderr: $(grep -F 'al332/none' "$ERR" | head -2 | tr '\n' ' '))"
+# A key's subsection is the agent's: printed with no control character. And a
+# config cut at 1200 keys says so here too.
+[[ "$(al332 al332/esc/.git)" == *'Its config sets: alias.a?[31m.x '"$pa332." ]] && ! grep -q $'\033' "$ERR" \
+  && pass "G332 an alias whose name holds a control character is printed without it" \
+  || fail "G332 a control character in an alias name (got: $(al332 al332/esc/.git | tr -d '\033'))"
+# git is still writing its keys when the read stops there: that is no failed read.
+[[ "$(al332 al332/big/.git)" == *'Its config sets: (config: more than 1200 keys that can run a program, the rest not read), alias.q1 '* ]] \
+  && pass "G332 a config of more than 1200 such keys is named as cut for one reported before, too, and not as unread" \
+  || fail "G332 the cut for one reported before (got: $(al332 al332/big/.git | cut -c1-200))"
 EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && ! grep -qE 'which may run one itself|named no alias' "$ERR" \
+[[ "$LAUNCH_RC" == 0 ]] && ! grep -qE 'which may itself run a program|named no alias' "$ERR" \
   && pass "G332 and once only: the launch after says nothing of them" \
-  || fail "G332 aliases of one reported before named twice (stderr: $(grep -E 'run one itself|named no alias' "$ERR" | head -3 | tr '\n' ' '))"
+  || fail "G332 aliases of one reported before named twice (stderr: $(grep -E 'itself run a program|named no alias' "$ERR" | head -3 | tr '\n' ' '))"
+# A linked worktree's config.worktree that no launch has named: named with that
+# file by one launch, and not again by the next as an alias of one reported
+# before (review of the fix: the first recorded `wt:` and not `al:`).
+printf '[alias]\n\tlw = log\n' >> "$D332/m/.git/worktrees/w332/config.worktree"
+EXTRA_MOUNTS="$D332" launch "$TMP/app"; n332="$(grep -cF 'alias.lw' "$ERR")"; z332="$(grep -cF 'alias.zz' "$ERR")"
+EXTRA_MOUNTS="$D332" launch "$TMP/app"
+[[ "$n332" == 1 && "$z332" == 0 ]] && ! grep -qF 'alias.lw' "$ERR" && rec332 al: "$D332/m/.git/worktrees/w332" \
+  && pass "G332 a linked worktree's config.worktree alias is named by one launch only, and a config planted beside it never" \
+  || fail "G332 a linked worktree's alias ($n332 times, then $(grep -cF 'alias.lw' "$ERR"); the planted config's: $z332)"
+# A config.worktree no launch has named that git cannot parse: named as not
+# checked, and not recorded as named, so the launch that can read it names it.
+printf '[alias]\n\tcb = log\n[core\n' >> "$D332/none/.git/config.worktree"
+EXTRA_MOUNTS="$D332" launch "$TMP/app"
+c332="$(grep -A1 -F 'NOTE: /workspace/al332/none/.git/config.worktree, which no launch has named before, sets' "$ERR" | tail -1)"
+! rec332 wt: "$D332/none/.git"; x332=$?
+printf '[alias]\n\tcb = log\n' > "$D332/none/.git/config.worktree"
+EXTRA_MOUNTS="$D332" launch "$TMP/app"
+[[ "$c332" == *"programs: (config.worktree, $ur332." && "$x332" == 0 ]] && rec332 wt: "$D332/none/.git" \
+  && [[ "$(grep -A1 -F 'NOTE: /workspace/al332/none/.git/config.worktree, which no launch has named before, sets' "$ERR" | tail -1)" == *"programs: alias.cb $pa332." ]] \
+  && pass "G332 a config.worktree git cannot parse is named as not checked and not recorded, and named once it can" \
+  || fail "G332 an unparsable config.worktree (first: $c332; wt recorded then: $x332; after: $(grep -A1 -F 'none/.git/config.worktree, which no launch' "$ERR" | tail -1))"
 # Where git does not run nothing is read, so nothing is recorded as named: the
 # next launch with git names them. A PATH with no git, as G98 builds one.
 nogit332=""; i332=0
@@ -708,22 +751,95 @@ PATH="$nogit332" "$BASH" -c 'command -v git' >/dev/null 2>&1 \
   && { printf 'SCAFFOLD-FAILED: G332 git is still on the no-git PATH\n'; exit 1; }
 unal332
 EXTRA_MOUNTS="$D332" PATH="$nogit332" launch "$TMP/app"
-n332="$(grep -c ' al:' "$rec332")"
+n332="$(grep -c ' al:' "$rec332")"; r332="$LAUNCH_RC"
 EXTRA_MOUNTS="$D332" launch "$TMP/app"
-[[ "$n332" == 0 && "$(al332 al332/only/.git)" == *"Its config sets: alias.st $pa332." ]] \
+[[ "$r332" == 0 && "$n332" == 0 && "$(al332 al332/only/.git)" == *"Its config sets: alias.st $pa332." ]] \
   && pass "G332 where git does not run nothing is recorded as named, and the next launch with git names them" \
-  || fail "G332 with no git ($n332 al lines recorded; then: $(al332 al332/only/.git))"
+  || fail "G332 with no git (rc=$r332; $n332 al lines recorded; then: $(al332 al332/only/.git))"
+# A config git cannot read is not one that sets nothing: named as not checked,
+# and nothing recorded, so the launch that can read it names what it sets. The
+# agent can leave one so in the session that wrote it (review of the fix):
+# unparsable, or, where a mode stops you, unreadable.
+rm -rf "$D332"; mkdir -p "$D332" && for r in bad old mode; do "${G[@]}" init -q "$D332/$r" || exit 1; done
+"${G[@]}" -C "$D332/bad" config alias.st 'rebase --exec ./x'; cp "$D332/bad/.git/config" "$TMP/bad332.cfg"
+printf '[core\n' >> "$D332/bad/.git/config"
+"${G[@]}" -C "$D332/mode" config alias.sm 'rebase --exec ./x'
+EXTRA_MOUNTS="$D332" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 && "$(fp332 bad)" == *"programs: (config, $ur332." ]] \
+  && ! rec332 '' "$D332/bad/.git" && ! rec332 al: "$D332/bad/.git" \
+  && pass "G332 a config git cannot parse is named as not checked by the first protection, and nothing is recorded" \
+  || fail "G332 an unparsable config (rc=$LAUNCH_RC; got: $(fp332 bad); record: $(grep -cF "$D332/bad/.git" "$rec332") lines)"
+cp "$TMP/bad332.cfg" "$D332/bad/.git/config"
+EXTRA_MOUNTS="$D332" launch "$TMP/app"
+[[ "$(fp332 bad 'was protected by an earlier launch that did not report it')" == *"programs: alias.st $pa332." ]] \
+  && rec332 '' "$D332/bad/.git" && rec332 al: "$D332/bad/.git" \
+  && pass "G332 … and once git can read it, the next launch names what it sets, and records that" \
+  || fail "G332 an unparsable config mended (got: $(fp332 bad 'was protected by an earlier launch that did not report it'))"
+# One reported before, whose config cannot be parsed now: not recorded either.
+unal332; "${G[@]}" -C "$D332/old" config alias.so log; cp "$D332/old/.git/config" "$TMP/old332.cfg"
+printf '[core\n' >> "$D332/old/.git/config"
+EXTRA_MOUNTS="$D332" launch "$TMP/app"
+[[ "$(al332 al332/old/.git)" == *"Its config sets: (config, $ur332." ]] && ! rec332 al: "$D332/old/.git" \
+  && cp "$TMP/old332.cfg" "$D332/old/.git/config" && EXTRA_MOUNTS="$D332" launch "$TMP/app" \
+  && [[ "$(al332 al332/old/.git)" == *"Its config sets: alias.so $pa332." ]] && rec332 al: "$D332/old/.git" \
+  && pass "G332 one reported before whose config git cannot parse is named as not checked, not recorded, and named once it can" \
+  || fail "G332 an unparsable config of one reported before (got: $(al332 al332/old/.git); al recorded: $(grep -cF " al:$D332/old/.git" "$rec332"))"
+if [[ "$(id -u)" == 0 ]]; then
+  pass "G332 a config you may not read: skipped, as root a mode stops nothing"
+else
+  unal332; chmod 000 "$D332/mode/.git/config"
+  EXTRA_MOUNTS="$D332" launch "$TMP/app"
+  o332="$(al332 al332/mode/.git)"; ! rec332 al: "$D332/mode/.git"; x332=$?
+  chmod 600 "$D332/mode/.git/config"
+  EXTRA_MOUNTS="$D332" launch "$TMP/app"
+  [[ "$o332" == *"Its config sets: (config, $ur332." && "$x332" == 0 && "$(al332 al332/mode/.git)" == *"Its config sets: alias.sm $pa332." ]] \
+    && pass "G332 a config you may not read is named as not checked, not recorded, and named once you can" \
+    || fail "G332 an unreadable config (first: $o332; al recorded then: $x332; after: $(al332 al332/mode/.git))"
+fi
+# A config the launch cannot hold read-only, a link: the agent can still write
+# it, so its aliases are named by every launch and never recorded as named
+# (review of the fix).
+rm -rf "$D332"; mkdir -p "$D332" && "${G[@]}" init -q "$D332/lnk" && "${G[@]}" -C "$D332/lnk" config alias.sl log \
+  && mv "$D332/lnk/.git/config" "$D332/lnk/cfg-real" && ln -s ../cfg-real "$D332/lnk/.git/config" \
+  && "${G[@]}" init -q "$D332/lcw" && "${G[@]}" -C "$D332/lcw" config alias.sw log \
+  && : > "$D332/lcw/cw-real" && ln -s ../cw-real "$D332/lcw/.git/config.worktree" \
+  || { printf 'SCAFFOLD-FAILED: G332 a linked config\n'; exit 1; }
+# A name docker cannot be handed, which is not UTF-8: where the filesystem takes one.
+u332="$D332/$(printf 'u\377')"; h332=""
+if mkdir "$u332" 2>/dev/null && "${G[@]}" init -q "$u332" 2>/dev/null && "${G[@]}" -C "$u332" config alias.su log; then h332=1; fi
+EXTRA_MOUNTS="$D332" launch "$TMP/app"; r332="$LAUNCH_RC"
+"${G[@]}" -C "$D332/lnk" config alias.later log 2>/dev/null || printf '[alias]\n\tlater = log\n' >> "$D332/lnk/cfg-real"
+EXTRA_MOUNTS="$D332" launch "$TMP/app"
+l332="$(grep -A1 -F 'NOTE: /workspace/al332/lnk/.git has a config this launch cannot hold read-only, so its aliases are' "$ERR" | tail -1)"
+EXTRA_MOUNTS="$D332" launch "$TMP/app"
+[[ "$r332" == 0 && "$l332" == *"It sets: alias.sl $pa332, alias.later $pa332." ]] && ! rec332 al: "$D332/lnk/.git" \
+  && grep -qF 'named at every launch. It sets: alias.sl' "$ERR" \
+  && pass "G332 a config that is a link has its aliases named at every launch, one written later among them, and never recorded as named" \
+  || fail "G332 a linked config (rc=$r332; got: $l332; then: $(grep -cF 'named at every launch' "$ERR"))"
+grep -qF "named at every launch. It sets: alias.sw $pa332." "$ERR" && ! rec332 al: "$D332/lcw/.git" \
+  && pass "G332 … and so has one whose config.worktree is a link" \
+  || fail "G332 a linked config.worktree (stderr: $(grep -A1 -F 'al332/lcw/.git has a config' "$ERR" | tr '\n' ' '))"
+if [[ -n "$h332" ]]; then
+  grep -qF "named at every launch. It sets: alias.su $pa332." "$ERR" && ! rec332 al: "$u332/.git" \
+    && pass "G332 … and one in a directory docker cannot be handed, whose internals stay writable" \
+    || fail "G332 a directory docker cannot be handed (stderr: $(grep -c 'named at every launch' "$ERR") such notes; $(grep -c 'docker cannot be handed' "$ERR") warnings)"
+else
+  pass "G332 a directory docker cannot be handed: skipped, this filesystem takes no name that is not UTF-8"
+fi
 # The check after the session: a repository the session made whose config sets
-# such an alias is named; a plain git init is not.
+# such an alias is named, and one whose config it left unparsable; a plain git
+# init is not.
 mkdir -p "$TMP/ps332"
 FAKE_SESSION="set -e; cd '$TMP/ps332'
 git -c init.defaultBranch=main init -q pa; git -C pa config alias.st 'rebase --exec ./x'
+git -c init.defaultBranch=main init -q hid; git -C hid config alias.st 'rebase --exec ./x'; printf '[core\n' >> hid/.git/config
 git -c init.defaultBranch=main init -q plain" EXTRA_MOUNTS="$TMP/ps332" launch "$TMP/app"
 w332="$(sed -n '/WARNING: the session made/,$p' "$ERR")"
-[[ "$w332" == *"$TMP/ps332/pa/.git"*"alias.st $pa332"* && "$w332" != *"$TMP/ps332/plain/.git"* ]] \
-  && pass "G332 a repository the session made with such an alias is named on exit, a plain git init is not" \
+[[ "$w332" == *"$TMP/ps332/pa/.git"*"alias.st $pa332"* && "$w332" == *"$TMP/ps332/hid/.git"*"(config, $ur332"* && "$w332" != *"$TMP/ps332/plain/.git"* ]] \
+  && pass "G332 a repository the session made with such an alias, or with a config git cannot parse, is named on exit; a plain git init is not" \
   || fail "G332 after the session (rc=$LAUNCH_RC; stderr: $(tail -8 "$ERR" | tr '\n' ' '))"
-chmod -R u+rwX "$D332" "$O332" "$TMP/ps332" 2>/dev/null; rm -rf "$D332" "$O332" "$TMP/ps332" "$TMP/nogit332"
+chmod -R u+rwX "$D332" "$O332" "$TMP/ps332" 2>/dev/null
+rm -rf "$D332" "$O332" "$TMP/ps332" "$TMP/nogit332" "$TMP/bad332.cfg" "$TMP/old332.cfg"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

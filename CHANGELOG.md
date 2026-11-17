@@ -1160,8 +1160,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now in that list, marked as a git command that may itself run a program, and
   so is one in a repository a session made, in the warning when the container
   exits. A repository an earlier engine already reported has its aliases named
-  once, at the next launch. What such an alias runs is not checked at each
-  launch, as a `!` alias's program is (feature-gaps review GAP-30).
+  once, ten and then a count, at the next launch where git runs. A config git
+  cannot read or parse is named as not checked, and is read again by the next
+  launch: read as setting nothing, one the agent left unreadable was recorded
+  as named. Where the launch cannot hold a config read-only (it is a link), its
+  aliases are named at every launch. Two limits: what such an alias runs is not
+  checked at each launch, as a `!` alias's program is, and an alias in a file
+  the config includes is not named, only the include (feature-gaps review
+  GAP-30).
 
 - **Planted `.git` files no longer make a refused launch slow.** Past
   `SANDBOX_GIT_MAX` git directories the scan stops and the launch is refused,
