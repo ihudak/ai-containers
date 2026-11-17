@@ -2151,13 +2151,45 @@ CASES
 [[ "$o327" == "none;|none;|none;|p:./x;|p:./x;|" ]] \
   && pass "G327 a program found on PATH is still not judged, nor its arguments read; known options are still followed" \
   || fail "G327 unchanged (got: $o327)"
+# What the review of the fix found (B1 to B4): chrt takes more for a priority
+# than digits, so a word that is neither a plain number nor a path is not
+# followed; ruby's -F takes no separate argument, so the word after it is the
+# script; in quotes a leading ~ is no home directory, and the shell runs the
+# file in a directory named ~ under the checkout; a remote's helper is the
+# program git-remote-<vcs>.
+o327="$(run327 <<'CASES'
+core.fsmonitor|chrt -b " 0" ./evil
+core.fsmonitor|chrt -b 0x0 ./evil
+core.fsmonitor|chrt -b 0 ./evil
+core.fsmonitor|ruby -F ./evil.rb /usr/lib/safe.rb
+core.fsmonitor|ruby -F: /usr/lib/safe.rb
+core.fsmonitor|"~/bin/tool"
+core.fsmonitor|sh '~/x.sh'
+core.fsmonitor|~/bin/tool
+remote.o.vcs|a/x
+remote.o.vcs|hg
+CASES
+)"
+ch327='u:a priority of chrt that cannot be told from the program;'
+[[ "$o327" == "$ch327|$ch327|p:./evil;|p:./evil.rb;|p:/usr/lib/safe.rb;|p:./~/bin/tool;|p:./~/x.sh;|p:~/bin/tool;|p:git-remote-a/x;|none;|" ]] \
+  && pass "G327 chrt's priority, ruby -F, a quoted ~ and a remote's helper are read as the programs read them" \
+  || fail "G327 the review's cases (got: $o327)"
 rm -f "$fns327"
 # End to end, as the review ran it: the NOTE the launch gave for
 # `fsmonitor = ./evil.sh` it did not give for `. ./evil.sh`.
 H327="$TMP/h327"
 mkdir -p "$H327" && "${G[@]}" init -q "$H327/r" && "${G[@]}" -C "$H327/r" config core.fsmonitor '. ./evil.sh' \
-  && "${G[@]}" -C "$H327/r" config core.sshCommand 'PATH=./bin ssh' || { printf 'SCAFFOLD-FAILED: G327 launch\n'; exit 1; }
+  && "${G[@]}" -C "$H327/r" config core.sshCommand 'PATH=./bin ssh' \
+  && "${G[@]}" -C "$H327/r" config core.pager '"~/bin/tool"' && "${G[@]}" -C "$H327/r" config remote.o.vcs a/x \
+  && "${G[@]}" -C "$H327/r" config gc.recentObjectsHook /bin/true || { printf 'SCAFFOLD-FAILED: G327 launch\n'; exit 1; }
+[[ "$("${G[@]}" -C "$H327/r" config core.pager)" == '"~/bin/tool"' ]] || { printf 'SCAFFOLD-FAILED: G327 the quotes are not in the value\n'; exit 1; }
 EXTRA_MOUNTS="$H327" launch "$TMP/app"
+n327="$(grep -A1 -F 'NOTE: /workspace/h327/r/.git is protected for the first time, and its config already sets' "$ERR" | tail -1)"
+[[ "$n327" == *remote.o.vcs* && "$n327" == *gc.recentobjectshook* ]] \
+  && grep -qF "has your host's git run /workspace/h327/r/~/bin/tool (core.pager), which leads somewhere the agent can change:" "$ERR" \
+  && grep -qF "has your host's git run /workspace/h327/r/git-remote-a/x (remote.o.vcs), which leads somewhere the agent can change:" "$ERR" \
+  && pass "G327 a quoted ~ is judged in the checkout, and a remote's helper and gc's hook are named and judged" \
+  || fail "G327 the review's cases at a launch ($n327; $(grep -F "has your host's git run" "$ERR" | head -4 | tr '\n' ' '))"
 [[ "$LAUNCH_RC" == 0 ]] \
   && grep -qF '(a shell builtin or keyword that runs or reads its arguments)' <<<"$(grep -A1 -F "has your host's git run a command (core.fsmonitor) the launcher does not follow" "$ERR")" \
   && grep -qF '(an assignment before the program)' <<<"$(grep -A1 -F "has your host's git run a command (core.sshcommand) the launcher does not follow" "$ERR")" \

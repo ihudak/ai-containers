@@ -1120,9 +1120,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   launcher's record of what it protected (`~/.ai-containers/git-reported.conf`)
   now leads the scan to such a directory, and to a `.git` file a launch bound,
   while it is still the one recorded; a directory on the way that the session
-  made unsearchable is bound read-only whole. A record that cannot be written
-  is said in a `WARNING:`. The record is this home's: removing
-  `~/.ai-containers` loses it (bugs review GIT-105).
+  made unsearchable is bound read-only whole, and what lies behind it is
+  protected once it can be reached. A record that cannot be written is said in
+  a `WARNING:`. The record is this home's: removing `~/.ai-containers` loses it
+  (bugs review GIT-105).
 
 - **A config key's program is named when the shell reaches it another way.**
   The launch names a program that a git config key runs when the agent can
@@ -1137,10 +1138,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   same way: a wrapper named by a path (`./env true`) was not judged; a
   wrapper's option the launcher did not know had its argument taken for the
   program (`ionice -c 3 ./x`, `stdbuf -o L ./x`); `env -C dir ./x` was judged
-  from the wrong directory; and an interpreter given no script
-  (`diff.x.textconv = sh`) runs the file git hands it. A program found on
-  `PATH` is still not judged, and its arguments are still not read (bugs
-  review GIT-106).
+  from the wrong directory; an interpreter given no script
+  (`diff.x.textconv = sh`) runs the file git hands it; and `"~/x"` in quotes,
+  which the shell runs from a directory named `~` in the checkout, was judged
+  in your home. A remote's helper (`remote.<name>.vcs`) and
+  `gc.recentObjectsHook` are among the keys now. A program found on `PATH` is
+  still not judged, and its arguments are still not read. One cost: a command
+  with any assignment before the program (`LESS=FRX less`) now gets a `NOTE:`
+  at each launch (bugs review GIT-106).
 
 - **Planted `.git` files no longer make a refused launch slow.** Past
   `SANDBOX_GIT_MAX` git directories the scan stops and the launch is refused,
@@ -1156,11 +1161,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   container needs it, and `git status` shows only its next two lines. It also
   runs the rebase's merge strategy when that is not one of git's own: a
   strategy of `../../x`, beside a directory named `git-merge-..`, ran `./x`
-  with no `exec` line at all (measured with git 2.53). When the container
-  exits, and at a launch that finds a rebase or a cherry-pick already stopped,
-  a `WARNING:` names each such repository, with the number of `exec` lines and
-  a strategy that is not git's own; read the todo (`git rebase --edit-todo`)
-  before you continue, or abort (feature-gaps review GAP-15).
+  with no `exec` line at all (measured with git 2.53). And a stopped `git am`
+  hands `git apply` its saved options, one of which writes a file it names.
+  At a launch that finds a rebase, a cherry-pick or a `git am` stopped, and
+  when the container exits if the session stopped one or changed what one
+  would run, a `WARNING:` names each such repository, with the number of
+  `exec` lines, a strategy that is not git's own, and options that could write
+  a file; read the todo (`git rebase --edit-todo`) before you continue, or
+  abort (feature-gaps review GAP-15).
 
 - **git-lfs's own program keys are named and judged.** git-lfs reads
   `lfs.customtransfer.<name>.path` from the repository's config and runs it

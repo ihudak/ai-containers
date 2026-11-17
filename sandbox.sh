@@ -886,7 +886,12 @@ launcher_ro_overlay() {
     for j in ${bsrc[@]+"${!bsrc[@]}"}; do [[ "$src" == "${bsrc[j]}"/* ]] && break; j=""; done
     [[ -n "${j:-}" && -r "$src" && -x "$src" ]] || continue
     gdirs=(); gfiles=(); glinks=(); gunr=()
+    # Where it lies in the writable mount's view, which is where what it holds
+    # is protected: its .git files under an overlay there count toward no limit
+    # either (review of the GIT-107 fix, A5).
+    _gdi_dst="${bdst[j]}${src#"${bsrc[j]}"}"
     git_dirs_in gdirs gfiles glinks gunr "$src"
+    _gdi_dst=""
     for f in ${gdirs[@]+"${gdirs[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${gunr[@]+"${gunr[@]}"}; do
       k2="dir"
       if [[ -f "$f" ]]; then k2="file"; elif [[ ! -r "$f" || ! -x "$f" ]]; then k2="unr"; fi
@@ -1379,10 +1384,12 @@ launcher_ro_overlay() {
   # the container exits does not run for a launcher that is killed (GAP-15).
   local -a seqrec=()
   local -A seqhad=()
+  local seqsum=""
   for k in ${pgd[@]+"${!pgd[@]}"}; do
     [[ -z "${pgo[k]:-}" && -z "${seqhad[${pgd[k]}]:-}" ]] || continue
     seqhad[${pgd[k]}]=1
-    _git_seq_exec "${pgd[k]}" x
+    _git_seq_exec "${pgd[k]}" x seqsum
+    _git_seq_seen[${pgd[k]}]="$x|$seqsum"
     [[ -z "$x" ]] || seqrec+=("$(_term "${pgd[k]}") ($(_term "$x"))")
   done
   _git_seq_warn "" ${seqrec[@]+"${seqrec[@]}"}
@@ -4423,7 +4430,21 @@ _gdi_blocked() {
       _xm_t+=("$_gb_b"); _xm_by+=("$1"); _xm_j+=("$_gb_j"); _xm_k[${#_xm_t[@]}-1]=unr
     fi
   done
-  [[ -n "$_gb_did" ]]
+  [[ -n "$_gb_did" ]] || return 1
+  # What was being looked for behind it, kept in the record (`want:`): the
+  # directory is bound whole, so no launch sees the .git there, and once the
+  # index that named the checkout drops it nothing leads there again (review of
+  # the GIT-105 fix, A1). Only by the launch itself, never by the scan after the
+  # session, which runs in a subshell and names what it finds. And only a way
+  # written as the path it is, which is how an index's checkout comes here:
+  # the scan takes a recorded path only where it is the directory's own, and
+  # the other pointers (a core.worktree, a gitdir) are in files a launch binds
+  # read-only, so they lead here again by themselves.
+  if [[ -z "${_gb_norec:-}" && "/$1/" != *"/./"* && "/$1/" != *"/../"* && "$1" != *"//"* ]] \
+     && (( BASH_SUBSHELL == 0 && ${#1} <= 4096 )); then
+    _git_report_record "$1" want "0 0 0"
+  fi
+  return 0
 }
 
 # _gdi_name_link <.git link>: names a .git link inside a writable mount, as
@@ -4764,47 +4785,6 @@ git_dirs_in() {
   # index is read with git, fsmonitor off, so a config tampered with before this
   # protection existed runs nothing here; without git, only what the scan sees.
   for g in ${_gdi_dirs[@]+"${_gdi_dirs[@]}"}; do had[$g]=1; done
-  # What an earlier launch protected in this mount that the scan above did not
-  # find, taken from the record while it is still what was recorded, a git
-  # directory or a .git file (_git_rec_add): the scan reaches one under a pruned
-  # vendor/ or past its depth only through an index, and a session that dropped
-  # the entry from that index left it unprotected at the next launch, in
-  # silence (bugs review GIT-105; G320). Still the same one by identity, and
-  # still reached by no link: a directory made again at the path was never
-  # protected, and is found, like any other, by what leads to it. It is
-  # followed from here like one the scan found, its own index read too.
-  #   By its inode and birth time, not its device, which is another number
-  # after a reboot on some hosts (a WSL disk, LVM, btrfs, APFS): compared whole,
-  # every record there went stale together. One that is not there may only be
-  # hidden: the agent owns the directories on the way, and one it made
-  # unsearchable in the session that dropped the entry is bound whole, as for
-  # a checkout an index names (_gdi_blocked; GIT-60).
-  local _rq _rqp _rqd
-  local -A _rqid=() _rqunr=()
-  _git_reported_load
-  for (( _rq = 0; _rq < ${#_git_rec_p[@]}; _rq++ )); do
-    _rqp="${_git_rec_p[_rq]}"
-    [[ "$_rqp" == "$5"/* && -z "${had[$_rqp]:-}" ]] || continue
-    if [[ ! -e "$_rqp" && ! -L "$_rqp" ]]; then
-      if [[ -z "${_rqid[$_rqp]+x}" ]]; then _rqid[$_rqp]="?"; _gdi_blocked "$_rqp" "$5" || true; fi
-      continue
-    fi
-    if [[ "${_git_rec_k[_rq]}" == file ]]; then [[ -f "$_rqp" && ! -L "$_rqp" ]] || continue
-    else [[ -d "$_rqp" && ! -L "$_rqp" ]] || continue; fi
-    if [[ -z "${_rqid[$_rqp]+x}" ]]; then
-      if (( ${#_rqunr[@]} == 0 )); then
-        _rqunr[/]=1; for g in ${_gdi_unr[@]+"${_gdi_unr[@]}"}; do _rqunr[$g]=1; done
-      fi
-      _rqid[$_rqp]="$(_git_ident "$_rqp")"; _rqid[$_rqp]="${_rqid[$_rqp]#* }"
-      # As the kernel reaches it, no link on the way: its directory's own path.
-      if ! { _cd_bash _rqd "${_rqp%/*}" && [[ "$_rqd/${_rqp##*/}" == "$_rqp" ]]; }; then _rqid[$_rqp]="?"; fi
-    fi
-    [[ "${_rqid[$_rqp]}" == "${_git_rec_i[_rq]#* }" && -z "${_rqunr[$_rqp]:-}" ]] || continue
-    had[$_rqp]=1
-    if [[ "${_git_rec_k[_rq]}" == file ]]; then _gdi_files+=("$_rqp")
-    elif [[ ! -r "$_rqp" || ! -x "$_rqp" ]]; then _gdi_unr+=("$_rqp"); _rqunr[$_rqp]=1
-    else _gdi_dirs+=("$_rqp"); fi
-  done
   # _gdi_follow's WARNINGs: five named, then a count — every .git file is the
   # agent's to write (re-review of batch 9).
   local n=0 nf=0 top rec mode path tgt _gdi_warned=0
@@ -4946,6 +4926,8 @@ git_dirs_in() {
   local -a _gdi_wkd=() _gdi_wku=()
   local -a links=() _gdi_all=() _gdi_fcnt=()
   local gover="" _gdi_fk=0 _gdi_ff _gdi_fro _gdi_fat _gdi_fr
+  local _rq _rqp _rqk _rqt _rqd _rqn=0 _rq_done="" _gb_norec=""
+  local -A _rqid=() _rqunr=()
   while :; do
   while (( n < ${#_gdi_dirs[@]} || nf < ${#_gdi_files[@]} || ni < ${#_gdi_ionly[@]} )); do
     # Past SANDBOX_GIT_MAX the launch is refused anyway: following on, and
@@ -5277,6 +5259,75 @@ git_dirs_in() {
       printf 'WARNING: … and %d more submodules of %s were not followed, for the same reasons.\n' "$((gskip - 5))" "$(_q "$g")" >&2
     fi
   done
+  # What an earlier launch protected in this mount that nothing above led to,
+  # taken from the record (_git_rec_add) once, after everything else is
+  # followed, so that only what is no longer reached costs a look. The scan
+  # reaches a git directory under a pruned vendor/, or past its depth, only
+  # through an index, and a session that dropped the entry from that index left
+  # it unprotected at the next launch, in silence (bugs review GIT-105; G320).
+  #   A git directory, or a .git file a launch bound, while it is still the one
+  # recorded and reached by no link: by its inode and birth time, not its
+  # device, which is another number after a reboot on some hosts (a WSL disk,
+  # LVM, btrfs, APFS). A directory made again at the path was never protected,
+  # and is found, like any other, by what leads to it. What is taken is
+  # followed like anything the scan found, its own index read too.
+  #   One that is not there may only be hidden: the agent owns the directories
+  # on the way, and one it made unsearchable is bound whole, as for a checkout
+  # an index names (_gdi_blocked; GIT-60). And a checkout a launch could not
+  # reach for such a directory (a `want:` line, which _gdi_blocked records) has
+  # its .git taken once it can be reached, whatever that is: no launch saw it,
+  # so there is no identity to hold it to (review of the GIT-105 fix, A1; G324).
+  #   The agent cannot make a recorded path stale at will, a protected one being
+  # pinned, but the record only grows: past five times SANDBOX_GIT_MAX paths
+  # that had to be looked at one by one the launch is refused, naming the
+  # record, rather than left to slow down for ever (the same review, A4).
+  if [[ -z "$_rq_done" ]]; then
+    _rq_done=1
+    _git_reported_load
+    for (( _rq = 0; _rq < ${#_git_rec_p[@]}; _rq++ )); do
+      _rqp="${_git_rec_p[_rq]}"; _rqk="${_git_rec_k[_rq]}"
+      [[ "$_rqp" == "$5"/* ]] || continue
+      if [[ ! -e "$_rqp" && ! -L "$_rqp" ]] || [[ "$_rqk" == want && -d "$_rqp" && ! -L "$_rqp" && ! -x "$_rqp" ]]; then
+        if [[ -z "${_rqid[$_rqp]+x}" ]]; then
+          _rqid[$_rqp]="?"; _gb_norec=1; _gdi_blocked "$_rqp" "$5" || true; _gb_norec=""
+        fi
+        continue
+      fi
+      _rqt="$_rqp"
+      if [[ "$_rqk" == want ]]; then
+        [[ -d "$_rqp" && ! -L "$_rqp" ]] || continue
+        _rqt="$_rqp/.git"
+        [[ -e "$_rqt" || -L "$_rqt" ]] || continue
+      elif [[ "$_rqk" == file ]]; then [[ -f "$_rqp" && ! -L "$_rqp" ]] || continue
+      else [[ -d "$_rqp" && ! -L "$_rqp" ]] || continue; fi
+      [[ -z "${had[$_rqt]:-}" ]] || continue
+      if [[ -z "${_rqid[$_rqt]+x}" ]]; then
+        if (( ${#_rqunr[@]} == 0 )); then
+          _rqunr[/]=1; for g in ${_gdi_unr[@]+"${_gdi_unr[@]}"}; do _rqunr[$g]=1; done
+        fi
+        if (( ++_rqn > 5 * ${gitmax:-200} )); then
+          printf 'ERROR: %s names more than %d paths in %s\n' "$(_term "$_git_reported_file")" "$(( 5 * ${gitmax:-200} ))" "$(_term "$5")" >&2
+          printf '       that nothing there leads to any more, and each had to be looked at; refusing the launch.\n' >&2
+          printf '       Remove the lines of repositories that are gone from that file, or the file itself:\n' >&2
+          printf '       launches then name again what they named, and find a git directory only by what\n' >&2
+          printf '       leads to it. Or raise SANDBOX_GIT_MAX.\n' >&2
+          exit 1
+        fi
+        if [[ "$_rqk" == want ]]; then _rqid[$_rqt]="want"
+        else _rqid[$_rqt]="$(_git_ident "$_rqt")"; _rqid[$_rqt]="${_rqid[$_rqt]#* }"; fi
+      fi
+      [[ "$_rqk" == want || "${_rqid[$_rqt]}" == "${_git_rec_i[_rq]#* }" ]] || continue
+      [[ -z "${_rqunr[$_rqt]:-}" ]] || continue
+      # As the kernel reaches it, no link on the way: its directory's own path.
+      if ! { _cd_bash _rqd "${_rqt%/*}" && [[ "$_rqd/${_rqt##*/}" == "$_rqt" ]]; }; then _rqid[$_rqt]="?"; continue; fi
+      had[$_rqt]=1
+      if [[ -L "$_rqt" ]]; then _gdi_links+=("$_rqt")
+      elif [[ -f "$_rqt" ]]; then _gdi_files+=("$_rqt")
+      elif [[ ! -r "$_rqt" || ! -x "$_rqt" ]]; then _gdi_unr+=("$_rqt"); _rqunr[$_rqt]=1
+      else _gdi_dirs+=("$_rqt"); fi
+    done
+    if (( n < ${#_gdi_dirs[@]} || nf < ${#_gdi_files[@]} )); then continue; fi
+  fi
   # Every waiting git directory that has gained a worktree is read; repeated
   # until none does.
   gchanged=""
@@ -5573,8 +5624,10 @@ _git_kv() {
 # smudge has to fetch an object (a checkout, a pull, a stash), on a host whose
 # global config holds the lfs filter: its custom transfer program, with the
 # keys that choose it and hand it arguments, and its extensions (feature-gaps
-# review GAP-16).
-_git_prog_keys='core\.(fsmonitor|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|alias\..+|submodule\..+\.update|trailer\..+\.(command|cmd)|gpg\.ssh\.defaultkeycommand|sendemail\.(.+\.)?(tocmd|cccmd|headercmd|sendmailcmd|smtpserver)|imap\.tunnel|instaweb\.httpd|guitool\..+\.cmd|interactive\.difffilter|tar\..+\.command|hook\..+\.command|lfs\.customtransfer\..+\.(path|args)|lfs\.(.+\.)?standalonetransferagent|lfs\.extension\..+\.(clean|smudge)'
+# review GAP-16). And three of git's own that were missing: a remote's helper
+# (remote.<name>.vcs, run as git-remote-<vcs>), gc.recentObjectsHook, and
+# uploadpack.packObjectsHook (review of the fix, B4).
+_git_prog_keys='core\.(fsmonitor|sshcommand|editor|pager|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|diff\.external|diff\..+\.(command|textconv)|merge\..+\.driver|filter\..+\.(clean|smudge|process)|credential\.(.+\.)?helper|gpg\.(.+\.)?program|remote\..+\.(uploadpack|receivepack)|(difftool|mergetool|man|browser)\..+\.(cmd|path)|web\.browser|alias\..+|submodule\..+\.update|trailer\..+\.(command|cmd)|gpg\.ssh\.defaultkeycommand|sendemail\.(.+\.)?(tocmd|cccmd|headercmd|sendmailcmd|smtpserver)|imap\.tunnel|instaweb\.httpd|guitool\..+\.cmd|interactive\.difffilter|tar\..+\.command|hook\..+\.command|remote\..+\.vcs|gc\.recentobjectshook|uploadpack\.packobjectshook|lfs\.customtransfer\..+\.(path|args)|lfs\.(.+\.)?standalonetransferagent|lfs\.extension\..+\.(clean|smudge)'
 
 # _git_key_shown <key>: a config key as it may be printed: a credential.<url>
 # key's user and password (`https://user:token@host`) blanked, since a NOTE
@@ -5737,14 +5790,16 @@ _git_prog_iopt() {
         -I?*) _gpx=dir=; _gpx_v="${_io_o:2}" ;;
         -r) _gpx=rlib ;;
         -r?*) _gpx=rlib=; _gpx_v="${_io_o:2}" ;;
-        -E|-F|--encoding|--external-encoding|--internal-encoding) _gpx=arg ;;
+        # Not -F: ruby reads a pattern only attached to it, and the word after
+        # a bare -F is the script (review of the GIT-106 fix, B2).
+        -E|--encoding|--external-encoding|--internal-encoding) _gpx=arg ;;
         # Not --jit and its like: one of its options hands flags to a C compiler.
         --disable=gems|--disable-gems|--disable=did_you_mean|--verbose|--encoding=*|--external-encoding=*|--internal-encoding=*) _gpx=skip ;;
         --*) ;;
         *)
           if [[ "$_io_o" =~ ^-E[A-Za-z0-9:_-]+$ || "$_io_o" =~ ^-[wvalnpsdyU]+$ || "$_io_o" =~ ^-W([0-2]|:[a-z-]+)?$ \
                 || "$_io_o" =~ ^-K[A-Za-z]?$ || "$_io_o" =~ ^-0[0-7]*$ || "$_io_o" =~ ^-[wvalnps]*i[A-Za-z0-9._~]*$ \
-                || "$_io_o" =~ ^-T[0-9]?$ || "$_io_o" =~ ^-F[A-Za-z0-9:,=]+$ ]]; then _gpx=skip
+                || "$_io_o" =~ ^-T[0-9]?$ || "$_io_o" =~ ^-F[A-Za-z0-9:,=]*$ ]]; then _gpx=skip
           elif [[ "$_io_o" =~ ^-[A-Za-z0-9]*e ]]; then _gpx=inline; fi ;;
       esac ;;
     node)
@@ -5830,6 +5885,11 @@ _git_prog() {
     # git-lfs's keys that only choose its transfer program or hand it its
     # arguments: named at a first protection, and no program themselves.
     lfs.customtransfer.*.args|lfs.standalonetransferagent|lfs.*.standalonetransferagent) return 1 ;;
+    # A remote's helper is the program git-remote-<vcs>: found on PATH, or,
+    # with a / in the name, a path from where git runs (review of the fix, B4).
+    remote.*.vcs)
+      [[ "$_gp_v" =~ / ]] || return 1
+      _gp_o=("p:git-remote-$_gp_v"); return 0 ;;
     mergetool.*.path|difftool.*.path|man.*.path|browser.*.path|gpg.program|gpg.*.program|lfs.customtransfer.*.path)
       [[ "$_gp_v" =~ / ]] || return 1
       _gp_o=("p:$_gp_v"); return 0 ;;
@@ -5846,7 +5906,12 @@ _git_prog() {
           || { _gp_o+=("u:$_gp_x"); return 0; }
         _gp_w="${BASH_REMATCH[1]}"; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
         # A quoted word with more of it after the quote: not followed.
-        if [[ -n "$_gp_v" && "${_gp_v:0:1}" != [$_gp_ws] ]]; then _gp_o+=("u:$_gp_x"); return 0; fi ;;
+        if [[ -n "$_gp_v" && "${_gp_v:0:1}" != [$_gp_ws] ]]; then _gp_o+=("u:$_gp_x"); return 0; fi
+        # In quotes a leading ~ is no home directory: the shell runs "~/x" as
+        # the file x in a directory named ~ under the checkout, which the agent
+        # can make, while the entry p:~/x was judged in your home, and nothing
+        # was said (review of the GIT-106 fix, B3). Given as ./~/x.
+        if [[ "$_gp_w" == '~'* ]]; then _gp_w="./$_gp_w"; fi ;;
       *) [[ "$_gp_v" =~ $_gp_rn ]]; _gp_w="${BASH_REMATCH[0]}"; _gp_v="${_gp_v:${#_gp_w}}" ;;
     esac
     if [[ "$_gp_w" == *$'\n'* ]]; then _gp_o+=("u:another command after it"); return 0; fi
@@ -5908,12 +5973,16 @@ _git_prog() {
         continue ;;
     esac
     # What timeout and taskset take before the program, a duration and a mask
-    # or a list of CPUs, whatever it looks like (timeout takes `inf`); chrt's
-    # priority only where it is a number, since a chrt that needs none for
-    # the policy takes the word for the program.
+    # or a list of CPUs, whatever it looks like (timeout takes `inf`). chrt's
+    # priority only where it is a plain number: a chrt that needs none for the
+    # policy takes the word for the program, so one with a / in it is read as
+    # the program, and any other is not followed, since chrt takes more for a
+    # number than digits (`chrt -b " 0" ./x` ran ./x, with the quoted word read
+    # here as a program found on PATH; review of the GIT-106 fix, B1).
     if [[ -n "$_gp_d" ]]; then
       _gp_k="$_gp_d"; _gp_d=""
       if [[ "$_gp_k" != chrt || "$_gp_w" =~ ^[0-9]+$ ]]; then continue; fi
+      if [[ ! "$_gp_w" =~ / ]]; then _gp_o+=("u:a priority of chrt that cannot be told from the program"); return 0; fi
     fi
     # An assignment before the program: what it sets can change the program
     # found (PATH=) and what a shell or an interpreter loads first (BASH_ENV=,
@@ -6159,9 +6228,10 @@ _git_reported_loaded=""
 # git directory a launch reported, and every .git file it bound (`file:<path>`),
 # is taken by the next scan of a mount that holds it, while it is still what
 # was recorded (_git_ident): its path, kind and identity, in parallel arrays.
-# One you can no longer list is bound whole, as the scan binds one it finds;
-# nothing but an index leads to a git directory by a way the agent can cut,
-# and one you cannot list that an index leads to refuses the launch.
+# One you can no longer list is bound whole, as the scan binds one it finds.
+# And where a directory on the way to a checkout could not be searched, so that
+# it was bound whole and its .git never seen, the checkout is recorded
+# (`want:<path>`, by _gdi_blocked) and its .git taken once it can be reached.
 _git_rec_p=() _git_rec_i=() _git_rec_k=()
 _git_rec_lost=""           # why a line of the record could not be written, for the launch to say
 # _git_unq <text> <out-var>: a path as _git_report_record wrote it with a
@@ -6193,7 +6263,8 @@ _git_unq() {
   _gu_o="$_gu_r"
 }
 # _git_rec_add <line>: one line of the record, for the scan: `<device> <inode>
-# <birth> <path>`, the path as it is, `hooks:` or `file:` before it. Not one
+# <birth> <path>`, the path as it is, `hooks:` or `file:` before it, or `want:`
+# before a checkout a launch could not reach (no identity: `0 0 0`). Not one
 # whose identity could not be read (`?`), nor `wt:` and `push:` lines, which
 # say what was named about a directory another line holds.
 _git_rec_add() {
@@ -6204,6 +6275,7 @@ _git_rec_add() {
   _ra_i+=" ${_ra_p%% *}"; _ra_p="${_ra_p#* }"
   case "$_ra_p" in
     hooks:*) _ra_p="${_ra_p#hooks:}" ;;
+    want:*) _ra_p="${_ra_p#want:}"; _ra_k="want" ;;
     file:*) _ra_p="${_ra_p#file:}"; _ra_k="file" ;;
   esac
   if [[ "$_ra_p" == "\$'"* ]]; then _git_unq "$_ra_p" _ra_p || return 0; fi
@@ -6365,11 +6437,12 @@ _ro_files_restore() {
   done
 }
 
-# _git_seq_exec <git dir> <out-var>: what a rebase, or a cherry-pick or revert of
-# several commits, stopped in this git directory would run when it is continued,
-# as words to print, or nothing. Its state is files under .git that stay
-# writable, since a rebase inside the container needs them, and nothing under
-# .git shows in `git status`:
+# _git_seq_exec <git dir> <out-var> [<sum-var>]: what a rebase, a cherry-pick or
+# revert of several commits, or a git am stopped in this git directory would run
+# or write when it is continued, as words to print, or nothing; and, with a
+# third argument, a checksum of the files those words are about. Its state is
+# files under .git that stay writable, since a rebase inside the container
+# needs them, and nothing under .git shows in `git status`:
 # - a rebase's todo (rebase-merge/git-rebase-todo): `git rebase --continue` on
 #   the host runs every `exec` (or `x`) line of it, while `git status` shows
 #   the next two lines only. A session that left a rebase stopped, an exec
@@ -6383,64 +6456,98 @@ _ro_files_restore() {
 #   directory named git-merge-.., ran ./x at `git rebase --continue` with no
 #   exec line anywhere (measured, git 2.53, while fixing GAP-15). Any name but
 #   the six git ships is named.
+# - a git am's saved options for git apply (rebase-apply/apply-opt, which a
+#   rebase with --apply keeps too): `--build-fake-ancestor=<path>` there had
+#   `git am --continue` write an index over the file it names, any file of
+#   yours (review of the GAP-15 fix, A2; measured, git 2.53). Any option but
+#   the few that only say how a patch is matched is named.
 # A file, or its directory, that is a link or no regular file is named as not
 # read; a read cut off is the launch's to refuse, like any other (_rd_run).
-# rebase-apply/ holds patches and options of git am, none of which runs a
-# program.
 _git_seq_re=$'^[ \t]*(exec|x)([ \t\r]|$)'
 _git_seq_exec() {
   local -n _gs_o=$2
-  local LC_ALL=C _gs_g="$1" _gs_d _gs_t _gs_n _gs_w _gs_s
+  local LC_ALL=C _gs_g="$1" _gs_d _gs_t _gs_n _gs_w _gs_s _gs_sum="" _gs_c
+  local _gs_ao="^( *'(--whitespace=[a-z-]+|-C[0-9]+|-p[0-9]+|--ignore-whitespace|--ignore-space-change|--reject)')* *\$"
   _gs_o=""
-  for _gs_d in rebase-merge sequencer; do
+  for _gs_d in rebase-merge sequencer rebase-apply; do
     [[ -e "$_gs_g/$_gs_d" || -L "$_gs_g/$_gs_d" ]] || continue
     if [[ -L "$_gs_g/$_gs_d" || ! -d "$_gs_g/$_gs_d" ]]; then
       _gs_o+="${_gs_o:+; }$_gs_d, a link or no directory: not read"; continue
     fi
-    _gs_t="$_gs_d/git-rebase-todo"; [[ "$_gs_d" == rebase-merge ]] || _gs_t="$_gs_d/todo"
-    _gs_w=""
-    if [[ ! -e "$_gs_g/$_gs_t" && ! -L "$_gs_g/$_gs_t" ]]; then :
-    elif [[ -L "$_gs_g/$_gs_t" || ! -f "$_gs_g/$_gs_t" ]]; then _gs_w="$_gs_t, a link or no regular file: not read"
-    else
-      # grep's status is 1 where no line matches; its count says so.
-      _gs_n="$(_rd_run "$_gs_g/$_gs_t" grep -a -c -E -- "$_git_seq_re" "$_gs_g/$_gs_t" 2>/dev/null)" || true
-      if [[ ! "$_gs_n" =~ ^[0-9]+$ ]]; then _gs_w="$_gs_t: not read"
-      elif (( 10#$_gs_n == 1 )); then _gs_w="$_gs_t: 1 exec line"
-      elif (( 10#$_gs_n > 1 )); then _gs_w="$_gs_t: $_gs_n exec lines"; fi
+    if [[ "$_gs_d" != rebase-apply ]]; then
+      _gs_t="$_gs_d/git-rebase-todo"; [[ "$_gs_d" == rebase-merge ]] || _gs_t="$_gs_d/todo"
+      _gs_w=""
+      if [[ ! -e "$_gs_g/$_gs_t" && ! -L "$_gs_g/$_gs_t" ]]; then :
+      elif [[ -L "$_gs_g/$_gs_t" || ! -f "$_gs_g/$_gs_t" ]]; then _gs_w="$_gs_t, a link or no regular file: not read"
+      else
+        # grep's status is 1 where no line matches; its count says so.
+        _gs_n="$(_rd_run "$_gs_g/$_gs_t" grep -a -c -E -- "$_git_seq_re" "$_gs_g/$_gs_t" 2>/dev/null)" || true
+        if [[ ! "$_gs_n" =~ ^[0-9]+$ ]]; then _gs_w="$_gs_t: not read"
+        elif (( 10#$_gs_n == 1 )); then _gs_w="$_gs_t: 1 exec line"
+        elif (( 10#$_gs_n > 1 )); then _gs_w="$_gs_t: $_gs_n exec lines"; fi
+        if [[ -n "$_gs_w" && -n "${3:-}" ]]; then
+          _gs_c="$(_rd_run "$_gs_g/$_gs_t" cksum -- "$_gs_g/$_gs_t" 2>/dev/null)" || _gs_c="?"
+          _gs_sum+="${_gs_c%% /*} "
+        fi
+      fi
+      [[ -z "$_gs_w" ]] || _gs_o+="${_gs_o:+; }$_gs_w"
     fi
-    [[ -z "$_gs_w" ]] || _gs_o+="${_gs_o:+; }$_gs_w"
     # The strategy: a rebase's in a file of its own, a cherry-pick's or a
-    # revert's among its options, which git reads as a config file.
-    _gs_t="$_gs_d/strategy"; [[ "$_gs_d" == rebase-merge ]] || _gs_t="$_gs_d/opts"
+    # revert's among its options, which git reads as a config file. And what
+    # git am hands git apply.
+    case "$_gs_d" in
+      rebase-merge) _gs_t="$_gs_d/strategy" ;;
+      sequencer) _gs_t="$_gs_d/opts" ;;
+      *) _gs_t="$_gs_d/apply-opt" ;;
+    esac
     _gs_w=""; _gs_s=""
     if [[ ! -e "$_gs_g/$_gs_t" && ! -L "$_gs_g/$_gs_t" ]]; then continue
     elif [[ -L "$_gs_g/$_gs_t" || ! -f "$_gs_g/$_gs_t" ]]; then _gs_w="$_gs_t, a link or no regular file: not read"
-    elif [[ "$_gs_d" == rebase-merge ]]; then
-      # More than a name's worth, or a NUL in it, is no name of git's.
-      if IFS= read -r -d '' _gs_s < <(_rd 257 "$_gs_g/$_gs_t" 2>/dev/null) || (( ${#_gs_s} > 256 )); then _gs_s="?"; fi
+    elif [[ "$_gs_d" == sequencer ]]; then
+      if ! _git_usable; then _gs_w="$_gs_t: not read, git does not run on this host"
+      else _git_config_get _gs_s "$_gs_g/$_gs_t" options.strategy || _gs_s=""; fi
+    else
+      # More than a name's or a few options' worth, or a NUL in it, is neither.
+      if IFS= read -r -d '' _gs_s < <(_rd 4097 "$_gs_g/$_gs_t" 2>/dev/null) || (( ${#_gs_s} > 4096 )); then _gs_s="?"; fi
       while [[ "$_gs_s" == *[$'\r\n'] ]]; do _gs_s="${_gs_s%?}"; done
-    elif ! _git_usable; then _gs_w="$_gs_t: not read, git does not run on this host"
-    else _git_config_get _gs_s "$_gs_g/$_gs_t" options.strategy || _gs_s=""; fi
-    case "$_gs_s" in
-      ''|ort|recursive|resolve|octopus|ours|subtree) ;;
-      *) _gs_w="$_gs_t: a merge strategy that is not git's own, which git runs as a program" ;;
-    esac
-    [[ -z "$_gs_w" ]] || _gs_o+="${_gs_o:+; }$_gs_w"
+    fi
+    if [[ -n "$_gs_w" ]]; then :
+    elif [[ "$_gs_d" == rebase-apply ]]; then
+      [[ "$_gs_s" =~ $_gs_ao ]] || _gs_w="$_gs_t: options for git apply that are not known to write nothing"
+    else
+      case "$_gs_s" in
+        ''|ort|recursive|resolve|octopus|ours|subtree) ;;
+        *) _gs_w="$_gs_t: a merge strategy that is not git's own, which git runs as a program" ;;
+      esac
+    fi
+    [[ -n "$_gs_w" ]] || continue
+    _gs_o+="${_gs_o:+; }$_gs_w"
+    if [[ -n "${3:-}" && -f "$_gs_g/$_gs_t" && ! -L "$_gs_g/$_gs_t" ]]; then
+      _gs_c="$(_rd_run "$_gs_g/$_gs_t" cksum -- "$_gs_g/$_gs_t" 2>/dev/null)" || _gs_c="?"
+      _gs_sum+="${_gs_c%% /*} "
+    fi
   done
+  if [[ -n "${3:-}" ]]; then printf -v "$3" '%s' "$_gs_sum"; fi
   return 0
 }
+# What a launch said of each git directory it protects (_git_seq_exec's words
+# and checksum): when the container exits, one that is as it was is not named
+# again. Your own `git rebase -x "make test"`, stopped, was named twice a
+# launch otherwise (review of the GAP-15 fix, A3).
+declare -A _git_seq_seen=()
 # _git_seq_warn <when> <record>...: the WARNING for them, twenty named.
 _git_seq_warn() {
   local when="$1" rec; shift
   (( $# )) || return 0
-  printf 'WARNING: a rebase or a cherry-pick is stopped in these git directories%s. Continuing\n' "$when" >&2
-  printf '         it on your host (git rebase --continue) runs what its files under .git say, which the\n' >&2
-  printf '         agent can write: every exec line of a rebase'\''s todo, of which git status shows the next\n' >&2
-  printf '         two lines only, and a merge strategy that is not git'\''s own:\n' >&2
+  printf 'WARNING: a rebase, a cherry-pick or a git am is stopped in these git directories%s.\n' "$when" >&2
+  printf '         Continuing it on your host (git rebase --continue, git am --continue) acts on what its\n' >&2
+  printf '         files under .git say, which the agent can write: it runs every exec line of a rebase'\''s\n' >&2
+  printf '         todo, of which git status shows the next two lines only, and a merge strategy that is\n' >&2
+  printf '         not git'\''s own; and git am hands git apply its saved options, one of which writes a file:\n' >&2
   for rec in "${@:1:20}"; do printf '           %s\n' "$rec" >&2; done
   if (( $# > 20 )); then printf '           … and %d more\n' "$(( $# - 20 ))" >&2; fi
-  printf '         Read the todo before you continue (git rebase --edit-todo), or abort (git rebase --abort,\n' >&2
-  printf '         git cherry-pick --abort).\n' >&2
+  printf '         Read them before you continue (git rebase --edit-todo shows the todo), or abort\n' >&2
+  printf '         (git rebase --abort, git cherry-pick --abort, git am --abort).\n' >&2
 }
 
 # _git_after_session: the launch scan runs once, so a git directory the agent
@@ -6487,11 +6594,12 @@ _git_after_session() {
         git_dirs_in gdirs gfiles glinks gunr "$src" || true
         if (( ${#_gdi_over[@]} )); then printf 'C\0\0\0'; fi
         # A rebase the session left stopped, in any git directory, one that was
-        # there at launch too (GAP-15).
+        # stopped at launch too if the session changed what it would run (GAP-15).
         for f in ${gdirs[@]+"${gdirs[@]}"}; do
           if (( SECONDS >= deadline )); then printf 'C\0\0\0'; exit 0; fi
-          q=""; _git_seq_exec "$f" q || true
-          if [[ -n "$q" ]]; then printf 'Q\0%s\0%s\0' "$f" "$q"; fi
+          q=""; qs=""; _git_seq_exec "$f" q qs || true
+          # Not one the launch named that is as it was (A3).
+          if [[ -n "$q" && "${_git_seq_seen[$f]-}" != "$q|$qs" ]]; then printf 'Q\0%s\0%s\0' "$f" "$q"; fi
         done
         for f in ${gdirs[@]+"${gdirs[@]}"} ${gunr[@]+"${gunr[@]}"} ${gfiles[@]+"${gfiles[@]}"} ${glinks[@]+"${glinks[@]}"}; do
           if (( SECONDS >= deadline )); then printf 'C\0\0\0'; exit 0; fi

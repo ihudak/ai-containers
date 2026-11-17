@@ -2373,7 +2373,10 @@ if [[ "$(id -u)" != 0 ]]; then
   done > "$fns291"
   # The agent's identity unset: every directory counts, as in the check after a session.
   # Spelling as on disk (GIT-98) is G293's; here the directory is spelled as bash does.
+  # A way written with ./ in it is not one the record holds (GIT-105): the stub
+  # would say so.
   o291="$(p_timeout 30 bash -c 'set -euo pipefail; source "$1"; _cd_phys() { _cd_bash "$@"; }; bsrc=("$2"); declare -A had=(); _gdi_unr=(); unset uid gid
+    _git_report_record() { printf "recorded %s\n" "$2"; }
     _gdi_blocked "$3" "$2" && printf "%s\n" "${_gdi_unr[@]}"' _ "$fns291" "$R291" "$TMP/${pad291}lk291/${pad291}*/cw291/x" 2>&1)"
   rc291=$?
   [[ "$rc291" == 0 && "$o291" == "$R291/node_modules/*/cw291" ]] \
@@ -3182,7 +3185,65 @@ if [[ "$(id -u)" != 0 ]]; then
       || fail "G324 hidden, and nothing bound (rc=$LAUNCH_RC; $(mounts | grep -cF "$P324/vendor") binds; $(grep -E 'ERROR|WARNING' "$ERR" | head -2 | tr '\n' ' '))"
   fi
   chmod 700 "$P324/vendor"; rm -rf "$B324"
+  # A checkout made unsearchable before any launch saw its .git: the launch
+  # binds the directory whole, sees nothing inside, and had nothing to record.
+  # Dropped from the index then, it was bound by no later launch, in silence,
+  # with the config the agent gave it; and the WARNING that named it when it
+  # was made said the next launch would protect it. The checkout it could not
+  # reach is recorded now (`want:`), so the directory is bound whole while it
+  # stays unsearchable, and its .git is protected, its keys named, once it can
+  # be reached (review of the GIT-105 fix, A1).
+  # In a directory of its own: the record holds the paths of the checks above.
+  B324="$TMP/b324u"; P324="$B324/p"
+  mkdir -p "$P324/vendor/lib" && "${G[@]}" init -q "$P324" && "${G[@]}" init -q "$P324/vendor/lib" \
+    && "${G[@]}" -C "$P324/vendor/lib" commit -q --allow-empty -m x \
+    && "${G[@]}" -C "$P324/vendor/lib" config core.fsmonitor /bin/true \
+    && "${G[@]}" -C "$P324" add vendor/lib 2>/dev/null && "${G[@]}" -C "$P324" commit -qm sub \
+    && chmod 000 "$P324/vendor/lib" || { printf 'SCAFFOLD-FAILED: G324 unseen\n'; exit 1; }
+  if [[ -x "$P324/vendor/lib" ]]; then
+    pass "G324 skipped: mode 000 did not take on this filesystem"
+  else
+    FAKE_SESSION='git -C "$P324" update-index --force-remove vendor/lib' EXTRA_MOUNTS="$B324" launch "$TMP/app"
+    has_mount "$P324/vendor/lib:/workspace/b324u/p/vendor/lib:ro" \
+      && grep -qF " want:$P324/vendor/lib" "$HOME/.ai-containers/git-reported.conf" \
+      && pass "G324 a checkout that cannot be searched is bound whole, and recorded as one a launch could not reach" \
+      || fail "G324 the unsearchable checkout (rc=$LAUNCH_RC; $(mounts | grep -cF "$P324/vendor/lib") binds; $(grep -cF 'want:' "$HOME/.ai-containers/git-reported.conf") want lines)"
+    EXTRA_MOUNTS="$B324" launch "$TMP/app"
+    [[ "$LAUNCH_RC" == 0 ]] && has_mount "$P324/vendor/lib:/workspace/b324u/p/vendor/lib:ro" \
+      && pass "G324 dropped from the index while it cannot be searched, it is still bound whole" \
+      || fail "G324 dropped and unsearchable: nothing bound (rc=$LAUNCH_RC; $(mounts | grep -cF "$P324/vendor/lib") binds)"
+    chmod 700 "$P324/vendor/lib"
+    EXTRA_MOUNTS="$B324" launch "$TMP/app"
+    [[ "$LAUNCH_RC" == 0 ]] && has_mount "$P324/vendor/lib/.git/config:/workspace/b324u/p/vendor/lib/.git/config:ro" \
+      && grep -qF 'NOTE: /workspace/b324u/p/vendor/lib/.git is protected for the first time, and its config already sets' "$ERR" \
+      && pass "G324 once it can be reached its .git is protected, and the key its config sets is named" \
+      || fail "G324 reachable again, and unprotected (rc=$LAUNCH_RC; $(mounts | grep -cF "$P324/vendor/lib/.git/") binds; $(grep -F 'vendor/lib' "$ERR" | head -1))"
+  fi
+  chmod 700 "$P324/vendor/lib" 2>/dev/null; rm -rf "$B324"
 else skip_root G324; fi
+
+# ── G331: the record cannot make a launch look at paths without bound ────────
+# The record only grows, and each recorded path in a mount that nothing leads
+# to any more costs the scan a look. The agent cannot make one at will, a
+# protected directory being pinned, but past five times SANDBOX_GIT_MAX of them
+# the launch is refused, naming the record, rather than slowed for ever (review
+# of the GIT-105 fix, A4).
+B331="$TMP/b331"; rec331="$HOME/.ai-containers/git-reported.conf"
+mkdir -p "$B331/vendor" || { printf 'SCAFFOLD-FAILED: G331\n'; exit 1; }
+cp "$rec331" "$rec331.331"
+for i331 in 1 2 3 4 5 6; do
+  "${G[@]}" init -q "$B331/vendor/s$i331" && printf '1 2 3 %s\n' "$B331/vendor/s$i331/.git" >> "$rec331" || { printf 'SCAFFOLD-FAILED: G331 lines\n'; exit 1; }
+done
+SANDBOX_GIT_MAX=1 EXTRA_MOUNTS="$B331" launch "$TMP/app"
+[[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'names more than 5 paths in' "$ERR" && grep -qF "$rec331" "$ERR" \
+  && pass "G331 past five times SANDBOX_GIT_MAX recorded paths to look at, the launch is refused, naming the record" \
+  || fail "G331 no bound on the record's paths (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+rm -rf "$B331/vendor/s6"
+SANDBOX_GIT_MAX=1 EXTRA_MOUNTS="$B331" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && ! mounts | grep -F "$B331/vendor/s" >/dev/null \
+  && pass "G331 within it they are looked at, and one that is not what was recorded is not taken" \
+  || fail "G331 within the bound (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+mv "$rec331.331" "$rec331"; rm -rf "$B331"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

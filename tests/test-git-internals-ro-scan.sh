@@ -2207,6 +2207,18 @@ SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$D326" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF '.git files lie under read-only overlays' "$ERR" \
   && pass "G326 within the limit nothing is said of them" \
   || fail "G326 a false note ($(grep -F 'lie under read-only overlays' "$ERR" | head -1))"
+# A read-only mount inside a writable one lands in that mount's view, where a
+# launcher it holds is overlaid: its .git files count toward no limit there
+# either (review of the GIT-107 fix, A5).
+rm -rf "$D326"; mkdir -p "$D326/node_modules/ro/L" && : > "$D326/node_modules/ro/L/sandbox.sh" && : > "$D326/node_modules/ro/L/sandbox-common.sh" \
+  || { printf 'SCAFFOLD-FAILED: G326 nested\n'; exit 1; }
+for i326 in $(seq 1 8); do
+  mkdir -p "$D326/node_modules/ro/L/q$i326" && printf 'gitdir: /nonexistent/z%s\n' "$i326" > "$D326/node_modules/ro/L/q$i326/.git" || { printf 'SCAFFOLD-FAILED: G326 nested files\n'; exit 1; }
+done
+SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$D326 $D326/node_modules/ro:ro" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$D326/node_modules/ro/L:/workspace/d326/node_modules/ro/L:ro" \
+  && pass "G326 .git files under an overlay in a read-only mount nested in a writable one count toward no limit" \
+  || fail "G326 nested read-only mount (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 rm -rf "$D326" "$TMP/bin326"
 
 printf '\n%d failure(s)\n' "$fails"
