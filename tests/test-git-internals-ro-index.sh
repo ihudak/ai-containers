@@ -2376,7 +2376,7 @@ if [[ "$(id -u)" != 0 ]]; then
   # A way written with ./ in it is not one the record holds (GIT-105): the stub
   # would say so.
   o291="$(p_timeout 30 bash -c 'set -euo pipefail; source "$1"; _cd_phys() { _cd_bash "$@"; }; bsrc=("$2"); declare -A had=(); _gdi_unr=(); unset uid gid
-    _git_report_record() { printf "recorded %s\n" "$2"; }; declare -A _git_want_had=(); _git_want_n=0; _git_want_new=(); _git_want_dir=""
+    _git_report_record() { printf "recorded %s\n" "$2"; }; declare -A _git_want_had=() _git_want_dhad=(); _git_want_n=0; _git_want_new=(); _git_want_dirs=()
     _gdi_blocked "$3" "$2" && printf "%s\n" "${_gdi_unr[@]}"' _ "$fns291" "$R291" "$TMP/${pad291}lk291/${pad291}*/cw291/x" 2>&1)"
   rc291=$?
   [[ "$rc291" == 0 && "$o291" == "$R291/node_modules/*/cw291" ]] \
@@ -3317,11 +3317,21 @@ if [[ "$(id -u)" != 0 ]]; then
   SANDBOX_GIT_MAX=4 EXTRA_MOUNTS="$B324" launch "$TMP/app"
   [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && grep -qF 'ERROR: more than 4 checkouts that an index, a core.worktree or a gitdir names lie behind' "$ERR" \
     && grep -qF "$P324/vendor/b/r1" "$ERR" \
-    && grep -qF "The first such directory is $P324/vendor/b." "$ERR" && grep -qF "Restore: chmod u+rx $P324/vendor/b" "$ERR" \
+    && grep -qF "In their way (five at most):" "$ERR" && grep -qF "Restore: chmod u+rx $P324/vendor/b" "$ERR" \
     && pass "G324 past SANDBOX_GIT_MAX checkouts behind unsearchable directories the launch is refused, naming them and the directory" \
     || fail "G324 no bound on checkouts behind an unsearchable directory (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
   SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$B324" launch "$TMP/app"
   [[ "$LAUNCH_RC" == 0 ]] && pass "G324 …and within it the launch goes on" || fail "G324 five within a limit of five (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
+  # Every directory in the way is named with its chmod, not the first alone
+  # (last check, E2): a second one here, with one entry behind it.
+  chmod 700 "$P324/vendor/b"; mkdir -p "$P324/vendor/c" \
+    && "${G[@]}" -C "$P324" update-index --add --cacheinfo "160000,$(printf '%040d' 9),vendor/c/r9" && chmod 000 "$P324/vendor/b" "$P324/vendor/c" \
+    || { printf 'SCAFFOLD-FAILED: G324 second directory\n'; exit 1; }
+  SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$B324" launch "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 ]] && grep -qF "Restore: chmod u+rx $P324/vendor/b" "$ERR" && grep -qF "Restore: chmod u+rx $P324/vendor/c" "$ERR" \
+    && pass "G324 the refusal names each directory in the way, with its chmod" \
+    || fail "G324 one directory named of two (rc=$LAUNCH_RC; $(grep -cF 'Restore: chmod' "$ERR") hints)"
+  chmod 700 "$P324/vendor/c"; "${G[@]}" -C "$P324" update-index --force-remove vendor/c/r9; rm -rf "$P324/vendor/c"; chmod 000 "$P324/vendor/b"
   # Each checkout once, however many mounts expose its repository: the five,
   # seen by two scans, are still five.
   SANDBOX_GIT_MAX=5 EXTRA_MOUNTS="$B324 $P324" launch "$TMP/app"

@@ -2197,13 +2197,22 @@ CASES
   && pass "G327 a ~ is your home only at the start of a word outside quotes; elsewhere it is a directory in the checkout" \
   || fail "G327 where a ~ is a home directory (got: $o327)"
 # Keys git runs with no shell are read as git reads them, quotes and a leading
-# ~ part of the name: core.askpass whole, core.gitproxy up to ` for `,
-# gpg.ssh.defaultKeyCommand's first word. And a credential helper that is
+# ~ part of the name: core.askpass whole, core.gitproxy up to ` for `. git
+# splits gpg.ssh.defaultKeyCommand into words itself, quotes and backslashes
+# as a shell takes them and nothing expanded, and runs them with no shell: it
+# is read as a command line, wrappers and interpreters and all (`sh ./evil.sh`
+# ran the script, and gave no entry read as its first word alone; last check,
+# E1), a ~ never a home directory and a ! part of the name. A vertical tab
+# splits nothing for git, and is not followed. And a credential helper that is
 # neither `!…` nor an absolute path is the program git-credential-<word>, a
 # path from where git runs when the word holds a /. Read as a shell reads a
 # command line, `~/x` was judged in your home, "/usr/bin/x" in quotes at
 # /usr/bin/x, and a helper `.git/hooks/x` at the read-only hooks directory,
 # while git ran a file under the checkout each time (last review, D1).
+v327="$(printf 'gpg.ssh.defaultkeycommand|x\v./evil\n' | run327)"
+[[ "$v327" == 'u:a control character;|' ]] \
+  && pass "G327 a key command with a vertical tab in it, which git does not split at, is not followed" \
+  || fail "G327 a vertical tab in a key command (got: $v327)"
 o327="$(run327 <<'CASES'
 core.askpass|~/ask
 core.askpass|"/usr/bin/ssh-askpass"
@@ -2214,6 +2223,13 @@ core.gitproxy|~/proxy for example.com
 core.gitproxy|proxy-command for example.com
 gpg.ssh.defaultkeycommand|~/keycmd arg
 gpg.ssh.defaultkeycommand|ssh-add -L
+gpg.ssh.defaultkeycommand|"./k dir/cmd" a
+gpg.ssh.defaultkeycommand|./k\ dir/cmd a
+gpg.ssh.defaultkeycommand|sh ./evil.sh
+gpg.ssh.defaultkeycommand|env ./x
+gpg.ssh.defaultkeycommand|nice -n 5 ./x
+gpg.ssh.defaultkeycommand|sh -c ./x
+gpg.ssh.defaultkeycommand|!./x
 credential.helper|~/helper
 credential.helper|.git/hooks/x
 credential.helper|store
@@ -2225,7 +2241,7 @@ credential.helper|!./h.sh
 credential.https://example.com.helper|sub/helper
 CASES
 )"
-[[ "$o327" == 'p:./~/ask;|p:"/usr/bin/ssh-askpass";|p:/usr/bin/ssh-askpass;|none;|p:./my tools/ask;|p:./~/proxy;|none;|p:./~/keycmd;|none;|p:git-credential-~/helper;|p:git-credential-.git/hooks/x;|none;|none;|u:a shell expansion, quoting or an operator;|p:git-credential-sub/h;u:another command after it;|p:/abs/h;|p:./h.sh;|p:git-credential-sub/helper;|' ]] \
+[[ "$o327" == 'p:./~/ask;|p:"/usr/bin/ssh-askpass";|p:/usr/bin/ssh-askpass;|none;|p:./my tools/ask;|p:./~/proxy;|none;|p:./~/keycmd;|none;|p:./k dir/cmd;|u:a shell expansion, quoting or an operator;|p:./evil.sh;|p:./x;|p:./x;|u:inline code;|p:!./x;|p:git-credential-~/helper;|p:git-credential-.git/hooks/x;|none;|none;|u:a shell expansion, quoting or an operator;|p:git-credential-sub/h;u:another command after it;|p:/abs/h;|p:./h.sh;|p:git-credential-sub/helper;|' ]] \
   && pass "G327 a key git runs with no shell, and a credential helper it prefixes, are read as git runs them" \
   || fail "G327 keys run with no shell (got: $o327)"
 rm -f "$fns327"

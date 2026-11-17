@@ -4450,15 +4450,21 @@ _gdi_blocked() {
     if [[ -z "${_git_want_had[$1]:-}" ]]; then
       _git_want_had[$1]=1; _git_want_n=$((_git_want_n + 1))
       if (( ${#_git_want_new[@]} < 5 )); then _git_want_new+=("$1"); fi
-      [[ -n "$_git_want_dir" ]] || _git_want_dir="$_gb_b"
+    fi
+    if [[ -z "${_git_want_dhad[$_gb_b]:-}" ]]; then
+      _git_want_dhad[$_gb_b]=1
+      if (( ${#_git_want_dirs[@]} < 5 )); then _git_want_dirs+=("$_gb_b"); fi
     fi
     if (( _git_want_n > ${gitmax:-200} )); then
       printf 'ERROR: more than %d checkouts that an index, a core.worktree or a gitdir names lie behind\n' "${gitmax:-200}" >&2
       printf '       directories that cannot be searched, so none of them can be looked at; refusing the\n' >&2
       printf '       launch. Among them:\n' >&2
       for _gb_c in "${_git_want_new[@]}"; do printf '         %s\n' "$(_q "$_gb_c")" >&2; done
-      printf '       The first such directory is %s.\n' "$(_q "$_git_want_dir")" >&2
-      _unlistable_hint "$_git_want_dir" '       ' "${uid:-$(id -u)}"
+      printf '       In their way (five at most):\n' >&2
+      for _gb_c in "${_git_want_dirs[@]}"; do
+        printf '         %s\n' "$(_q "$_gb_c")" >&2
+        _unlistable_hint "$_gb_c" '           ' "${uid:-$(id -u)}"
+      done
       printf '       Or remove the entries from the index if they are not yours, or raise SANDBOX_GIT_MAX.\n' >&2
       exit 1
     fi
@@ -5905,7 +5911,7 @@ _git_prog() {
   local -n _gp_o=$3
   local LC_ALL=C _gp_v="$2" _gp_w _gp_b _gp_s="" _gp_wr="" _gp_a="" _gp_d="" _gp_n=0
   local _gp_rq='^"([^"]*)"' _gp_rs="^'([^']*)'" _gp_rm='[$`(){};|&<>\"'"'"'*?[]' _gp_ro=$'[;&|`\n]|\\$\\(|[<>]\\(|(^|[ \t])=\\('
-  local _gp_ex="" _gp_t="" _gp_seen="" _gp_end="" _gp_asg="" _gp_k _gpx="" _gpx_v="" _gp_lit="" _gp_p
+  local _gp_ex="" _gp_t="" _gp_seen="" _gp_end="" _gp_asg="" _gp_k _gpx="" _gpx_v="" _gp_lit="" _gp_p _gp_ns=""
   # The shell splits words on space and tab, and ends a command at a newline:
   # split on any [[:space:]], `!git<VT>./evil` was read as git, found on PATH,
   # where the shell runs ./git<VT>./evil, and a newline before the program
@@ -5931,12 +5937,10 @@ _git_prog() {
     # directory named ". Read as a command line, both were judged somewhere
     # git never looks (last review of the GIT-106 fix, D1; git 2.53, measured).
     #   core.askpass: the whole value is the program. core.gitproxy: the value
-    # up to ` for `. gpg.ssh.defaultKeyCommand: its first word, split at blanks.
-    core.askpass|core.gitproxy|gpg.ssh.defaultkeycommand)
+    # up to ` for `.
+    core.askpass|core.gitproxy)
       case "$1" in
         core.gitproxy) _gp_w="${_gp_v%% for *}" ;;
-        gpg.ssh.defaultkeycommand)
-          [[ "$_gp_v" =~ ^[[:space:]]*([^[:space:]]*) ]]; _gp_w="${BASH_REMATCH[1]}" ;;
         *) _gp_w="$_gp_v" ;;
       esac
       [[ "$_gp_w" =~ / ]] || return 1
@@ -5966,8 +5970,17 @@ _git_prog() {
       if [[ "$_gp_v" == '~'* ]]; then _gp_o+=("p:./$_gp_v"); fi
       return 0 ;;
   esac
+  # gpg.ssh.defaultKeyCommand git splits into words itself and runs with no
+  # shell: quotes and backslashes as a shell takes them, words split at blanks,
+  # nothing expanded (`"./k dir/cmd" a` ran ./k dir/cmd, `sh ./x.sh` ran the
+  # script, a vertical tab split nothing; measured, git 2.53). So it is read
+  # here as a command line is, wrappers and interpreters and all, with what
+  # only a shell does left out: a leading ! is part of the name, and a ~ is
+  # never a home directory. Read as its first word only, `sh ./evil.sh` gave
+  # no entry (last check of the GIT-106 fix, E1).
+  if [[ "$1" == gpg.ssh.defaultkeycommand ]]; then _gp_ns=1; fi
   [[ "$_gp_v" =~ $_gp_rw ]]; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
-  if [[ "$_gp_v" == '!'* ]]; then _gp_v="${_gp_v:1}"; fi
+  if [[ -z "$_gp_ns" && "$_gp_v" == '!'* ]]; then _gp_v="${_gp_v:1}"; fi
   while :; do
     [[ "$_gp_v" =~ $_gp_rw ]]; _gp_v="${_gp_v:${#BASH_REMATCH[0]}}"
     [[ -n "$_gp_v" ]] || break
@@ -5982,6 +5995,7 @@ _git_prog() {
         _gp_lit=1 ;;
       *) [[ "$_gp_v" =~ $_gp_rn ]]; _gp_w="${BASH_REMATCH[0]}"; _gp_v="${_gp_v:${#_gp_w}}"; _gp_lit="" ;;
     esac
+    if [[ -n "$_gp_ns" ]]; then _gp_lit=1; fi
     if [[ "$_gp_w" == *$'\n'* ]]; then _gp_o+=("u:another command after it"); return 0; fi
     if [[ "$_gp_w" =~ [[:cntrl:]] ]]; then _gp_o+=("u:a control character"); return 0; fi
     if [[ "$_gp_w" =~ $_gp_rm ]]; then _gp_o+=("u:$_gp_x"); return 0; fi
@@ -7352,8 +7366,8 @@ _gdi_over=()               # git directories past SANDBOX_GIT_MAX where a scan s
 # and the overlays decided before the scans. The .git files under them, counted,
 # and the first five.
 _gdi_dst="" _gdi_nro=0
-_git_want_n=0 _git_want_new=() _git_want_dir=""   # checkouts behind unsearchable directories this launch (_gdi_blocked)
-declare -A _git_want_had=()
+_git_want_n=0 _git_want_new=() _git_want_dirs=()   # checkouts behind unsearchable directories this launch (_gdi_blocked)
+declare -A _git_want_had=() _git_want_dhad=()
 _git_ro_dsts=() _gdi_rof=()
 _git_scan_dsts=()          # where each of _git_scan_srcs lands, for the rescan
 _gdi_cost=0                # reads made to tell that a directory is no git directory (_cd_ours, _gdi_loose_refs, _git_dir_nocd)
