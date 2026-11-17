@@ -481,7 +481,7 @@
 - **Tests:** in `tests/test-repo-git-reset.sh`, an untracked `.gitattributes` holding `* text eol=crlf` before a reset: afterwards `git status --porcelain` is empty and the files hold no CR. Seen red with the clean moved back after the checkout.
 
 ### ENV-10: `version_engine` reads `engine-version` through a link, and a sync copies the first line of the file it names into every project
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `version.sh`: `version_engine()` (`if _ver_read v "$dir/engine-version"`), `_ver_read()` (`[[ -f "$2" ]]`), `version_record()`
@@ -496,9 +496,11 @@
   ```
 - **Expected:** a linked (or non-regular) `engine-version` is not read; the version is taken from git or is `unknown`.
 - **Suggested fix:** in `version_engine()`, read it only when `[[ -f … && ! -L … ]]`, and accept only a version's characters (see ENV-11), which no credential line survives.
+- **Fix:** `version_engine()` reads `engine-version` only when it is a regular file and not a link, naming one that is not on stderr, never what it holds or leads to; the version is then git's, in an engine tree, or `unknown`. The read itself (`_ver_cat_own()`, run as `_ver_run()`'s bounded job) opens the name and keeps what it read only when the open descriptor's device and inode are those of the name itself, stat without `-L`, so a link swapped in after the `-L` test and out again gives nothing. What it read must also be a version (ENV-11), which a credential line is not.
+- **Tests:** in `tests/test-version.sh`, a linked `engine-version` is neither read nor recorded into a project, and is named without its target's line; `_ver_cat_own()` refuses a link at the name; an engine tree with a linked one reports git's tag; a FIFO there is not read; one that cannot be opened is named and not read (added for a survivor of the falsify run, the open's failure returning 0). Each seen red with its guard removed: the `-L` test (its note), the identity check (the secret came back), both together (only the version check then kept the line out).
 
 ### ENV-11: the engine version is printed, and recorded into projects, with the control characters the checkout's writer put in it
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `version.sh`: `version_engine()` (`v="${v//[[:space:]]/}"`), `_ver_git_version()` (`_ver_run v "${e[@]}" describe --tags`), `version_report()`
@@ -517,6 +519,8 @@
   ```
 - **Expected:** a version is `[A-Za-z0-9._+-]` and nothing else; anything else is `unknown` (or rendered as `_ac_term()` renders a label).
 - **Suggested fix:** one check at the end of `version_engine()`: `[[ "$v" =~ ^[A-Za-z0-9._+-]{1,128}$ ]] || v=unknown`, for the recorded value and git's alike. `sandbox.conf`'s `nvm-version` and the Dockerfile's `ARG NVM_VERSION`, printed by `version_report()` after `tr -d '[:space:]'`, want the same.
+- **Fix:** `_ver_ok()` accepts 1 to 128 of `[A-Za-z0-9._+-]`, and `version_engine()` asks it of the recorded value and of git's alike: a recorded one that fails is not used (git's, in an engine tree, or `unknown`, with a `NOTE:`), and a `describe` that fails is `unknown` with a `NOTE:`. The recorded value loses only its leading and trailing whitespace now, so whitespace inside it is no version. `version_report()` asks the same of `nvm-version` and the Dockerfile's `ARG NVM_VERSION`, printing `unknown  (the value set is not a version)`. `version_record()` writes only what `version_engine()` returns, so nothing else reaches a project.
+- **Tests:** in `tests/test-version.sh`, an `engine-version` holding an escape sequence reports `unknown` and is not recorded; `v1 .2` is no version and ` v1.2.3+build_7 ` is `v1.2.3+build_7`; an annotated tag object naming itself with an escape sequence reports `unknown`; an `nvm-version` holding one reports `unknown`, saying why. Each seen red with its check removed (the version check made always true, git's answer checked only for being non-empty, the nvm check removed, every whitespace dropped again).
 
 ### REPO-24: `sync --all` stops at the first repo it refuses and never reaches the rest
 - **Status: FIXED** (2026-11-17, WSL native agent). Was: OPEN (filed 2026-11-17).

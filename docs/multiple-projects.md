@@ -56,7 +56,7 @@ v0.7.0-5-gefce88  3       ihudak   ihudak-claude-plugins  DISCOVERY  4.0   8g/4g
 
 - **`VERSION`** is the `engine-version` file `project-init.sh` / `sync-to-projects.sh` write into the copy at copy time. It is the same number [`./runme.sh --version`](configuration.md#reporting-versions) reports inside that project, from the same function.
 - **`SCHEMA`** is the `# schema-version:` marker in that project's own `sandbox.conf`, which says which [migrations](#sandboxconf-schema-versioning) it has had applied.
-- **`unknown`** means the copy was never told — it predates the `engine-version` file, or has no `sandbox.conf`. It is not a guess: a copy is never asked its enclosing project's git tags, which would report a version belonging to an entirely different tree.
+- **`unknown`** means the copy was never told — it predates the `engine-version` file, or has no `sandbox.conf` — or that what it was told is not a version: an `engine-version` that is a link or not a regular file, or one holding anything but `[A-Za-z0-9._+-]` (a `NOTE:` on stderr says which). It is not a guess: a copy is never asked its enclosing project's git tags, which would report a version belonging to an entirely different tree.
 - **`n/a`** means the registry entry's path does not exist, so nothing could be read at all.
 
 **It does not search your filesystem.** The registry is the whole input, so what you get back is what *this* checkout is responsible for keeping in sync — the same set `sync-to-projects.sh` writes to. To report on another checkout, name it; the argument is a path, not a search:
