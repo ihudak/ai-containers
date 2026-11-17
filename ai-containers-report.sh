@@ -155,6 +155,20 @@ display_path() {
   printf '%s' "$_dp"
 }
 
+# _rterm <value>: a value read from a project's files, fit for the terminal and
+# for one --tsv field. sandbox.env is the committed, shared file, and the agent
+# writes the project: an escape sequence in a value retitled the terminal or
+# rewrote the rows, and a tab shifted every later --tsv column (bugs review
+# PRJ-15). As sandbox-common.sh: `_ac_term()` renders, which this script does not
+# source: control characters (a tab among them), UTF-8's C1 controls and the
+# bidi controls each a ?.
+_rterm() {
+  local LC_ALL=C s="$1"
+  s="${s//[[:cntrl:]]/?}"; s="${s//$'\xc2'[$'\x80'-$'\x9f']/?}"
+  s="${s//$'\xe2\x80'[$'\xaa'-$'\xae']/?}"; s="${s//$'\xe2\x81'[$'\xa6'-$'\xa9']/?}"
+  printf '%s' "$s"
+}
+
 # The project's AI_CONTAINER_GROUP as the launcher resolves it (review of batch
 # 4): sandbox.local.env first, then sandbox.env, each read as load_env_defaults()
 # reads it (env_var() below). A key the local file sets, even empty, hides
@@ -342,8 +356,10 @@ printf '%s\n' "$bases" | while IFS= read -r base_raw; do
       fi
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$base_label" "$engver" "$schema" "$group" "$name" "$netmode" "$cpu" "$mem" "$disc" "$(display_path "$proj")" >>"$rows"
-    [ -n "$note" ] && printf '%s (%s): %s\n' "$name" "$(display_path "$proj")" "$note" >>"$notes"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(_rterm "$base_label")" "$(_rterm "$engver")" "$(_rterm "$schema")" \
+      "$(_rterm "$group")" "$(_rterm "$name")" "$(_rterm "$netmode")" "$(_rterm "$cpu")" "$(_rterm "$mem")" "$(_rterm "$disc")" \
+      "$(_rterm "$(display_path "$proj")")" >>"$rows"
+    [ -n "$note" ] && printf '%s (%s): %s\n' "$(_rterm "$name")" "$(_rterm "$(display_path "$proj")")" "$(_rterm "$note")" >>"$notes"
     printf '%s\t%s\n' "$proj" "$base_label" >>"$seen"
   done
 done

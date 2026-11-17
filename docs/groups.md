@@ -156,6 +156,13 @@ it. Use `group.sh`, which removes both halves together:
 ./group.sh gc
 ```
 
+`gc` takes only the volumes this home made. One docker may serve several homes
+(Docker Desktop's, by every WSL distro), and a group directory missing here may
+be another home's group, so a volume another home made, or one made before
+volumes carried their owner, is kept and named; `./group.sh gc --all` takes it
+too. `restored` in `~/.ai-containers` is not a group: it holds files a launch
+kept, and `group.sh` neither lists nor removes it.
+
 `group.sh rm` refuses while a running container still mounts the group's
 volume, and refuses `host`, which is not a group. It never touches repo volumes — those are global and shared across
 every group; manage them with [`repo.sh`](repos-and-mounts.md#shared-repo-volumes-native-speed--reposh-and-repos).

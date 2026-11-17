@@ -880,7 +880,13 @@ rvm_volume_ensure() {
   if docker volume inspect "$vol" >/dev/null 2>&1; then
     printf '%s\n' "$vol"; return 0
   fi
-  if ! docker volume create --label "ai-containers.rvm-group=${group}" "$vol" >/dev/null 2>&1; then
+  # With this HOME's id: one daemon serves several homes (Docker Desktop's, by
+  # every WSL distro), and group.sh gc takes only the volumes this home made
+  # (bugs review PRJ-16). A launch never fails over the id: without one the
+  # volume is made unlabelled, as before.
+  local own; local -a olab=()
+  if own="$(ai_containers_owner_id 2>/dev/null)"; then olab=(--label "ai-containers.owner=${own}"); fi
+  if ! docker volume create --label "ai-containers.rvm-group=${group}" ${olab[@]+"${olab[@]}"} "$vol" >/dev/null 2>&1; then
     printf 'ERROR: could not create the rvm volume %s\n' "$vol" >&2
     return 1
   fi
@@ -1071,6 +1077,15 @@ validate_group_name() {
     echo "         AI_CONTAINER_GROUP=mine AI_CONTAINER_GROUP_INIT=from:host" >&2
     exit 1
   fi
+  # ~/.ai-containers/restored holds what a launch kept from a protected git
+  # file's place on a share that ignores case (sandbox.sh: `_ro_files_restore()`),
+  # files the agent wrote. As a group its dot-directories were mounted into the
+  # container, and `group.sh rm` deleted them (bugs review PRJ-18).
+  if [[ "$name" == restored ]]; then
+    echo "ERROR: restored is not a group: ~/.ai-containers/restored holds the files a launch kept from" >&2
+    echo "       a protected git file's place (see its WARNING). Pick another name." >&2
+    exit 1
+  fi
   [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || {
     echo "Invalid AI_CONTAINER_GROUP='$name'. Allowed: lowercase letters, digits, dashes; 1-32 chars; must start with alphanum." >&2
     exit 1
@@ -1135,7 +1150,7 @@ group_menu_choices() {
   while IFS= read -r -d '' dir; do
     name="$(basename "$dir")"
     [[ "$name" == "default" || "$name" == "$group" ]] && continue
-    [[ "$name" != host && "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || continue
+    [[ "$name" != host && "$name" != restored && "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || continue
     printf '%s\n' "$name"
   done < <(find "$HOME/.ai-containers" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
            | xargs -0 ls -dt 2>/dev/null \

@@ -86,7 +86,7 @@
 ## 3. Host lifecycle scripts
 
 ### GAP-19: no test interrupts `mv` after the checked copy has landed
-- Status: OPEN (filed 2026-11-17).
+- Status: DONE (2026-11-17, with PRJ-12). `tests/test-project-tool.sh` sends TERM while the old `.ai-containers` is removed and just after, and follows each with the way out the message names.
 - **Area:** PRJ / tests
 - **Source:** `docs/multiple-projects.md`: "An interrupt (Ctrl-C) before the old copies start to go removes the copies made so far; the old ones are untouched, and running `mv` again starts over."; `tests/test-project-tool.sh` has `FAKE_CP_TERM` (during `cp`) and `FAKE_RUN_TERM` (during a volume copy) only.
 - **Current state:** the window between the rename of the checked copy and the end of the old directory's removal is untested, and behaves as PRJ-12 describes.
@@ -94,7 +94,7 @@
 - **Suggested approach:** a fake `rm` that signals the caller on the old `.ai-containers`, asserting the state and that a re-run finishes.
 
 ### GAP-20: `prj_running()` is asserted only against a fake that reports host paths
-- Status: OPEN (filed 2026-11-17).
+- Status: CLOSED BY MEASUREMENT (2026-11-17, with PRJ-17). On Docker Desktop 29.9.3 with WSL, `.Mounts[].Source` is the host path, as the fake reports it; a native Engine reports host paths too, and CI has no other engine. Docker Desktop for Mac stays unmeasured (PLAT-3).
 - **Area:** PRJ / tests
 - **Source:** design: "Tests … an integration case for what needs a real daemon"; `tests/integration/cases/650-project-mv-moves-workcopy.sh` is the only case that names `project.sh`, and it covers the volume copy.
 - **Current state:** nothing runs `rm` or `mv` against a real running container, so what a real daemon reports for mount sources (PRJ-17) is unobserved on every platform.

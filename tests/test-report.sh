@@ -358,7 +358,9 @@ $(grep -F 'registered project' <<<"$OUT")"
 fi
 
 run "$OUTER/ai-containers-report.sh" --markdown --no-notes
-if grep -qE '^\| unknown \| unknown \| default \| api \|.*\| `/' <<<"$OUT"; then
+# The path cell starts `/`, or `~` where TMPDIR is under HOME, which the report
+# shortens (display_path); `/` alone failed there (bugs review TST-41).
+if grep -qE '^\| unknown \| unknown \| default \| api \|.*\| `[/~]' <<<"$OUT"; then
   pass "--markdown backticks the path cell only"
 else
   fail "--markdown backticks the path cell only
@@ -519,6 +521,24 @@ grep -q '^  - grphost (.*AI_CONTAINER_GROUP=host is no longer supported' <<<"$OU
   && ! grep -q '^  - grplocal (.*AI_CONTAINER_GROUP=host is no longer supported' <<<"$OUT" \
   && pass "a project on the removed host group gets a note, and only that project" || fail "no note, or the wrong project's, for a host-group project
 $OUT"
+
+# ── values from a project's files are rendered (bugs review PRJ-15) ──────────
+# sandbox.env is the committed, shared file: an escape sequence in a value
+# reached the host terminal, and a tab shifted every later --tsv column.
+CTLB="$TMP/ctl/base"; mk_base "$CTLB" || { printf 'SCAFFOLD-FAILED: mk_base ctl\n'; exit 1; }
+mk_proj "$CTLB" "$TMP/ctlproj" $'g\tx\ty' $'open\e[2K\rrestricted' $'\e]0;PWNED\a4'
+run "$CTLB/ai-containers-report.sh" --tsv
+ctl_row="$(grep 'ctlproj' <<<"$OUT")"
+ctl_fields="$(awk -F'\t' '{ print NF }' <<<"$ctl_row")"
+hdr_fields="$(head -1 <<<"$OUT" | awk -F'\t' '{ print NF }')"
+[[ "$RC" == 0 && -n "$ctl_row" && "$ctl_fields" == "$hdr_fields" ]] && ! LC_ALL=C grep -q $'[\x01-\x08\x0a-\x1f\x7f]' <<<"$OUT" \
+  && [[ "$ctl_row" == *$'\tg?x?y\t'* && "$ctl_row" == *'?]0;PWNED?4'* ]] \
+  && pass "PRJ-15 --tsv renders a value's control characters, a tab among them, so the row keeps its columns" \
+  || fail "PRJ-15 --tsv (rc=$RC; $ctl_fields fields under $hdr_fields; $(od -c <<<"$ctl_row" | head -2 | tr '\n' ' '))"
+run "$CTLB/ai-containers-report.sh"
+! LC_ALL=C grep -q $'[\x01-\x09\x0b-\x1f\x7f]' <<<"$OUT" && grep -q 'ctlproj' <<<"$OUT" \
+  && pass "PRJ-15 the table carries no control character from a project's files to the terminal" \
+  || fail "PRJ-15 the table ($(grep ctlproj <<<"$OUT" | od -c | head -2 | tr '\n' ' '))"
 
 printf '\n%s\n' "----------------------------------------"
 if [[ "$fails" -eq 0 ]]; then

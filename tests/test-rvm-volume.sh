@@ -131,6 +131,10 @@ check "rvm_volume_ensure labels the volume with its group" \
   "docs" "$(docker_volume_label ai-containers-rvm-docs 'ai-containers.rvm-group')"
 check "rvm_group_from_volume round-trips via the label" \
   "docs" "$(rvm_group_from_volume ai-containers-rvm-docs)"
+# And with this HOME's id, which group.sh gc tells this home's volume from
+# another's by on a daemon several homes share (bugs review PRJ-16).
+check "PRJ-16 rvm_volume_ensure labels the volume with this home's owner id" \
+  "$(ai_containers_owner_id)" "$(docker_volume_label ai-containers-rvm-docs 'ai-containers.owner')"
 # Fallback path: an unlabeled volume still resolves by stripping the prefix.
 : > "$FAKE_VOLUMES_DIR/ai-containers-rvm-legacy"
 : > "$FAKE_VOLUMES_DIR/ai-containers-rvm-legacy.labels"

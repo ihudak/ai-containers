@@ -259,9 +259,9 @@ Attach them at run time with `REPOS="cluster:ro lib:ro app:rw" ./sandbox.sh rest
 ```bash
 ./group.sh list [--sizes]        # groups + their rvm volumes; flags orphaned volumes
 ./group.sh rm   <group> [--yes]  # remove a group: its directory AND its rvm volume
-./group.sh gc   [--yes]          # remove rvm volumes whose group directory is gone
+./group.sh gc   [--all] [--yes]  # remove this home's rvm volumes whose group directory is gone
 ```
-A group owns a directory (`~/.ai-containers/<group>/`) **and**, once `ruby=` is set, a Docker volume for its Ruby home — so `rm -rf` alone orphans a multi-GB volume. `group.sh rm` removes both; `gc` cleans up after a manual `rm -rf`. It refuses while a running container mounts the volume, refuses `host` (once your real `$HOME`, no longer a group) and any name that is not a valid group name (it would leave `~/.ai-containers` in an `rm -rf`), and never touches repo volumes (global, `repo.sh` owns them).
+A group owns a directory (`~/.ai-containers/<group>/`) **and**, once `ruby=` is set, a Docker volume for its Ruby home — so `rm -rf` alone orphans a multi-GB volume. `group.sh rm` removes both; `gc` cleans up after a manual `rm -rf`. A volume carries the `ai-containers.owner` of the home whose launch made it (`rvm_volume_ensure()`), and `gc` takes only this home's: on a docker several homes share (Docker Desktop's, by every WSL distro), a group directory missing here may be another home's group, so another home's volume, and one made before the label, is kept and named unless `--all` (bugs review PRJ-16); a docker that cannot list its containers is never read as none using it. It refuses while a running container mounts the volume, refuses `host` (once your real `$HOME`, no longer a group) and `restored` (`~/.ai-containers/restored` holds what a launch kept from a protected git file's place, PRJ-18), and any name that is not a valid group name (it would leave `~/.ai-containers` in an `rm -rf`), and never touches repo volumes (global, `repo.sh` owns them).
 
 **Remove, move or tidy a project's setup** (and reach the three tools below through one name):
 ```bash

@@ -15,7 +15,7 @@
 
 ## Summary
 
-39 bugs: 3 HIGH, 8 MEDIUM, 28 LOW. No SVC or BLD findings.
+39 bugs: 3 HIGH, 8 MEDIUM, 28 LOW. No SVC or BLD findings. TST-41, found while fixing them, is in section 9.
 
 ### HIGH — fix first
 
@@ -70,6 +70,7 @@
 | DOC-15 | CONFIRMED | the Unreleased CHANGELOG says `repo.sh gc` does not read the owner label, and 160 lines later that it does |
 | DOC-16 | CONFIRMED | the group-mount table in docs/repos-and-mounts.md leaves out five mounts the launcher makes |
 | DOC-17 | CONFIRMED | two counts in AGENTS.md no longer match the code |
+| TST-41 | CONFIRMED | `tests/test-report.sh` fails wherever `TMPDIR` lies under `HOME` (found while fixing PRJ-15) |
 
 ---
 
@@ -291,7 +292,7 @@
 ## 3. Host lifecycle scripts (project.sh, init, sync, report, group)
 
 ### PRJ-12: an interrupt while `mv` removes the old `.ai-containers` (move across filesystems) leaves two setups, and the re-run it tells you to make is refused
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `project.sh`: once the checked copy has landed, `_prj_move_dot()` records it (`_prj_mv_landed`), and `_prj_mv_interrupted()` then keeps the new working copies, names what is left of the old directory with the `rm -rf` that removes it, and says the run after that finishes the move; with the old directory already gone it says only to run it again. `tests/test-project-tool.sh`: a TERM during the removal and one just after it, each followed by the way out it names, which finishes the move; the two interrupt checks seen failing first.
 - **Severity:** MEDIUM (narrow window, but it is the "half-done mv that cannot be resumed" case, and the way out it leaves can lose `sandbox.local.env`)
 - **Confidence:** CONFIRMED
 - **Location:** `project.sh`: `_prj_move_dot()` (`if [[ -L "$old" ]] || ! rm -rf -- "$old"`), `_prj_mv_interrupted()`, and `cmd_mv()`: `ERROR: both %s and %s exist; remove or move one of them first`
@@ -302,7 +303,7 @@
 - **Suggested fix:** once the checked copy has landed, record that (a flag the trap reads) so the trap neither undoes the volume copies nor claims a clean restart, and names the old directory as a leftover to remove; or have `cmd_mv()` recognise "both exist and the new one is `_prj_tree`-equal-or-superset of the old" as a move to finish. Add a test with a TERM during the removal (the existing `FAKE_CP_TERM` covers only the copy).
 
 ### PRJ-13: `rm`/`mv` take an existing, unregistered directory named on the command line for the basename of another registered project
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `project.sh`: `prj_resolve()` refuses a bare name that is both an unregistered directory here and a registered project's basename, naming both, for `rm` and `mv` alike; a path (`./api`) picks one. `tests/test-project-tool.sh`: both commands' forms, seen failing first, and `./alpha` as the control.
 - **Severity:** MEDIUM (a wrong destructive target; it needs `--yes` or an unread listing to bite)
 - **Confidence:** CONFIRMED
 - **Location:** `project.sh`: `prj_resolve()` (`# 3. a basename exactly one registered root has`)
@@ -313,7 +314,7 @@
 - **Suggested fix:** in `prj_resolve()`, skip step 3 when `$phys` is set (the argument is an existing directory), or refuse with both candidates named.
 
 ### PRJ-14: `mv` cannot carry two working copies of one repo launched through two spellings of the project path
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `project.sh`: `cmd_mv()` refuses, before the question, two working copies that would take one new name, naming both with where each was launched from. `tests/test-project-tool.sh`: the reviewer's repro, seen failing first.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `project.sh`: `cmd_mv()` (`nl="$(_prj_rebase "$ldir" "$old_dot" "$new_dot")"` … `wc_new+=(…)`) and `prj_copy_volume()` (`a volume named %s exists already`)
@@ -324,7 +325,7 @@
 - **Suggested fix:** after building `wc_new`, check it for duplicates and refuse in the "Nothing was changed" block with both old volumes and their launch directories.
 
 ### PRJ-15: `ai-containers-report.sh` prints `sandbox.env` values to the terminal and into `--tsv` unrendered
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `ai-containers-report.sh`: every field of a row, and every note, goes through `_rterm()` (`_ac_term()`'s substitutions; the script does not source sandbox-common.sh). `tests/test-report.sh`: a project whose group holds tabs and whose mode and CPUs hold escape sequences keeps its `--tsv` columns, and no control character reaches the table; both seen failing first. TST-41 was found running it.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `ai-containers-report.sh`: `env_var()` and `printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$base_label" "$engver" …`
@@ -335,7 +336,7 @@
 - **Suggested fix:** pass every value read from a project's files through one renderer (`_ac_term`'s substitutions; the script does not source `sandbox-common.sh`, so a local copy or an awk `gsub(/[[:cntrl:]]/, "?")` in `env_var()`).
 
 ### PRJ-16: `group.sh gc` removes the Ruby volume of a group that exists only in another home on a shared daemon
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `sandbox-common.sh`: `rvm_volume_ensure()` labels a new volume with `ai_containers_owner_id()`; `group.sh`: `gc` takes only this home's orphans, keeps and names another home's and an unlabelled one unless `--all`, and skips a volume when `docker ps` fails (`_vol_busy()`), and `list` says which orphans `gc` keeps. `tests/test-group-lifecycle.sh` (the old `gc` checks now label their volumes this home's) and `tests/test-rvm-volume.sh`, each seen failing first. Every volume made before the fix is unlabelled, so collecting one takes `--all`; the CHANGELOG says so.
 - **Severity:** LOW (a regenerable cache, listed and confirmed first; minutes per Ruby to rebuild)
 - **Confidence:** CONFIRMED (from the code)
 - **Location:** `group.sh`: `cmd_gc()` (`[[ -d "$groups_root/$g" ]] && continue          # group still exists — keep`), and the same test in `cmd_list()`'s orphan list
@@ -346,7 +347,7 @@
 - **Suggested fix:** label the rvm volume with `ai_containers_owner_id()` at creation and have `gc`/`list` keep another owner's (and say that an unlabelled one may be another home's).
 
 ### PRJ-17: "refuses while a container of the project runs" rests on `docker inspect`'s mount sources being host paths
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: NOT REPRODUCIBLE on WSL** (2026-11-17, review agent). Measured on Docker Desktop 29.9.3 with WSL integration: a container run with `-v <distro path>:/x` reports `.Mounts[].Source` as that distro path, the same as `.HostConfig.Binds`, so `prj_running()`'s mount check holds there; a native Engine reports host paths by construction. Docker Desktop for Mac is not measured: the Mac agent's machine has none (PLAT-3). No code changed.
 - **Severity:** LOW
 - **Confidence:** PLAUSIBLE
 - **Location:** `project.sh`: `prj_running()` (`{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}`)
@@ -357,7 +358,7 @@
 - **Suggested fix:** read `.HostConfig.Binds` (the source as the launcher passed it) as well as `.Mounts`, or have `sandbox.sh` label the container with the launch directory and filter on the label. Either way add an integration case: the hermetic fake returns host paths by construction.
 
 ### PRJ-18: `~/.ai-containers/restored`, the launcher's own directory, is a group to `group.sh` and `project-init.sh`
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-17, review agent). `restored` is refused as `host` is: `validate_group_name()` (so the launch, `build.sh` and `group.sh rm`), `group_menu_choices()`, `project-init.sh`'s `existing_groups()` and its group prompt, and `group.sh`'s listing. `tests/test-group-lifecycle.sh`, each seen failing first.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED (from the code)
 - **Location:** `group.sh`: `group_names()`; `project-init.sh`: `existing_groups()`; made by `sandbox.sh`: `rd="$ai_containers_root/restored/$(date +%Y%m%d%H%M%S)-$$"`
@@ -892,3 +893,17 @@ What I could not cover, and why: the ~900 lines of CHANGELOG Fixed/Security were
 
 No TODO, FIXME, "follow-up" or "deferred" marker added to code since bec1c57 promises unbuilt work, other than the DEFERRED falsify rows (GAP-28). to-test.md has one open box (the nvm bump PR body, TST-8), which waits on the next automated PR and is stated.
 
+
+---
+
+## 9. Found while fixing this review's findings
+
+### TST-41: `tests/test-report.sh` fails wherever `TMPDIR` lies under `HOME`
+- **Status: FIXED** (2026-11-17, review agent). The check accepts a path cell starting with `/` or `~`.
+- **Severity:** LOW (test only)
+- **Confidence:** CONFIRMED
+- **Location:** `tests/test-report.sh`: the `--markdown backticks the path cell only` check
+- **Introduced:** before the window
+- **What happens:** the check wants the markdown path cell to start with `` `/ ``, but the report shortens a path under `$HOME` to `~/…` (`ai-containers-report.sh`: `display_path()`). With `TMPDIR` under `HOME` (Claude Code's own scratch directories are; so is any `TMPDIR=~/tmp`), the check fails at `HEAD`, and passes with `TMPDIR=/tmp`. Found running the file for PRJ-15.
+- **Repro:** `TMPDIR="$HOME/some-dir" bash tests/test-report.sh` → `FAIL: --markdown backticks the path cell only`.
+- **Expected:** the suite passes wherever `TMPDIR` is.

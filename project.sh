@@ -153,6 +153,16 @@ prj_resolve() {
       printf 'Give the path of the one you mean.\n' >&2
       exit 1
     fi
+    # A bare name that is also a directory here, one no registered root is:
+    # which of the two is meant cannot be told, so neither is taken. `rm api
+    # --yes` beside an unregistered ./api removed the registered project of that
+    # basename (bugs review PRJ-13). A path (./api, or the registered one) picks.
+    if [[ -n "$found" && -n "$phys" ]]; then
+      printf 'ERROR: "%s" is a directory here, %s, which is not a registered project,\n' "$(_ac_term "$arg")" "$(_ac_term "$phys")" >&2
+      printf '       and the name of the registered project %s.\n' "$(_ac_term "$found")" >&2
+      printf 'Give the path of the one you mean.\n' >&2
+      exit 1
+    fi
   fi
 
   if [[ -n "$found" ]]; then
@@ -1142,6 +1152,11 @@ _prj_move_dot() {
   fi
   rmdir -- "$tmpd" 2>/dev/null || true
   _prj_mv_tmp=""
+  # The checked copy is in place: it is the setup now, and an interrupt during
+  # the removal below must neither undo the working copies made for it nor say
+  # the move can be run again as it stands (bugs review PRJ-12). The trap names
+  # what is left of the old directory instead.
+  _prj_mv_landed="$old"
   # rm -rf removes a link it meets inside, never what it points to.
   if [[ -L "$old" ]] || ! rm -rf -- "$old" || [[ -e "$old" || -L "$old" ]]; then return 2; fi
   return 0
@@ -1554,7 +1569,7 @@ cmd_mv() {
   # an old root that is gone) take the name a launch from the new place uses.
   docker_volume_labels_load
   local wc ldir nl repo i line own o
-  local -a wc_old=() wc_new=() wc_repo=() wc_ldir=() wc_done=() stay=() stay_why=()
+  local -a wc_old=() wc_new=() wc_repo=() wc_ldir=() wc_was=() wc_done=() stay=() stay_why=()
   own="$(prj_owner)" || own=""
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
@@ -1574,9 +1589,26 @@ cmd_mv() {
     if [[ -z "$repo" ]]; then
       stay+=("$wc"); stay_why+=("— stays: it carries no ai-containers.repo label, so its new name cannot be told"); continue
     fi
-    wc_old+=("$wc"); wc_repo+=("$repo"); wc_ldir+=("$nl")
+    wc_old+=("$wc"); wc_repo+=("$repo"); wc_ldir+=("$nl"); wc_was+=("$ldir")
     wc_new+=("$(repo_workcopy_volume_name "$repo" "$(workcopy_tag "$nl")")"); wc_done+=("")
   done < <(prj_workcopies "$old_root")
+  # Two copies of one repo would take one new name: a launch through a link to
+  # the project and one through its real path make two copies, which both move
+  # to the one new launch directory. The second copy failed after the question,
+  # undoing the first, on every run, with no word why (bugs review PRJ-14).
+  local -A wc_taken=()
+  local j
+  for i in "${!wc_new[@]}"; do
+    j="${wc_taken[${wc_new[i]}]:-}"
+    if [[ -n "$j" ]]; then
+      printf 'ERROR: the working copies %s (launched from %s) and\n' "$(_ac_term "${wc_old[j]}")" "$(_ac_term "${wc_was[j]}")" >&2
+      printf '       %s (launched from %s) are of one repo, launched through two\n' "$(_ac_term "${wc_old[i]}")" "$(_ac_term "${wc_was[i]}")" >&2
+      printf '       spellings of this project'"'"'s path, and would both become %s. Keep one: push\n' "$(_ac_term "${wc_new[i]}")" >&2
+      printf '       what the other holds, remove it (docker volume rm <name>), then run this again. Nothing was changed.\n' >&2
+      exit 1
+    fi
+    wc_taken[${wc_new[i]}]="$i"
+  done
   # A container that uses an old copy, a stopped one too, makes docker refuse to
   # remove it once it is copied, after the setup has moved: asked now.
   local users urc
@@ -1794,7 +1826,7 @@ cmd_mv() {
   # <new-dir> (it holds sandbox.local.env), and, until the old copies start to
   # go, the copies this run made (_prj_mv_undo). Set here and put back before
   # this returns: project.sh is sourced by tests, so never a global trap.
-  _prj_mv_made=(); _prj_mv_making=""; _prj_mv_first=""; _prj_mv_undo=1
+  _prj_mv_made=(); _prj_mv_making=""; _prj_mv_first=""; _prj_mv_undo=1; _prj_mv_landed=""
   _prj_mv_new="$new_root"; _prj_mv_cmd="./project.sh mv $q_old $q_new"
   old_int="$(trap -p INT)"; old_term="$(trap -p TERM)"
   trap '_prj_mv_interrupted 130' INT
@@ -1936,12 +1968,25 @@ cmd_mv() {
 # was making included, and the directories mkdir -p made while they are empty:
 # the old copies hold the work, and a run again makes them anew. What was done
 # before is above.
-_prj_mv_made=(); _prj_mv_making=""; _prj_mv_first=""; _prj_mv_undo=0; _prj_mv_new=""; _prj_mv_cmd=""
+_prj_mv_made=(); _prj_mv_making=""; _prj_mv_first=""; _prj_mv_undo=0; _prj_mv_new=""; _prj_mv_cmd=""; _prj_mv_landed=""
 _prj_mv_interrupted() {
   local -a undo=()
   if [[ -n "$_prj_mv_tmp" ]]; then rm -rf -- "$_prj_mv_tmp"; _prj_mv_tmp=""; fi
   printf '\nERROR: interrupted; what was done is listed above, and no temporary copy is left in %s.\n' "$(_ac_term "$_prj_mv_new")" >&2
-  if (( _prj_mv_undo )); then
+  # The checked copy had landed and the old directory was being removed: the
+  # copy is the setup, and its working copies stay; a run again takes them as
+  # done once the leftover is gone (PRJ-12).
+  if [[ -n "$_prj_mv_landed" && -e "${_prj_mv_new%/}/.ai-containers" ]]; then
+    if [[ -e "$_prj_mv_landed" || -L "$_prj_mv_landed" ]]; then
+      printf '       %s is in place, the checked copy of %s, which was being\n' "$(_ac_term "${_prj_mv_new%/}/.ai-containers")" "$(_ac_term "$_prj_mv_landed")" >&2
+      printf '       removed: what is left of it is a leftover. Remove it, then run %s\n' "$_prj_mv_cmd" >&2
+      printf '       again to finish the move (the registry, and the old working copies):\n' >&2
+      printf '         rm -rf %s\n' "$(_prj_q "$_prj_mv_landed")" >&2
+    else
+      printf '       %s is in place. Run %s again to finish the move\n' "$(_ac_term "${_prj_mv_new%/}/.ai-containers")" "$_prj_mv_cmd" >&2
+      printf '       (the registry, and the old working copies).\n' >&2
+    fi
+  elif (( _prj_mv_undo )); then
     _prj_mv_undo=0
     undo=(${_prj_mv_made[@]+"${_prj_mv_made[@]}"})
     if [[ -n "$_prj_mv_making" ]] && docker volume inspect "$_prj_mv_making" >/dev/null 2>&1; then undo+=("$_prj_mv_making"); fi

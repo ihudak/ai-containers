@@ -204,6 +204,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   would not remove and keeps its registry line; `add` refuses a source holding
   `|`; and a first clone that fails removes the volume it made, so the next run
   seeds it again.
+- **`project.sh rm` and `mv` no longer take a directory here for another
+  project of its name.** A bare name was matched against the registered
+  projects' basenames even when it was an unregistered directory in the
+  current one, so `./project.sh rm api --yes` beside an unregistered `./api`
+  removed the registered project `api` elsewhere, working copies and all. Such
+  a name is now refused, naming both; a path (`./api`) picks one (bugs review
+  PRJ-13).
+- **An interrupted `project.sh mv` can be finished.** Interrupted while it
+  removed the old `.ai-containers` after a move across filesystems, it undid
+  the new working copies and said to run it again, which then refused because
+  both directories existed. Once the checked copy is in place it now keeps its
+  working copies, names what is left of the old directory to remove, and the
+  run after that finishes the move (bugs review PRJ-12).
+- **`project.sh mv` names two working copies that would share a name.** Two
+  copies of one repo, launched through a link to the project and through its
+  real path, both mapped to one new name: the second failed after the question,
+  undoing the first, on every run. This is now refused before the question,
+  naming both (bugs review PRJ-14).
+- **`group.sh gc` keeps another home's Ruby volume.** On a docker several homes
+  share (Docker Desktop's, by every WSL distro), a group directory missing here
+  may be another home's group, and `gc` removed its volume. A Ruby volume now
+  carries the `ai-containers.owner` of the home that made it, and `gc` takes
+  only this home's; another home's, and one made before the label, are kept and
+  named, and `--all` takes them too. Every volume made before this change is
+  unlabelled, so collecting one now takes `--all` (bugs review PRJ-16).
+- **`restored` is not a group.** `~/.ai-containers/restored`, where a launch
+  keeps files from a protected git file's place, was listed by `group.sh`,
+  removable with `group.sh rm`, offered by `project-init.sh` and selectable as
+  `AI_CONTAINER_GROUP`, which mounted it into the container. It is now refused
+  and skipped as `host` is (bugs review PRJ-18).
+- **`ai-containers-report.sh` renders what it reads from a project.** Values
+  from a project's `sandbox.env` reached the terminal with their escape
+  sequences, and a tab in one shifted every later `--tsv` column. Control
+  characters are now replaced, as the launcher replaces them (bugs review
+  PRJ-15).
 - **A working copy whose seeding failed is no longer mounted.** A `:rwcopy`
   working copy is seeded once, by a copy from the repo's volume, and from then
   on an existing one is taken as seeded. When that copy failed (the image not
