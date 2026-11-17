@@ -1,0 +1,16 @@
+# case: 620-group-gc-collects-orphan
+# what: gc no longer keeps a volume another home made, or one with no owner label: it takes them without --all
+#
+diff --git a/group.sh b/group.sh
+index fa306b9..2c58952 100755
+--- a/group.sh
++++ b/group.sh
+@@ -325,7 +325,7 @@ cmd_gc() {
+     # Another home's, or one made before owner labels: its group may live in
+     # that home (PRJ-16). Kept, and named, unless --all.
+     if why="$(_vol_owner_why "$v" "$own")"; then
+-      if (( ! all )); then kept+="  $v: $why"$'\n'; continue; fi
++      if false; then kept+="  $v: $why"$'\n'; continue; fi # MUTATION: gc takes another home's and unlabelled volumes without --all
+       whose[$v]="$why"
+     fi
+     brc=0; _vol_busy "$v" || brc=$?
