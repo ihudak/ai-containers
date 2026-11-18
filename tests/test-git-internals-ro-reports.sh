@@ -1005,5 +1005,86 @@ w332="$(sed -n '/WARNING: the session made/,$p' "$ERR")"
 chmod -R u+rwX "$D332" "$O332" "$TMP/ps332" 2>/dev/null
 rm -rf "$D332" "$O332" "$TMP/ps332" "$TMP/nogit332" "$TMP/bad332.cfg" "$TMP/old332.cfg"
 
+# ── G334: a remote git reads from a file is named ──────────────────────────
+# git takes a remote from .git/remotes/<name> or .git/branches/<name> when the
+# config defines none of that name: with no origin in the config a bare `git
+# push` went to the URL in remotes/origin (measured, git 2.53). Neither
+# directory is bound, so a session can write one. Named, not bound (feature-gaps
+# review GAP-31, the user's choice): at every launch for a git directory that
+# holds one, and when the container exits for each the session made
+# (sandbox.sh: `_git_legacy_warn()`; sandbox.sh: `_git_legacy_list()`).
+L334="$TMP/lg334"; O334="$TMP/ol334"
+lw334() {   # <git directory under /workspace>: the launch's WARNING line for it
+  grep -F "WARNING: /workspace/$1 holds remotes git reads from files, not from its config:" "$ERR"
+}
+mkdir -p "$O334/l" && : > "$O334/l/sandbox.sh" && : > "$O334/l/sandbox-common.sh" && "${G[@]}" init -q "$O334/l/r" \
+  && mkdir -p "$O334/l/r/.git/remotes" && printf 'URL: /nowhere\n' > "$O334/l/r/.git/remotes/ov" \
+  && for r in a b c d e f m; do "${G[@]}" init -q "$L334/$r" || exit 1; done \
+  && mkdir -p "$L334/a/.git/remotes" "$L334/a/.git/branches" "$L334/b/.git/branches" "$L334/c/.git/remotes" \
+       "$L334/d/.git/remotes" "$L334/e/.git/remotes/sub" "$L334/f/.git/branches" \
+  && printf 'URL: /nowhere\n' > "$L334/a/.git/remotes/origin" && printf '/nowhere#main\n' > "$L334/a/.git/branches/up" \
+  && for i in 1 2 3 4 5 6 7; do : > "$L334/c/.git/remotes/r$i" || exit 1; done \
+  && : > "$L334/d/.git/remotes/x"$'\e[31m' && : > "$L334/e/.git/remotes/sub/inner" \
+  && for (( i = 1; i <= 110; i++ )); do : > "$L334/f/.git/branches/b$i" || exit 1; done \
+  && "${G[@]}" -C "$L334/m" commit -q --allow-empty -m i && "${G[@]}" -C "$L334/m" worktree add -q "$L334/w334" \
+  && mkdir -p "$L334/m/.git/worktrees/w334/remotes" && : > "$L334/m/.git/worktrees/w334/remotes/inwt" \
+  || { printf 'SCAFFOLD-FAILED: G334\n'; exit 1; }
+# Two mounts expose a: it is said once.
+EXTRA_MOUNTS="$L334 $L334/a $O334" launch "$TMP/app"
+# (Under whichever of the two mounts the launch met it first.)
+a334="$(grep -E 'WARNING: /workspace/(lg334/)?a/\.git holds remotes git reads from files, not from its config:' "$ERR")"
+[[ "$LAUNCH_RC" == 0 && "$(grep -c . <<<"$a334")" == 1 && "$a334" == *'remotes/origin'* && "$a334" == *'branches/up'* && "$a334" != *' more'* ]] \
+  && grep -qF "git --git-dir=$L334/a/.git remote rename <name> <name>" "$ERR" \
+  && pass "G334 a git directory that holds a remote in a file is named at launch, once, with the command that moves one into the config" \
+  || fail "G334 a remote in a file (rc=$LAUNCH_RC; got: $a334)"
+c334="$(lw334 lg334/c/.git)"; f334="$(lw334 lg334/f/.git)"
+[[ "$(grep -o 'remotes/r[1-7]' <<<"$c334" | grep -c .)" == 5 && "$c334" == *', and 2 more.' \
+   && "$(grep -o 'branches/b[0-9]*' <<<"$f334" | grep -c .)" == 5 && "$f334" == *', and at least 95 more.' ]] \
+  && pass "G334 five are named and the rest counted; past a hundred the count is a least one" \
+  || fail "G334 the count (seven: $c334; a hundred and ten: $(cut -c1-200 <<<"$f334"))"
+[[ "$(lw334 lg334/d/.git)" == *'remotes/x?[31m.' ]] && ! grep -q $'\e' "$ERR" \
+  && pass "G334 a name with a control character is printed without it" \
+  || fail "G334 a control character in a remote's name (got: $(lw334 lg334/d/.git | tr -d '\033'))"
+# Not: an empty directory, as an older git's template leaves; a directory in
+# it; and a linked worktree's own directory, where git reads no remote.
+[[ -z "$(lw334 lg334/b/.git)" && -z "$(lw334 lg334/e/.git)" ]] && ! grep -qF 'inwt' "$ERR" && ! grep -qF 'worktrees/w334 holds remotes' "$ERR" \
+  && pass "G334 an empty directory, a directory inside one and a linked worktree's own are not named" \
+  || fail "G334 named where git reads no remote (b: $(lw334 lg334/b/.git); e: $(lw334 lg334/e/.git); $(grep -F 'w334' "$ERR" | head -1))"
+[[ "$(lw334 ol334/l/r/.git)" == *'remotes/ov.' ]] \
+  && pass "G334 one under a read-only overlay is named too" \
+  || fail "G334 under an overlay (got: $(lw334 ol334/l/r/.git))"
+! grep -qF 'the session made files git reads a remote from' "$ERR" \
+  && pass "G334 with no session nothing is said when the container exits" \
+  || fail "G334 an exit WARNING with no session ($(grep -A4 -F 'the session made files git reads' "$ERR" | tr '\n' ' '))"
+# The session writes some: into a git directory that had none, into one that
+# had two, into one whose list the launch could not read whole, and in a
+# repository of its own.
+sess334="set -e; cd '$L334'
+mkdir -p b/.git/remotes; printf 'URL: /elsewhere\n' > b/.git/remotes/new
+printf '/elsewhere#main\n' > a/.git/branches/extra
+: > f/.git/branches/zz
+git -c init.defaultBranch=main init -q n; mkdir n/.git/remotes; printf 'URL: /elsewhere\n' > n/.git/remotes/origin
+git -c init.defaultBranch=main init -q plain"
+FAKE_SESSION="$sess334" EXTRA_MOUNTS="$L334" launch "$TMP/app"
+x334="$(sed -n '/WARNING: the session made files git reads a remote from/,$p' "$ERR")"
+[[ "$LAUNCH_RC" == 0 && -n "$(lw334 lg334/a/.git)" && "$x334" == *"$L334/b/.git (remotes/new)"* && "$x334" == *"$L334/a/.git (branches/extra)"* \
+   && "$x334" == *"$L334/n/.git (remotes/origin)"* ]] \
+  && pass "G334 the launch says it again, and the exit names what the session made: in a protected git directory, only the new one; and in a repository of its own" \
+  || fail "G334 after the session (rc=$LAUNCH_RC; exit warning: $(tr '\n' ' ' <<<"$x334" | cut -c1-600))"
+[[ "$x334" != *"$L334/f/.git"* && "$x334" != *"$L334/plain/.git"* && "$x334" != *"$L334/c/.git"* && "$x334" != *'remotes/origin, '* ]] \
+  && pass "G334 … not one where the launch could not read them all, nor one the session left as it was, nor a plain git init" \
+  || fail "G334 named at exit without cause ($(tr '\n' ' ' <<<"$x334" | cut -c1-600))"
+if [[ "$(id -u)" == 0 ]]; then
+  pass "G334 a directory that cannot be listed: skipped, as root a mode stops nothing"
+else
+  chmod 000 "$L334/c/.git/remotes"
+  EXTRA_MOUNTS="$L334" launch "$TMP/app"
+  u334="$(lw334 lg334/c/.git)"; chmod 755 "$L334/c/.git/remotes"
+  [[ "$u334" == *'remotes/, which cannot be listed.' ]] \
+    && pass "G334 a remotes directory that cannot be listed is named as one" \
+    || fail "G334 an unlistable remotes directory (got: $u334)"
+fi
+chmod -R u+rwX "$L334" "$O334" 2>/dev/null; rm -rf "$L334" "$O334"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

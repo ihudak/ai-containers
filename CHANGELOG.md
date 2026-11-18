@@ -1171,6 +1171,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `gpg.program = ~/…` in a repository's own config, now get a `NOTE:` at each
   launch (bugs review GIT-106).
 
+- **A remote kept in a file is named.** git still reads a remote from
+  `.git/remotes/<name>` or `.git/branches/<name>` where the config has no
+  remote of that name, and a container can write both directories: with no
+  `origin` in the config, a bare `git push` on the host went to the URL such a
+  file held (measured, git 2.53; a remote in the config wins). A launch now
+  prints a `WARNING:` for each git directory that holds one, and the exit of a
+  session for each it made, with the `git remote rename` that moves one into
+  the config. They are named, not mounted read-only: that would add two bind
+  mounts to every repository (feature-gaps review GAP-31).
+
 - **An alias that is not a shell command is named too.** The first protection
   of a repository lists the config keys that make your host's git run a
   program, and of the aliases only those starting with `!`. But

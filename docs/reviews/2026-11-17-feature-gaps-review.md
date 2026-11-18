@@ -60,7 +60,7 @@
 - **Suggested approach:** name every alias of a repository's own config once; a list of the git options that run a program would miss some. Not judged at each launch: after the first protection the agent cannot write the config.
 
 ### GAP-31: a legacy `.git/remotes` or `.git/branches` file, which stays writable, defines a remote the config does not
-- Status: OPEN (logged 2026-11-18, Fable 5.2 session). Waits for the user's choice among the approaches below.
+- Status: DONE (2026-11-18, Fable 5.2 session; the user chose the first approach, a warning). `_git_legacy_warn()` names them at every launch for a git directory that holds one, and `_git_after_session()` each the session made. G334 in `tests/test-git-internals-ro-reports.sh`.
 - **Area:** the git-internals overlay (`launcher_ro_overlay()`), the check after a session (`_git_after_session()`)
 - **Source:** AGENTS.md: "What writes `config` fails with `Resource busy`: `git config`, `git remote add`". A remote can still be defined from inside a container, in a file.
 - **Current state:** git reads a remote's URL and refspecs from `.git/remotes/<name>` and `.git/branches/<name>` when the config defines no remote of that name. Neither directory is bound, and no launch looks at them. Measured, git 2.53:
