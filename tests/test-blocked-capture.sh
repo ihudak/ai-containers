@@ -92,6 +92,9 @@ for a in "$@"; do
   prev="$a"
 done
 case "$sep" in /t) sep=$'\t' ;; /s) sep=' ' ;; esac
+# What the real one prints on stderr as it attaches, which the daemon keeps in
+# tshark-<loop>-errors.log (the integration harness waits on that line).
+printf 'Capturing on %s\n' "$iface" >&2
 replay() {
   local line
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -406,6 +409,14 @@ expect_eq "blocked-ips.txt lists each nameless address once" \
   "198.51.100.7
 198.51.100.9
 198.51.100.10" "$(data_lines "$scn/cap/blocked-ips.txt")"
+head -n 1 "$scn/cap/blocked-ips.txt" | grep -qxF '# Blocked IPs with no known domain — copy-paste into allowlist-cidrs.txt' \
+  && head -n 1 "$scn/cap/blocked-domains.txt" | grep -qxF '# Blocked domains — copy-paste these lines into allowlist-domains.txt' \
+  && pass "a new list starts with its header" \
+  || fail "a new list starts with its header — got: $(head -n 1 "$scn/cap/blocked-ips.txt") / $(head -n 1 "$scn/cap/blocked-domains.txt")"
+grep -qxF 'Capturing on any' "$scn/cap/tshark-dns-errors.log" 2>/dev/null \
+  && grep -qxF 'Capturing on nflog:100' "$scn/cap/tshark-nflog-errors.log" 2>/dev/null \
+  && pass "each tshark's stderr is kept in its own log in the capture directory" \
+  || fail "tshark's stderr logs — dns: [$(cat "$scn/cap/tshark-dns-errors.log" 2>/dev/null)] nflog: [$(cat "$scn/cap/tshark-nflog-errors.log" 2>/dev/null)]"
 
 # ── RT-14: a DNS answer off the wire is not trusted on its own ──────────────────
 # Port 53 is open to every address, so anyone can put a response on the wire
@@ -415,12 +426,15 @@ expect_eq "blocked-ips.txt lists each nameless address once" \
 # the resolver, even where it would answer.
 scn="$TMP/forged"
 mkdir -p "$scn"
-printf 'exact.example.test;6.6.6.6;\n-v;6.6.6.7;\n' > "$scn/dns"
-printf '6.6.6.6;;443;\n6.6.6.7;;443;\n' > "$scn/nflog"
-printf 'exact.example.test 192.0.2.10\n-v 6.6.6.7\n' > "$scn/hosts"
+# -x.example.test matches the wildcard and the resolver here answers for it,
+# but a name starting with `-` is no host name: getent would take it for an
+# option, so it is never asked.
+printf 'exact.example.test;6.6.6.6;\n-v;6.6.6.7;\n-x.example.test;6.6.6.8;\n' > "$scn/dns"
+printf '6.6.6.6;;443;\n6.6.6.7;;443;\n6.6.6.8;;443;\n' > "$scn/nflog"
+printf 'exact.example.test 192.0.2.10\n-v 6.6.6.7\n-x.example.test 6.6.6.8\n' > "$scn/hosts"
 printf '*.example.test\n' > "$scn/proxy"
 launch "$scn" "$heal_domains" "$scn/proxy"
-await_map "$scn" "6.6.6.6 exact.example.test" "6.6.6.7 -v"
+await_map "$scn" "6.6.6.6 exact.example.test" "6.6.6.7 -v" "6.6.6.8 -x.example.test"
 await_end "$scn"
 if [[ -s "$scn/ipset.log" ]]; then
   fail "a forged DNS answer for an allowlisted name heals its address (RT-14) — ipset: $(tr '\n' '|' < "$scn/ipset.log")"
@@ -429,7 +443,8 @@ else
 fi
 expect_eq "  … and blocked.log says why the address was not auto-allowed" \
   "TCP:443 6.6.6.6 exact.example.test (not auto-allowed: the resolver does not give this address for it)
-TCP:443 6.6.6.7 -v" "$(log_rows "$scn/cap/blocked.log")"
+TCP:443 6.6.6.7 -v
+TCP:443 6.6.6.8 -x.example.test (not auto-allowed: the resolver does not give this address for it)" "$(log_rows "$scn/cap/blocked.log")"
 
 # ── RT-13: nothing the agent plants in the capture directory is written through ─
 # Every name the daemon writes is a link to a sentinel (the firewall's allowlist,
@@ -499,16 +514,31 @@ sentinel_check "a link swapped in between the removal and the open is refused, n
 scn="$TMP/stale"
 write_feeds "$scn"
 mkdir -p "$scn/cap"
-printf '# old header\n\nblocked.example.test\n' > "$scn/cap/blocked-domains.txt"
+# old.example.test is not seen again this session: it must survive as it was.
+printf '# old header\n\nold.example.test\nblocked.example.test\n' > "$scn/cap/blocked-domains.txt"
 launch "$scn" "$heal_domains" "$heal_proxy"
 await_map "$scn" "${map_lines[@]}"
 await_end "$scn"
 expect_eq "a list kept from an earlier session is appended to, each name still once" \
-  "blocked.example.test
+  "old.example.test
+blocked.example.test
 notwild.example.test" "$(data_lines "$scn/cap/blocked-domains.txt")"
 head -n 1 "$scn/cap/blocked-domains.txt" | grep -qxF '# old header' \
   && pass "  … its own header kept, no second one written" \
   || fail "  … its own header kept — got: $(head -n 3 "$scn/cap/blocked-domains.txt")"
+
+# A kept list whose last line has no newline (edited by hand): the next name
+# goes on a line of its own, and that last line still deduplicates.
+scn="$TMP/stale-nonl"
+write_feeds "$scn"
+mkdir -p "$scn/cap"
+printf '# old header\n\nblocked.example.test' > "$scn/cap/blocked-domains.txt"
+launch "$scn" "$heal_domains" "$heal_proxy"
+await_map "$scn" "${map_lines[@]}"
+await_end "$scn"
+expect_eq "a kept list with no final newline is appended on a new line, its last name still once" \
+  "blocked.example.test
+notwild.example.test" "$(data_lines "$scn/cap/blocked-domains.txt")"
 
 # ── Self-healing OFF: the same traffic, logged only ─────────────────────────────
 scn="$TMP/heal-off"

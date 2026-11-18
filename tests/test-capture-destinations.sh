@@ -216,5 +216,23 @@ else
   fail "C11 rc=$rc target=$(cat "$STATE/sent/target"): $out"
 fi
 
+# ── C12: a FIFO swapped in there is no regular file: refused too ─────────────
+# Opened read-write it does not block, and it is the file at that name, with
+# one link: only its type tells it from the log.
+STATE="$TMP/c12"; mkdir -p "$STATE/cap" "$STATE/rmbin"; CAP="$STATE/cap"
+{ printf '#!%s\n' "$BASH_BIN"; cat <<FAKE
+"$(command -v rm)" "\$@"; for a in "\$@"; do [[ "\$a" == */tcpdump.log ]] && mkfifo "\$a"; done; exit 0
+FAKE
+} > "$STATE/rmbin/rm"; chmod +x "$STATE/rmbin/rm"
+ln -s "$(command -v mkfifo)" "$STATE/rmbin/mkfifo" 2>/dev/null
+run_cap "$STATE/rmbin:$BIN:$SYS" start "$CAP"
+sleep 0.2
+if [[ $rc -eq 1 && -p "$CAP/tcpdump.log" ]] && grep -qF "is not a regular file of its own" <<<"$out" \
+   && ! ls "$STATE"/started.* >/dev/null 2>&1; then
+  pass "C12 a FIFO swapped in at tcpdump.log refuses the start (RT-15)"
+else
+  fail "C12 rc=$rc: $out"
+fi
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

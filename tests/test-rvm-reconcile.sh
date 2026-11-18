@@ -100,6 +100,7 @@ EOF
     STUB_FAIL_VERSIONS="${STUB_FAIL_VERSIONS:-}" STUB_FAIL_ONCE="${STUB_FAIL_ONCE:-0}" \
     FLOCK_BUSY="${FLOCK_BUSY:-0}" FLOCK_HELD="${FLOCK_HELD:-0}" \
     bash "$REPO_DIR/rvm-reconcile.sh" >"$home/out.log" 2>&1
+  printf '%s\n' "$?" > "${RC_FILE:-/dev/null}"
   # Return the requested stream: 'out' = the reconcile's own log lines; 'calls' = the rvm calls.
   if [[ "$sink" == "out" ]]; then cat "$home/out.log" 2>/dev/null; else cat "$home/calls.log" 2>/dev/null; fi
   rm -rf "$home" "$bin"
@@ -136,9 +137,33 @@ out_busy="$(FLOCK_BUSY=1 run_case "3.4.5" "3.4.5" out)"
 # RT-17: held past the bounded wait, the start goes on without installing Ruby.
 calls_held="$(FLOCK_BUSY=1 FLOCK_HELD=1 run_case "" "3.4.5" calls)"
 out_held="$(FLOCK_BUSY=1 FLOCK_HELD=1 run_case "" "3.4.5" out)"
-[[ "$out_held" == *"is still held after 1800s; starting without installing Ruby"* && "$calls_held" != *"rvm install"* ]] \
-  && pass "a lock held past the bounded wait starts the container without installing Ruby (RT-17)" \
-  || fail "a lock held past the wait (out: $out_held; calls: $calls_held)"
+rc_held="$PATH_SCRATCH/rc-held"
+out_held="$(RC_FILE="$rc_held" FLOCK_BUSY=1 FLOCK_HELD=1 run_case "" "3.4.5" out)"
+[[ "$out_held" == *"is still held after 1800s; starting without installing Ruby"* && "$calls_held" != *"rvm install"* \
+   && "$(cat "$rc_held")" == 0 ]] \
+  && pass "a lock held past the bounded wait starts the container without installing Ruby, exit 0 (RT-17)" \
+  || fail "a lock held past the wait (rc: $(cat "$rc_held"); out: $out_held; calls: $calls_held)"
+# The bound is AI_CONTAINERS_RECONCILE_LOCK_WAIT when that is a number of
+# seconds, and 1800 otherwise (container.env reaches this step).
+out_w="$(AI_CONTAINERS_RECONCILE_LOCK_WAIT=7 FLOCK_BUSY=1 FLOCK_HELD=1 run_case "" "3.4.5" out)"
+out_bad="$(AI_CONTAINERS_RECONCILE_LOCK_WAIT='7; x' FLOCK_BUSY=1 FLOCK_HELD=1 run_case "" "3.4.5" out)"
+[[ "$out_w" == *"waiting for it to finish (up to 7s)"* && "$out_w" == *"still held after 7s"* && "$out_bad" == *"still held after 1800s"* ]] \
+  && pass "the lock wait is AI_CONTAINERS_RECONCILE_LOCK_WAIT when a number, 1800 s otherwise (RT-17)" \
+  || fail "the lock wait (7: $out_w; '7; x': $out_bad)"
+# A FIFO at the lock path would block the open: not used. A lock file that
+# cannot be opened: neither. Both start without installing, exit 0.
+for kind in fifo unreadable; do
+  [[ "$kind" == unreadable && "$(id -u)" == 0 ]] && continue
+  home="$PATH_SCRATCH/lock-$kind"; mkdir -p "$home/.rvm"
+  if [[ "$kind" == fifo ]]; then mkfifo "$home/.rvm/.reconcile.lock"; want='NOTE: .*reconcile.lock is not a regular file; starting without installing Ruby'
+  else : > "$home/.rvm/.reconcile.lock"; chmod 000 "$home/.rvm/.reconcile.lock"; want='NOTE: cannot open .*reconcile.lock; starting without installing Ruby'; fi
+  HOME="$home" RUBY_VERSIONS=3.4.5 PATH="$SANDBOX_PATH" timeout 20 bash "$REPO_DIR/rvm-reconcile.sh" >"$home/out.log" 2>&1
+  rc=$?
+  [[ "$rc" -eq 0 ]] && grep -q "$want" "$home/out.log" && [[ ! -e "$nonet/curl.log" ]] \
+    && pass "a lock path that is a $kind file starts without installing Ruby, exit 0 (RT-17)" \
+    || fail "a $kind lock path: rc=$rc, out: $(tr '\n' ' ' < "$home/out.log" | cut -c1-300)"
+  chmod 600 "$home/.rvm/.reconcile.lock" 2>/dev/null; rm -rf "$home"; rm -f "$nonet/curl.log"
+done
 
 # entrypoint wires the reconcile in all three modes, before agent-skill install.
 grep -q 'run_ruby_reconcile' "$REPO_DIR/entrypoint.sh" \

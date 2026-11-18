@@ -755,7 +755,7 @@ ESC=$'\033'
 T="$(fresh)"; reset_run_env
 printf 'evil\033]0;OWNED\007\033[2Jhost.example\n' > "$T/payload.txt"
 ln -s "$T/payload.txt" "$T/launch/.agent-discovery/agent-dns.txt"
-RUN_LISTS=none
+RUN_LISTS="none"
 run_in "$T" "$T/launch"
 if [[ "$RC" -eq 0 && "$OUT" != *"$ESC"* && "$OUT" != *host.example* && ! -L "$T/launch/.agent-discovery/agent-dns.txt" ]]; then
   pass "a link left at agent-dns.txt is removed before the extract, its target never read (RT-16)"
@@ -768,9 +768,10 @@ fi
 # One swapped in after the extract is named and not read.
 T="$(fresh)"; reset_run_env
 printf 'evil\033]0;OWNED\007host.example\n' > "$T/payload.txt"
-RUN_LISTS=link
+RUN_LISTS="link"
 run_in "$T" "$T/launch"
-if [[ "$RC" -eq 0 && "$OUT" == *"agent-dns.txt is not a regular file; not read."* && "$OUT" != *"$ESC"* && "$OUT" != *host.example* ]]; then
+if [[ "$RC" -eq 0 && "$OUT" == *"agent-dns.txt is not a regular file; not read."* && "$OUT" != *"$ESC"* && "$OUT" != *host.example* ]] \
+   && [[ "$OUT" == *"0 DNS queries, 2 TLS SNI hostnames."* ]]; then
   pass "a list that is a link after the extract is named and not read (RT-16)"
 else
   fail "a link at agent-dns.txt after the extract (rc=$RC; out: $(cat -v <<<"$OUT" | tr '\n' ' ' | cut -c1-300))"

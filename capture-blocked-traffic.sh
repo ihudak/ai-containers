@@ -137,10 +137,13 @@ fd_log="" fd_domains="" fd_ips="" fd_dns_err="" fd_nflog_err=""
 declare -A listed=()
 
 read_listed() {   # $1 = descriptor; its lines from the current offset to the end
-  local line=""
-  while IFS= read -r line <&"$1" || [[ -n "$line" ]]; do
+  local line="" partial=""
+  while IFS= read -r line <&"$1" || { [[ -n "$line" ]] && partial=1; }; do
     [[ -z "$line" || "$line" == '#'* ]] || listed["$line"]=1
   done
+  # A last line with no newline (an edit by hand) would have the next name
+  # written onto its end: end it first.
+  [[ -z "$partial" ]] || printf '\n' >&"$1"
 }
 
 init_output_files() {

@@ -649,6 +649,20 @@ if flock -E 75 -n /dev/null true 2>/dev/null; then
     && pass "a FIFO at the lock path does not hold up the start (RT-17)" \
     || fail "a FIFO at the lock path: rc=$rc, out: $(tr '\n' ' ' < "$h/out.log" | cut -c1-300)"
   rm -rf "$bin" "$h"
+
+  # A lock file that cannot be opened (made unwritable): the start goes on
+  # without installing, and the reconcile still exits 0. Root opens any file.
+  if [[ "$(id -u)" != 0 ]]; then
+    h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+    mkdir -p "$h/.ai-tools"; : > "$h/.ai-tools/.reconcile.lock"; chmod 000 "$h/.ai-tools/.reconcile.lock"
+    PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="gemini" timeout 20 bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+    rc=$?
+    [[ "$rc" -eq 0 ]] && grep -q 'NOTE: cannot open .*reconcile.lock; starting without installing tools' "$h/out.log" \
+      && ! grep -q '^npm ' "$h/calls.log" 2>/dev/null \
+      && pass "a lock file that cannot be opened starts without installing, exit 0 (RT-17)" \
+      || fail "an unopenable lock file: rc=$rc, out: $(tr '\n' ' ' < "$h/out.log" | cut -c1-300)"
+    chmod 600 "$h/.ai-tools/.reconcile.lock"; rm -rf "$bin" "$h"
+  fi
 else
   printf 'SKIP: RT-17 lock cases need util-linux flock\n'
 fi
