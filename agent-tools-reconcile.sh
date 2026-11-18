@@ -30,13 +30,38 @@ cd / || exit 0
 home_root="$HOME/.ai-tools"
 mkdir -p "$home_root/npm" "$home_root/uv/bin" "$home_root/bin"
 
-# Serialize concurrent same-group container starts (they share the mounted ~/.ai-tools).
-# Runs before the interactive shell, so report a wait instead of appearing hung.
-exec 9>"$home_root/.reconcile.lock"
-if ! flock -n 9; then
-  printf '[agent-tools-reconcile] another container in this group is installing tools — waiting…\n'
-  flock 9
+# The lock is in the group's home, which the agent writes, so neither its holder
+# nor what is at its path can be trusted to let go. The wait is bounded, long
+# enough for a real install (900 s; AI_CONTAINERS_RECONCILE_LOCK_WAIT, a test
+# knob), after which this start goes on without the reconcile and a later one
+# does it. A lock path that is a link or no regular file (a FIFO blocks the open
+# itself) is not used, and neither is the start held up for it. Everything after
+# runs with fd 9 closed (the `{ … } 9>&-` below), so no installer or process it
+# leaves running holds the lock past this script: one did, and every later start
+# of the group waited for it, forever (bugs review RT-17).
+lock="$home_root/.reconcile.lock"
+lock_wait="${AI_CONTAINERS_RECONCILE_LOCK_WAIT:-900}"
+[[ "$lock_wait" =~ ^[0-9]{1,5}$ ]] || lock_wait=900
+if [[ -L "$lock" || ( -e "$lock" && ! -f "$lock" ) ]]; then
+  printf 'NOTE: %s is not a regular file; starting without installing tools. Remove it, and the next start installs them.\n' "$lock" >&2
+  exit 0
 fi
+if ! { exec 9>>"$lock"; } 2>/dev/null; then
+  printf 'NOTE: cannot open %s; starting without installing tools.\n' "$lock" >&2
+  exit 0
+fi
+# -E 75: held by another, apart from a filesystem with no lock support, on which
+# this runs unlocked as it always did.
+flock -n -E 75 9; lock_rc=$?
+if (( lock_rc == 75 )); then
+  printf '[agent-tools-reconcile] another container in this group is installing tools — waiting (up to %ss)…\n' "$lock_wait"
+  flock -w "$lock_wait" -E 75 9; lock_rc=$?
+  if (( lock_rc == 75 )); then
+    printf 'NOTE: the group'"'"'s lock (%s) is still held after %ss; starting without installing tools. A later start installs them.\n' "$lock" "$lock_wait" >&2
+    exit 0
+  fi
+fi
+{
 
 log(){ printf '[agent-tools-reconcile] %s\n' "$*"; }
 
@@ -326,3 +351,4 @@ if [[ ",$tools," == *",claude-code,"* ]] && ! native_claude_present && [[ -x "$n
 fi
 
 log "done."
+} 9>&-

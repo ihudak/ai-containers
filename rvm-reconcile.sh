@@ -13,15 +13,38 @@ versions="${RUBY_VERSIONS:-}"
 rvm_root="$HOME/.rvm"
 mkdir -p "$rvm_root"
 
-# Serialize concurrent same-group container starts (they share the mounted ~/.rvm).
-# This runs BEFORE the interactive shell, and a first-run Ruby compile takes minutes, so
-# a silent block would look like a hung container: try without waiting first, and only
-# then say what we are waiting for.
-exec 9>"$rvm_root/.reconcile.lock"
-if ! flock -n 9; then
-  printf '[rvm-reconcile] another container in this group is installing Ruby — waiting for it to finish…\n'
-  flock 9
+# The lock is in the group's home, which the agent writes, so neither its holder
+# nor what is at its path can be trusted to let go. The wait is bounded, long
+# enough for a real install (1800 s; AI_CONTAINERS_RECONCILE_LOCK_WAIT, a test
+# knob), after which this start goes on without the reconcile and a later one
+# does it. A lock path that is a link or no regular file (a FIFO blocks the open
+# itself) is not used, and neither is the start held up for it. Everything after
+# runs with fd 9 closed (the `{ … } 9>&-` below), so no installer or process it
+# leaves running holds the lock past this script: one did, and every later start
+# of the group waited for it, forever (bugs review RT-17).
+lock="$rvm_root/.reconcile.lock"
+lock_wait="${AI_CONTAINERS_RECONCILE_LOCK_WAIT:-1800}"
+[[ "$lock_wait" =~ ^[0-9]{1,5}$ ]] || lock_wait=1800
+if [[ -L "$lock" || ( -e "$lock" && ! -f "$lock" ) ]]; then
+  printf 'NOTE: %s is not a regular file; starting without installing Ruby. Remove it, and the next start installs it.\n' "$lock" >&2
+  exit 0
 fi
+if ! { exec 9>>"$lock"; } 2>/dev/null; then
+  printf 'NOTE: cannot open %s; starting without installing Ruby.\n' "$lock" >&2
+  exit 0
+fi
+# -E 75: held by another, apart from a filesystem with no lock support, on which
+# this runs unlocked as it always did.
+flock -n -E 75 9; lock_rc=$?
+if (( lock_rc == 75 )); then
+  printf '[rvm-reconcile] another container in this group is installing Ruby — waiting for it to finish (up to %ss)…\n' "$lock_wait"
+  flock -w "$lock_wait" -E 75 9; lock_rc=$?
+  if (( lock_rc == 75 )); then
+    printf 'NOTE: the group'"'"'s lock (%s) is still held after %ss; starting without installing Ruby. A later start installs it.\n' "$lock" "$lock_wait" >&2
+    exit 0
+  fi
+fi
+{
 
 log(){ printf '[rvm-reconcile] %s\n' "$*"; }
 
@@ -116,3 +139,4 @@ if ! grep -q '^default ' < <(rvm alias list 2>/dev/null); then
   fi
 fi
 log "done."
+} 9>&-

@@ -1138,3 +1138,29 @@ repo-git-reset.sh:logic-flip:108bb68c42deda209266e7f16fe38f73ea92125a
     prints ?. The two ? paths are asserted ("remote cannot be cloned",
     "detached HEAD"); no input separates the two programs. If fresh_clone
     ever leaves a usable $F/.git behind on failure, re-measure.
+
+# ── 29 ────────────────────────────────────────────────────────────────────────
+GROUP: capture-blocked-traffic.sh — open_output()'s failure status, and two `|| true`
+capture-blocked-traffic.sh:return-flip:e0e1f9fabfc9d4800c877a703b823ac0578ff8db
+capture-blocked-traffic.sh:logic-flip:76e9613a21dfa703b10d83d63613090fb9874bb8
+capture-blocked-traffic.sh:logic-flip:ab3380775e7c771af14933f41af3da99bd5282e5
+    return 1                                   (open_output: the open failed, and
+                                                the descriptor was not the file)
+    rm -f -- "$path" 2>/dev/null || true       (open_output)
+    awk -v ip="$1" '$1 == ip { print $2; exit }' "$dns_map" 2>/dev/null || true
+                                               (lookup_domain)
+  damaged:  each `return 1` becomes `return 0`; each `|| true` becomes `&& true`.
+  EQUIVALENT: open_output sets its variable only on success, its last line, and
+    every caller is `open_output fd_x … || fd_x=""`, its variable "" already:
+    with either status the variable is empty, and init_output_files then gives
+    it /dev/null. Both failure paths are asserted by what they print (the
+    WARNING) and what is written (nothing), never by the status.
+    The rm is not the last command of its `&&` list, so under `set -e` its
+    failure (a directory at the name, refused by the open after it) is ignored
+    either way, and the `if` it ends is a statement whose status nothing reads.
+    The awk is the whole of lookup_domain, read as `domain="$(lookup_domain …)"`,
+    whose status `set -e` would act on, but awk exits 0 on any readable file
+    whatever it prints, and the map is made at start in the root-only
+    directory and is only ever replaced by `mv`, so it is always there. A test
+    could delete it mid-run, but the daemon never meets that state: nothing but
+    root reaches that directory.

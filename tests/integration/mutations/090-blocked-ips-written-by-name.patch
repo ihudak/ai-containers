@@ -1,0 +1,16 @@
+# case: 090-agent-link-not-written-by-root
+# what: blocked-ips.txt is appended BY NAME again, so the root daemon writes through the link the agent planted, into the allowlist
+#
+diff --git a/capture-blocked-traffic.sh b/capture-blocked-traffic.sh
+index 923f546..caf452a 100755
+--- a/capture-blocked-traffic.sh
++++ b/capture-blocked-traffic.sh
+@@ -252,7 +252,7 @@ log_blocked() {
+   if [[ -z "${listed["$item"]:-}" ]]; then
+     listed["$item"]=1
+     if [[ -n "$domain" ]]; then printf '%s\n' "$domain" >&"$fd_domains"
+-    else printf '%s\n' "$dst_ip" >&"$fd_ips"; fi
++    else printf '%s\n' "$dst_ip" >> "$blocked_ips"; fi   # KNOWN-BAD: written by name, through any link there
+   fi
+ }
+ 

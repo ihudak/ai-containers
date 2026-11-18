@@ -598,7 +598,74 @@ rm -rf "$bin" "$h"
 [[ "$rc" -eq 0 ]] && pass "exit code 0 when npm install fails (non-fatal)" || fail "exit code 0 when npm install fails (non-fatal)"
 
 # ── Guards ──
-grep -qE 'flock[[:space:]]+9' "$REPO_DIR/agent-tools-reconcile.sh" && pass "flock-guarded (real call, not just the header comment)" || fail "flock-guarded (real call, not just the header comment)"
+grep -qE '^[[:space:]]*flock -w "\$lock_wait" -E 75 9' "$REPO_DIR/agent-tools-reconcile.sh" && pass "flock-guarded, with a bounded wait (real call, not just the header comment)" || fail "flock-guarded, with a bounded wait (real call, not just the header comment)"
+
+# ── RT-17: the group's lock is waited for within a bound, and nothing keeps it ──
+# The lock file is in the group's home, which the agent writes: a holder that
+# never lets go (`flock ~/.ai-tools/.reconcile.lock sleep infinity`) stopped every
+# later start of the group before its shell. Needs util-linux flock, which the
+# container has; skipped where the host has none.
+if flock -E 75 -n /dev/null true 2>/dev/null; then
+  h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+  mkdir -p "$h/.ai-tools"
+  flock "$h/.ai-tools/.reconcile.lock" sleep 30 & holder=$!
+  for _ in $(seq 1 50); do flock -n "$h/.ai-tools/.reconcile.lock" true 2>/dev/null || break; sleep 0.1; done
+  start=$SECONDS
+  PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="gemini" AI_CONTAINERS_RECONCILE_LOCK_WAIT=1 \
+    timeout 20 bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+  rc=$?; took=$(( SECONDS - start ))
+  kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+  if [[ "$rc" -eq 0 && "$took" -lt 10 ]] && grep -q "NOTE: the group's lock .* is still held after 1s; starting without installing tools" "$h/out.log" \
+     && ! grep -q '^npm ' "$h/calls.log" 2>/dev/null; then
+    pass "a lock held by another is waited for within the bound, then the start goes on without installing (RT-17)"
+  else
+    fail "a held lock: rc=$rc after ${took}s, out: $(tr '\n' ' ' < "$h/out.log" | cut -c1-300)"
+  fi
+  rm -rf "$bin" "$h"
+
+  # An installer that leaves a process running must not leave it holding the
+  # lock: the installers ran with fd 9 open, and a process they left inherited it.
+  h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+  mv "$bin/npm" "$bin/npm.real"
+  printf '#!/usr/bin/env bash\nsleep 30 </dev/null >/dev/null 2>&1 &\necho $! >> "%s/lingering"\nexec "%s/npm.real" "$@"\n' "$h" "$bin" > "$bin/npm"
+  chmod +x "$bin/npm"
+  PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="gemini" \
+    timeout 60 bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+  if [[ -s "$h/lingering" ]] && flock -n "$h/.ai-tools/.reconcile.lock" true; then
+    pass "a process an installer leaves running does not hold the group's lock (RT-17)"
+  else
+    fail "the lock is still held after the reconcile exited (lingering: $(tr '\n' ' ' < "$h/lingering" 2>/dev/null))"
+  fi
+  while read -r p; do kill "$p" 2>/dev/null; done < "$h/lingering" 2>/dev/null
+  rm -rf "$bin" "$h"
+
+  # A FIFO at the lock path would block the open itself: not used, and the
+  # start goes on.
+  h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+  mkdir -p "$h/.ai-tools"; mkfifo "$h/.ai-tools/.reconcile.lock"
+  PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="gemini" timeout 20 bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+  rc=$?
+  [[ "$rc" -eq 0 ]] && grep -q 'reconcile.lock is not a regular file; starting without installing tools' "$h/out.log" \
+    && pass "a FIFO at the lock path does not hold up the start (RT-17)" \
+    || fail "a FIFO at the lock path: rc=$rc, out: $(tr '\n' ' ' < "$h/out.log" | cut -c1-300)"
+  rm -rf "$bin" "$h"
+
+  # A lock file that cannot be opened (made unwritable): the start goes on
+  # without installing, and the reconcile still exits 0. Root opens any file.
+  if [[ "$(id -u)" != 0 ]]; then
+    h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
+    mkdir -p "$h/.ai-tools"; : > "$h/.ai-tools/.reconcile.lock"; chmod 000 "$h/.ai-tools/.reconcile.lock"
+    PATH="$bin:$PATH" HOME="$h" AI_RUNTIME_TOOLS="gemini" timeout 20 bash "$REPO_DIR/agent-tools-reconcile.sh" >"$h/out.log" 2>&1
+    rc=$?
+    [[ "$rc" -eq 0 ]] && grep -q 'NOTE: cannot open .*reconcile.lock; starting without installing tools' "$h/out.log" \
+      && ! grep -q '^npm ' "$h/calls.log" 2>/dev/null \
+      && pass "a lock file that cannot be opened starts without installing, exit 0 (RT-17)" \
+      || fail "an unopenable lock file: rc=$rc, out: $(tr '\n' ' ' < "$h/out.log" | cut -c1-300)"
+    chmod 600 "$h/.ai-tools/.reconcile.lock"; rm -rf "$bin" "$h"
+  fi
+else
+  printf 'SKIP: RT-17 lock cases need util-linux flock\n'
+fi
 grep -qE '^set +-[a-z]*u|nounset' "$REPO_DIR/agent-tools-reconcile.sh" && fail "must NOT enable nounset" || pass "does not enable nounset"
 
 # ── Bug 1 static guards: no baked npm global prefix; reconcile targets ~/.ai-tools/npm ──

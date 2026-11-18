@@ -92,6 +92,9 @@ for a in "$@"; do
   prev="$a"
 done
 case "$sep" in /t) sep=$'\t' ;; /s) sep=' ' ;; esac
+# What the real one prints on stderr as it attaches, which the daemon keeps in
+# tshark-<loop>-errors.log (the integration harness waits on that line).
+printf 'Capturing on %s\n' "$iface" >&2
 replay() {
   local line
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -127,6 +130,33 @@ cat > "$FAKE_BIN/ipset" <<'FAKEIPSET'
 exit 0
 FAKEIPSET
 chmod +x "$FAKE_BIN/ipset"
+# getent answers `ahosts <name>` from $FAKE_SCN/hosts ("<name> <address>..." per
+# line), in glibc's shape: one "<address> STREAM <name>" line per address, exit 2
+# for a name it does not know. It stands for the container's own resolver, which
+# self-healing asks before it trusts a name the DNS map took off the wire (RT-14).
+cat > "$FAKE_BIN/getent" <<'FAKEGETENT'
+#!/usr/bin/env bash
+[[ "${1:-}" == ahosts && -n "${FAKE_SCN:-}" && -f "$FAKE_SCN/hosts" ]] || exit 2
+rc=2
+while read -r n rest; do
+  [[ "$n" == "${2:-}" ]] || continue
+  for ip in $rest; do printf '%-15s STREAM %s\n' "$ip" "$n"; rc=0; done
+done < "$FAKE_SCN/hosts"
+exit "$rc"
+FAKEGETENT
+chmod +x "$FAKE_BIN/getent"
+# rm, only where a scenario sets FAKE_RM_RELINK=<target>: removes as asked, then
+# puts a link to <target> where it removed, as a second container writing the same
+# directory could between the daemon's removal and its open.
+cat > "$FAKE_BIN/rm" <<'FAKERM'
+#!/usr/bin/env bash
+command -p rm "$@"; rc=$?
+if [[ -n "${FAKE_RM_RELINK:-}" ]]; then
+  for a in "$@"; do [[ "$a" == -* ]] || ln -s "$FAKE_RM_RELINK" "$a" 2>/dev/null; done
+fi
+exit "$rc"
+FAKERM
+chmod +x "$FAKE_BIN/rm"
 # The script runs in the container, which has util-linux flock; macOS has none,
 # and without it no DNS-map write ever happened. Only where the host lacks one,
 # a stand-in that takes no lock: `flock <file> <cmd…>` runs the command.
@@ -174,6 +204,16 @@ launch() {   # $1 = scenario dir, $2 = domains file, $3 = proxy file, [NAME=valu
   LAUNCH_PGID=$!
   set +m
   LAUNCHED+=("$LAUNCH_PGID")
+  # The script itself returns at once, its loops in the background. One that
+  # does not (it blocked opening an output, as the daemon did on a FIFO there
+  # before RT-13) is stopped at the bound rather than hanging the suite.
+  local n=0
+  while kill -0 "$LAUNCH_PGID" 2>/dev/null && (( n < WAIT )); do sleep 0.1; n=$((n + 1)); done
+  if kill -0 "$LAUNCH_PGID" 2>/dev/null; then
+    fail "${scn##*/}: the daemon had not returned after $((n / 10))s (blocked at start?)"
+    kill -KILL -- "-$LAUNCH_PGID" 2>/dev/null
+    WAIT=10
+  fi
   wait "$LAUNCH_PGID"
   LAUNCH_RC=$?
 }
@@ -211,7 +251,9 @@ await_end() {   # $1 = scenario dir
 }
 
 # Data lines of an output file, without the header the daemon writes first.
-data_lines() { grep -v -e '^#' -e '^$' "$1" 2>/dev/null; }
+# A FIFO there (one the daemon failed to replace) is named, not read: the read
+# would wait for a writer forever.
+data_lines() { if [[ -p "$1" ]]; then printf '(a FIFO)\n'; else grep -v -e '^#' -e '^$' "$1" 2>/dev/null; fi; }
 # blocked.log rows without the timestamp, single-spaced: "PROTO:PORT IP DOMAIN [...]".
 log_rows() { awk 'NR > 2 { $1 = ""; sub(/^ /, ""); print }' "$1" 2>/dev/null; }
 
@@ -317,6 +359,12 @@ DNS
 198.51.100.9;;8080;5353
 198.51.100.10;;22;
 NFLOG
+  # What the container's resolver answers: the same addresses the wire gave.
+  cat > "$1/hosts" <<'HOSTS'
+exact.example.test 192.0.2.10
+deep.sub.wild.example.test 192.0.2.11 2001:db8::11
+v6only.wild.example.test 2001:db8::20
+HOSTS
 }
 map_lines=(
   "192.0.2.10 exact.example.test"
@@ -361,6 +409,136 @@ expect_eq "blocked-ips.txt lists each nameless address once" \
   "198.51.100.7
 198.51.100.9
 198.51.100.10" "$(data_lines "$scn/cap/blocked-ips.txt")"
+head -n 1 "$scn/cap/blocked-ips.txt" | grep -qxF '# Blocked IPs with no known domain — copy-paste into allowlist-cidrs.txt' \
+  && head -n 1 "$scn/cap/blocked-domains.txt" | grep -qxF '# Blocked domains — copy-paste these lines into allowlist-domains.txt' \
+  && pass "a new list starts with its header" \
+  || fail "a new list starts with its header — got: $(head -n 1 "$scn/cap/blocked-ips.txt") / $(head -n 1 "$scn/cap/blocked-domains.txt")"
+grep -qxF 'Capturing on any' "$scn/cap/tshark-dns-errors.log" 2>/dev/null \
+  && grep -qxF 'Capturing on nflog:100' "$scn/cap/tshark-nflog-errors.log" 2>/dev/null \
+  && pass "each tshark's stderr is kept in its own log in the capture directory" \
+  || fail "tshark's stderr logs — dns: [$(cat "$scn/cap/tshark-dns-errors.log" 2>/dev/null)] nflog: [$(cat "$scn/cap/tshark-nflog-errors.log" 2>/dev/null)]"
+
+# ── RT-14: a DNS answer off the wire is not trusted on its own ──────────────────
+# Port 53 is open to every address, so anyone can put a response on the wire
+# that names an allowlisted host: here exact.example.test at 6.6.6.6, which the
+# container's resolver does not give for it. A name starting with `-` is never
+# taken for an option (grep read the feed on its stdin for `-v`), nor asked of
+# the resolver, even where it would answer.
+scn="$TMP/forged"
+mkdir -p "$scn"
+# -x.example.test matches the wildcard and the resolver here answers for it,
+# but a name starting with `-` is no host name: getent would take it for an
+# option, so it is never asked.
+printf 'exact.example.test;6.6.6.6;\n-v;6.6.6.7;\n-x.example.test;6.6.6.8;\n' > "$scn/dns"
+printf '6.6.6.6;;443;\n6.6.6.7;;443;\n6.6.6.8;;443;\n' > "$scn/nflog"
+printf 'exact.example.test 192.0.2.10\n-v 6.6.6.7\n-x.example.test 6.6.6.8\n' > "$scn/hosts"
+printf '*.example.test\n' > "$scn/proxy"
+launch "$scn" "$heal_domains" "$scn/proxy"
+await_map "$scn" "6.6.6.6 exact.example.test" "6.6.6.7 -v" "6.6.6.8 -x.example.test"
+await_end "$scn"
+if [[ -s "$scn/ipset.log" ]]; then
+  fail "a forged DNS answer for an allowlisted name heals its address (RT-14) — ipset: $(tr '\n' '|' < "$scn/ipset.log")"
+else
+  pass "a forged DNS answer for an allowlisted name heals nothing: the resolver does not give that address (RT-14)"
+fi
+expect_eq "  … and blocked.log says why the address was not auto-allowed" \
+  "TCP:443 6.6.6.6 exact.example.test (not auto-allowed: the resolver does not give this address for it)
+TCP:443 6.6.6.7 -v
+TCP:443 6.6.6.8 -x.example.test (not auto-allowed: the resolver does not give this address for it)" "$(log_rows "$scn/cap/blocked.log")"
+
+# ── RT-13: nothing the agent plants in the capture directory is written through ─
+# Every name the daemon writes is a link to a sentinel (the firewall's allowlist,
+# in the container); the tshark error logs too, which were truncated at start.
+# Each sentinel must stay as it was, and each name must end up a regular file
+# holding what the daemon wrote.
+sentinel_check() {   # $1 = label, then sentinel files
+  local label="$1" f bad=""; shift
+  for f in "$@"; do [[ "$(cat "$f")" == "SENTINEL $(basename "$f")" ]] || bad+=" ${f##*/}"; done
+  if [[ -z "$bad" ]]; then pass "$label"; else fail "$label — changed:$bad"; fi
+}
+scn="$TMP/links"
+write_feeds "$scn"
+mkdir -p "$scn/cap" "$scn/sent"
+for f in blocked.log blocked-domains.txt blocked-ips.txt tshark-dns-errors.log tshark-nflog-errors.log; do
+  printf 'SENTINEL %s' "$f" > "$scn/sent/$f"; ln -s "$scn/sent/$f" "$scn/cap/$f"
+done
+launch "$scn" "$heal_domains" "$heal_proxy"
+await_map "$scn" "${map_lines[@]}"
+await_end "$scn"
+sentinel_check "links planted at every output are never written through, nor truncated (RT-13)" "$scn"/sent/*
+links_left=""
+for f in blocked.log blocked-domains.txt blocked-ips.txt tshark-dns-errors.log tshark-nflog-errors.log; do
+  [[ -L "$scn/cap/$f" || ! -f "$scn/cap/$f" ]] && links_left+=" $f"
+done
+[[ -z "$links_left" ]] && pass "  … each link is replaced by a regular file" \
+  || fail "  … each link is replaced by a regular file — not:$links_left"
+expect_eq "  … which holds what the daemon recorded" \
+  "198.51.100.7
+198.51.100.9
+198.51.100.10" "$(data_lines "$scn/cap/blocked-ips.txt")"
+
+# A second name of a file elsewhere (a hard link) is a regular file at that name,
+# but writing it writes the other: refused, with a WARNING, and nothing written.
+# A FIFO is removed, as a link is, rather than opened.
+scn="$TMP/hardlink"
+write_feeds "$scn"
+mkdir -p "$scn/cap" "$scn/sent"
+printf 'SENTINEL blocked-ips.txt' > "$scn/sent/blocked-ips.txt"
+ln "$scn/sent/blocked-ips.txt" "$scn/cap/blocked-ips.txt"
+mkfifo "$scn/cap/blocked-domains.txt"
+launch "$scn" "$heal_domains" "$heal_proxy"
+await_map "$scn" "${map_lines[@]}"
+await_end "$scn"
+sentinel_check "a hard link at an output is not written (RT-13)" "$scn/sent/blocked-ips.txt"
+grep -q 'WARNING: .*blocked-ips.txt is not a regular file of its own' "$scn/stdout" \
+  && pass "  … and the daemon says it is not writing it" \
+  || fail "  … and the daemon says it is not writing it — got: $(cat "$scn/stdout")"
+expect_eq "  … while a FIFO at another output is replaced by the file it should be" \
+  "blocked.example.test
+notwild.example.test" "$(data_lines "$scn/cap/blocked-domains.txt")"
+
+# A link swapped in after the daemon removed what was there and before it opens
+# the name: the descriptor is then not the file at that name, and it is refused.
+scn="$TMP/relink"
+write_feeds "$scn"
+mkdir -p "$scn/cap" "$scn/sent"
+printf 'SENTINEL allowlist' > "$scn/sent/allowlist"
+ln -s "$scn/sent/allowlist" "$scn/cap/blocked-ips.txt"
+launch "$scn" "$heal_domains" "$heal_proxy" FAKE_RM_RELINK="$scn/sent/allowlist"
+await_map "$scn" "${map_lines[@]}"
+await_end "$scn"
+sentinel_check "a link swapped in between the removal and the open is refused, not written through (RT-13)" "$scn/sent/allowlist"
+
+# Lists from an earlier session are kept and still deduplicate: the daemon reads
+# them through its own descriptor and appends after them.
+scn="$TMP/stale"
+write_feeds "$scn"
+mkdir -p "$scn/cap"
+# old.example.test is not seen again this session: it must survive as it was.
+printf '# old header\n\nold.example.test\nblocked.example.test\n' > "$scn/cap/blocked-domains.txt"
+launch "$scn" "$heal_domains" "$heal_proxy"
+await_map "$scn" "${map_lines[@]}"
+await_end "$scn"
+expect_eq "a list kept from an earlier session is appended to, each name still once" \
+  "old.example.test
+blocked.example.test
+notwild.example.test" "$(data_lines "$scn/cap/blocked-domains.txt")"
+head -n 1 "$scn/cap/blocked-domains.txt" | grep -qxF '# old header' \
+  && pass "  … its own header kept, no second one written" \
+  || fail "  … its own header kept — got: $(head -n 3 "$scn/cap/blocked-domains.txt")"
+
+# A kept list whose last line has no newline (edited by hand): the next name
+# goes on a line of its own, and that last line still deduplicates.
+scn="$TMP/stale-nonl"
+write_feeds "$scn"
+mkdir -p "$scn/cap"
+printf '# old header\n\nblocked.example.test' > "$scn/cap/blocked-domains.txt"
+launch "$scn" "$heal_domains" "$heal_proxy"
+await_map "$scn" "${map_lines[@]}"
+await_end "$scn"
+expect_eq "a kept list with no final newline is appended on a new line, its last name still once" \
+  "blocked.example.test
+notwild.example.test" "$(data_lines "$scn/cap/blocked-domains.txt")"
 
 # ── Self-healing OFF: the same traffic, logged only ─────────────────────────────
 scn="$TMP/heal-off"
