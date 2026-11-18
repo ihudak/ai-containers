@@ -60,12 +60,12 @@
 - **Suggested approach:** name every alias of a repository's own config once; a list of the git options that run a program would miss some. Not judged at each launch: after the first protection the agent cannot write the config.
 
 ### GAP-31: a legacy `.git/remotes` or `.git/branches` file, which stays writable, defines a remote the config does not
-- Status: DONE (2026-11-18, Fable 5.2 session; the user chose the first approach, a warning). `_git_legacy_warn()` names them at every launch for a git directory that holds one, and `_git_after_session()` each the session made. G334 in `tests/test-git-internals-ro-reports.sh`.
+- Status: DONE (2026-11-18, Fable 5.2 session; the user chose the first approach, a warning). `_git_legacy_warn()` and `_git_legacy_flush()` name, at every launch, the git directories that hold one, and `_git_after_session()` each new one the session made. A review of the fix measured one more case: a remote the config defines with no `url` does not win over the file. G334 in `tests/test-git-internals-ro-reports.sh`.
 - **Area:** the git-internals overlay (`launcher_ro_overlay()`), the check after a session (`_git_after_session()`)
 - **Source:** AGENTS.md: "What writes `config` fails with `Resource busy`: `git config`, `git remote add`". A remote can still be defined from inside a container, in a file.
 - **Current state:** git reads a remote's URL and refspecs from `.git/remotes/<name>` and `.git/branches/<name>` when the config defines no remote of that name. Neither directory is bound, and no launch looks at them. Measured, git 2.53:
   - with no `origin` in the config, a bare `git push` went to the URL in `.git/remotes/origin`, and `git fetch origin` made tracking refs from it; `git push up main` went to the URL in `.git/branches/up`;
-  - a remote the config defines wins over a file of the same name;
+  - a remote whose `url` the config sets wins over a file of the same name (one with only a fetch refspec there does not: measured in the review of the fix);
   - `git remote` lists none of them, and `git remote add origin` then fails with "remote origin already exists";
   - git prints "reading remote from "remotes/origin", which is nominated for removal" each time it reads one;
   - an `ext::` URL there runs nothing: the `ext` transport is refused unless `protocol.ext.allow` permits it, a key the first protection names.

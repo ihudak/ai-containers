@@ -1063,7 +1063,7 @@ launcher_ro_overlay() {
           _git_alias_once "$g" "$at" "$gident" "$x" "$arep" "" ${acf[@]+"${acf[@]}"}
           # A remote in a file (_git_legacy_warn), where git reads them: not in a
           # linked worktree's directory.
-          if [[ -n "$gown" ]]; then _git_legacy_warn "$g" "$at" held; fi
+          if [[ -n "$gown" ]]; then _git_legacy_warn "$g"; fi
           # gitdir too, which names a linked worktree's checkout (final review of
           # the GIT-46 fix).
           for f in config config.worktree commondir gitdir; do
@@ -1231,7 +1231,7 @@ launcher_ro_overlay() {
             _git_rep_now[$g]="$arep"
           fi
           # A remote in a file, which no bind holds (_git_legacy_warn; GAP-31).
-          _git_legacy_warn "$g" "$at"
+          _git_legacy_warn "$g"
         elif [[ -f "$g/commondir" ]]; then
           # Physically, as git resolves it (strbuf_add_real_path), and without the
           # trailing CR git strips: `cd` reads `s/..` lexically, which named the
@@ -1457,6 +1457,7 @@ launcher_ro_overlay() {
   done
   _git_seq_warn "" ${seqrec[@]+"${seqrec[@]}"}
   _git_alias_flush
+  _git_legacy_flush
   # The record is what the next launch's scan finds a protected git directory by
   # when a session has cut it from the index that led to it (GIT-105); one this
   # launch could not add to is said, once.
@@ -6412,15 +6413,18 @@ _git_alias_flush() {
 # _git_legacy_list <git dir> <out-var> [new]: the remotes git still reads from
 # files in a git directory, `remotes/<name>` and `branches/<name>`, as a list
 # of at most five and then a count; empty where there is none. git takes a
-# remote from such a file when the config defines none of that name (with no
-# origin in the config a bare `git push` went to the URL in remotes/origin:
-# measured, git 2.53; one in the config wins), and neither directory is bound:
-# nothing git itself does today writes them, and a bind mount for each would
-# add two to every repository's five (feature-gaps review GAP-31, the user's
-# choice: named, not bound). With <new>, only those the launch did not see
-# (_git_legacy_seen), for the check after the session. At most 100 are read at
+# remote from such a file when the config sets no url for a remote of that
+# name (with no origin there a bare `git push` went to the URL in
+# remotes/origin, and so it did with an origin that had only a fetch refspec:
+# measured, git 2.53), and neither directory is bound: nothing git itself does
+# today writes them, and a bind mount for each would add two to every
+# repository's five (feature-gaps review GAP-31, the user's choice: named, not
+# bound). With <new>, only those the launch did not see (_git_legacy_seen),
+# for the check after the session: one it saw and the session wrote again is
+# not told apart, which the launch's WARNING says. At most 100 are read at
 # launch, and 200 after it: the agent writes the directory, and the launch
-# says where it stopped. A directory that cannot be listed is named as one.
+# says where it stopped. A directory that cannot be listed is named as one,
+# under a key no file's name can be.
 _git_legacy_list() {
   local -n _gl_o=$2
   local g="$1" new="${3:-}" d e n=0 cap=100 more=""
@@ -6435,8 +6439,8 @@ _git_legacy_list() {
     [[ -d "$g/$d" ]] || continue
     if [[ ! -r "$g/$d" || ! -x "$g/$d" ]]; then
       e="$d/, which cannot be listed"
-      if [[ -z "$new" ]]; then _git_legacy_seen[$g/$e]=1; names+=("$e")
-      elif [[ -z "${_git_legacy_seen[$g/$e]:-}" ]]; then names+=("$e"); fi
+      if [[ -z "$new" ]]; then _git_legacy_seen[$g/$d//]=1; names+=("$e")
+      elif [[ -z "${_git_legacy_seen[$g/$d//]:-}" ]]; then names+=("$e"); fi
       continue
     fi
     # What is there but a directory, a link followed: git opens the name.
@@ -6451,29 +6455,41 @@ _git_legacy_list() {
   if [[ -n "$more" && -z "$new" ]]; then _git_legacy_full[$g]=1; fi
   (( ${#names[@]} )) || return 1
   for e in "${names[@]:0:5}"; do _gl_o+="${_gl_o:+, }$e"; done
-  if (( ${#names[@]} > 5 )); then _gl_o+=", and ${more:+at least }$(( ${#names[@]} - 5 )) more"
-  elif [[ -n "$more" ]]; then _gl_o+=", and more"; fi
+  if (( ${#names[@]} > 5 )); then _gl_o+=", and ${more:+at least }$(( ${#names[@]} - 5 )) more"; fi
   return 0
 }
-# _git_legacy_warn <git dir> <where the agent sees it> [held]: say, at every
-# launch, that a git directory holds such files: they stay writable, so no
-# record of having said it would hold. Once a launch, however many mounts
-# expose the directory. With <held> an overlay holds them read-only, and the
-# check after the session has nothing to look for there.
+# _git_legacy_warn <git dir>: note, at every launch, a git directory that holds
+# such files, for the one WARNING _git_legacy_flush prints: they stay writable,
+# so no record of having said it would hold. Once a launch, however many
+# mounts expose the directory. Each is kept for the check after the session,
+# one under a read-only overlay too: the overlay holds a link there, not the
+# directory the link leads to.
 _git_legacy_warn() {
-  local g="$1" at="$2" held="${3:-}" l=""
+  local g="$1" l=""
   [[ -z "${_git_legacy_done[$g]:-}" ]] || return 0
   _git_legacy_done[$g]=1
-  if [[ -z "$held" ]]; then _git_legacy_dirs+=("$g"); fi
+  _git_legacy_dirs+=("$g")
   # No fork where neither directory is there, as in any repository git made
   # in the last years.
   [[ -d "$g/remotes" || -d "$g/branches" ]] || return 0
   _git_legacy_list "$g" l || return 0
-  printf 'WARNING: %s holds remotes git reads from files, not from its config: %s.\n' "$(_term "$at")" "$(_term "$l")" >&2
-  printf '         Where the config has no remote of that name, your host'\''s git fetches from and\n' >&2
-  printf '         pushes to the URL such a file holds, and a session can write one. If you did not\n' >&2
+  _git_legacy_found+=("$(_term "$g") ($(_term "$l"))")
+}
+# _git_legacy_flush: the WARNING for them, one for the launch, twenty git
+# directories and then a count: one of five lines for each was a thousand
+# lines where the agent had planted two hundred (review of the GAP-31 fix).
+_git_legacy_flush() {
+  local r
+  (( ${#_git_legacy_found[@]} )) || return 0
+  printf 'WARNING: these git directories hold remotes git reads from files, not from their config:\n' >&2
+  for r in "${_git_legacy_found[@]:0:20}"; do printf '           %s\n' "$r" >&2; done
+  if (( ${#_git_legacy_found[@]} > 20 )); then printf '           … and %d more\n' "$(( ${#_git_legacy_found[@]} - 20 ))" >&2; fi
+  printf '         Where the config sets no url for a remote of that name, your host'\''s git fetches from\n' >&2
+  printf '         and pushes to the URL such a file holds. A session can write one, and write one that\n' >&2
+  printf '         is there again: when the container exits, only a new name is named. If you did not\n' >&2
   printf '         make them, remove them on the host; to keep one, move it into the config:\n' >&2
-  printf '           git --git-dir=%s remote rename <name> <name>\n' "$(_q "$g")" >&2
+  printf '           git --git-dir=<git directory> remote rename <name> <name>\n' >&2
+  _git_legacy_found=()
 }
 
 # _git_report_once <git dir> <where the agent sees it> <what happened> <al> [hooks-named]:
@@ -7131,18 +7147,12 @@ _git_after_session() {
     printf '         Check where each leads before you run git there.\n' >&2
   fi
   if (( ${#leg[@]} )); then
-    printf 'WARNING: the session made files git reads a remote from, in git directories of a writable
-' >&2
-    printf '         mount. Where the config has no remote of that name, your host'\''s git fetches from
-' >&2
-    printf '         and pushes to the URL such a file holds:
-' >&2
-    for rec in "${leg[@]:0:20}"; do printf '           %s
-' "$rec" >&2; done
-    if (( ${#leg[@]} > 20 )); then printf '           … and %d more
-' "$(( ${#leg[@]} - 20 ))" >&2; fi
-    printf '         Remove them on the host before you run git there, unless you made them.
-' >&2
+    printf 'WARNING: the session made files git reads a remote from, in git directories of a writable\n' >&2
+    printf '         mount. Where the config sets no url for a remote of that name, your host'\''s git\n' >&2
+    printf '         fetches from and pushes to the URL such a file holds:\n' >&2
+    for rec in "${leg[@]:0:20}"; do printf '           %s\n' "$rec" >&2; done
+    if (( ${#leg[@]} > 20 )); then printf '           … and %d more\n' "$(( ${#leg[@]} - 20 ))" >&2; fi
+    printf '         Remove them on the host before you run git there, unless you made them.\n' >&2
   fi
   _git_seq_warn " now that the container has exited" ${seq[@]+"${seq[@]}"}
   if [[ -n "$_gas_cut" ]]; then
@@ -7779,7 +7789,7 @@ _git_alias_open_n=0
 # the git directories where it could not read them all, those it has warned
 # about, and those the check after the session looks at again.
 declare -A _git_legacy_seen=() _git_legacy_full=() _git_legacy_done=()
-_git_legacy_dirs=()
+_git_legacy_dirs=(); _git_legacy_found=()
 # The git directories _git_alias_once has dealt with at this launch; those
 # whose aliases are named, with the identity to record; those some mount
 # exposes without holding their config read-only; and those past the twenty
