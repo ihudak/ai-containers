@@ -9,13 +9,14 @@
 
 ## Summary
 
-16 gaps, by the priority each reviewer gave (GAP-30 was found while GIT-106 was fixed):
+17 gaps, by the priority each reviewer gave (GAP-30 and GAP-31 were found while GIT-106 was fixed):
 
 | ID | Area | Priority | Gap |
 |---|---|---|---|
 | GAP-15 | GIT | MEDIUM | a rebase the session leaves stopped runs `exec` lines on the host at `git rebase --continue`, and nothing names it |
 | GAP-16 | GIT | LOW | git-lfs keys that run a program are not among the keys named or judged |
 | GAP-30 | GIT | LOW | an alias that is not a shell command is named by no launch, though its git command can run a program |
+| GAP-31 | GIT | LOW | a legacy `.git/remotes` or `.git/branches` file, which stays writable, defines a remote the config does not |
 | GAP-17 | LNCH | MEDIUM | nothing tests what the launcher reads from inside a group directory the agent writes |
 | GAP-18 | LNCH | LOW | the case/Windows refusal is not tested against the host paths LNCH-27 added to the verify list |
 | GAP-19 | PRJ | MEDIUM | no test interrupts `mv` after the checked copy has landed |
@@ -57,6 +58,22 @@
 - **Current state:** only an alias starting with `!` was named. `alias.st = rebase --exec ./x` has none, and `git st` on the host runs `./x` from the checkout, a file the agent writes (`difftool --extcmd=`, `bisect run` likewise). Measured, git 2.53: a repository's alias is used over one of the same name in the global config, so a shorthand the user already types is enough; an alias cannot stand in for a built-in command (`alias.status` ran nothing).
 - **Value / priority:** LOW. The alias must be in a config the agent could write before its first protection, or in a repository it made.
 - **Suggested approach:** name every alias of a repository's own config once; a list of the git options that run a program would miss some. Not judged at each launch: after the first protection the agent cannot write the config.
+
+### GAP-31: a legacy `.git/remotes` or `.git/branches` file, which stays writable, defines a remote the config does not
+- Status: OPEN (logged 2026-11-18, Fable 5.2 session). Waits for the user's choice among the approaches below.
+- **Area:** the git-internals overlay (`launcher_ro_overlay()`), the check after a session (`_git_after_session()`)
+- **Source:** AGENTS.md: "What writes `config` fails with `Resource busy`: `git config`, `git remote add`". A remote can still be defined from inside a container, in a file.
+- **Current state:** git reads a remote's URL and refspecs from `.git/remotes/<name>` and `.git/branches/<name>` when the config defines no remote of that name. Neither directory is bound, and no launch looks at them. Measured, git 2.53:
+  - with no `origin` in the config, a bare `git push` went to the URL in `.git/remotes/origin`, and `git fetch origin` made tracking refs from it; `git push up main` went to the URL in `.git/branches/up`;
+  - a remote the config defines wins over a file of the same name;
+  - `git remote` lists none of them, and `git remote add origin` then fails with "remote origin already exists";
+  - git prints "reading remote from "remotes/origin", which is nominated for removal" each time it reads one;
+  - an `ext::` URL there runs nothing: the `ext` transport is refused unless `protocol.ext.allow` permits it, a key the first protection names.
+- **Value / priority:** LOW. It needs a repository whose config has no remote of the name the user then pushes to or pulls from (a repository never given an `origin`, or a name typed on the agent's word). What it gains is a push of the repository's commits, over the host's network and with its credentials, to a place the agent chose, which a restricted container cannot reach itself. A pull brings nothing the agent could not write into the work tree.
+- **Suggested approach:** one of
+  1. warn: a `WARNING:` at launch for each protected git directory that holds a file in either directory, and when the container exits for each that appeared in the session, with the `git remote rename <name> <name>` that moves one into the config. No bind mount;
+  2. bind both directories read-only, made empty where there are none, as `hooks/` is: two more bind mounts for every repository (five today), each about 50 ms of every container start on Docker Desktop;
+  3. state it as a limit. Git 3.0 drops both directories.
 
 
 ---

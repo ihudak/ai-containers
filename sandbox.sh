@@ -6546,8 +6546,8 @@ _git_runs() {
 # the re-made repository went unreported (G93 at the floor, on Colima). Where
 # stat is uutils' it is in whole seconds all the same: 0.10.0 prints no
 # fraction for %.9W (measured; GNU's is there as gnustat), so one made again
-# within the second it was first made in is the same one there (bugs review
-# PLAT-12, open).
+# within the second it was first made in is the same one there: a stated
+# limit (bugs review PLAT-12, the user's choice).
 _git_ident() {
   local i=""
   if (( _launcher_stat_gnu )); then i="$(stat -c '%d %i %.9W' -- "$1" 2>/dev/null)" || i=""

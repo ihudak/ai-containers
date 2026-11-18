@@ -911,7 +911,7 @@ No TODO, FIXME, "follow-up" or "deferred" marker added to code since bec1c57 pro
 - **Expected:** the suite passes wherever `TMPDIR` is.
 
 ### PLAT-12: with uutils' `stat`, a git directory's recorded identity has its birth time in whole seconds
-- **Status: OPEN** (logged 2026-11-18, Fable 5.2 session). The comment at `_git_ident()` now says so; nothing else is changed. Whether to read the birth time with `gnustat` there is the user's decision: it changes what the record holds.
+- **Status: ACCEPTED AS A LIMIT** (2026-11-18, the user's choice). The comment at `_git_ident()` says so; nothing else is changed. Reading the birth time with `gnustat` there was the alternative, not taken: it changes what the record holds.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED (measured on Ubuntu 26.04 under WSL2, uutils coreutils 0.10.0)
 - **Location:** `sandbox.sh`: `_git_ident()`
