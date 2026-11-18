@@ -1017,7 +1017,7 @@ L334="$TMP/lg334"; O334="$TMP/ol334"; C334="$TMP/cap334"; P334="$L334/p"$'\e'"q"
 w334=""; x334=""
 blk334() {  # what the launch said (w334) and what the exit said (x334)
   w334="$(sed -n '/^WARNING: these git directories hold remotes git reads from files/,/remote rename <name> <name>/p' "$ERR")"
-  x334="$(sed -n '/^WARNING: the session made files git reads a remote from/,/Remove them on the host before you run git there/p' "$ERR")"
+  x334="$(sed -n '/^WARNING: the session made files git reads a remote from, in these git directories/,/Remove them on the host before you run git there/p' "$ERR")"
 }
 lw334() { grep -F "           $1 (" <<<"$w334"; }   # <git directory>: its line in the launch's WARNING
 lx334() { grep -F "           $1 (" <<<"$x334"; }   # … in the exit's
@@ -1027,7 +1027,8 @@ mkdir -p "$O334/l" "$O334/ovr-real" && : > "$O334/l/sandbox.sh" && : > "$O334/l/
   && ln -s ../../../ovr-real "$O334/l/k/.git/remotes" \
   && "${G[@]}" -C "$O334/l/m2" commit -q --allow-empty -m i && "${G[@]}" -C "$O334/l/m2" worktree add -q "$O334/l/wo334" \
   && mkdir -p "$O334/l/m2/.git/worktrees/wo334/remotes" && : > "$O334/l/m2/.git/worktrees/wo334/remotes/inovwt" \
-  && for r in a b c d e f g m; do "${G[@]}" init -q "$L334/$r" || exit 1; done && "${G[@]}" init -q "$P334" \
+  && for r in a b c d e f g m u; do "${G[@]}" init -q "$L334/$r" || exit 1; done && "${G[@]}" init -q "$P334" \
+  && mkdir -p "$L334/u/.git/remotes" && : > "$L334/u/.git/remotes/, which cannot be listed" \
   && mkdir -p "$L334/a/.git/remotes" "$L334/a/.git/branches" "$L334/b/.git/branches" "$L334/c/.git/remotes" \
        "$L334/d/.git/remotes" "$L334/e/.git/remotes/sub" "$L334/f/.git/branches" "$L334/g/.git/remotes" "$P334/.git/remotes" \
   && printf 'URL: /nowhere\n' > "$L334/a/.git/remotes/origin" && printf '/nowhere#main\n' > "$L334/a/.git/branches/up" \
@@ -1051,7 +1052,8 @@ c334="$(lw334 "$L334/c/.git")"; f334="$(lw334 "$L334/f/.git")"
    && "$(grep -o 'branches/b[0-9]*' <<<"$f334" | grep -c .)" == 5 && "$f334" == *', and at least 95 more)' ]] \
   && pass "G334 five are named and the rest counted; past a hundred the count is at least that" \
   || fail "G334 the count (seven: $c334; a hundred and ten: $(cut -c1-200 <<<"$f334"))"
-[[ "$(lw334 "$L334/d/.git")" == *'(remotes/x?[31m)' && -n "$(lw334 "$L334/p?q/.git")" ]] && ! grep -q $'\e' "$ERR" \
+# The path is printed as a shell takes it, for the command below the list.
+[[ "$(lw334 "$L334/d/.git")" == *'(remotes/x?[31m)' && "$(grep -F '(remotes/pp)' <<<"$w334")" == *"/lg334/p\\Eq/.git' (remotes/pp)" ]] && ! grep -q $'\e' "$ERR" \
   && pass "G334 a name, and a git directory's path, with a control character are printed without it" \
   || fail "G334 a control character (name: $(lw334 "$L334/d/.git" | tr -d '\033'); path: $(grep -F 'remotes/pp' <<<"$w334" | tr -d '\033'))"
 [[ "$(lw334 "$L334/g/.git")" == *'(remotes/lnk)' ]] \
@@ -1106,14 +1108,15 @@ if [[ "$(id -u)" == 0 ]]; then
   pass "G334 a directory that cannot be listed: skipped, as root a mode stops nothing"
 else
   # Unlistable at launch: named as one, and not again at exit. Made so by the
-  # session: named at exit.
+  # session: named at exit, in a directory that held a file whose name is how
+  # that reads, too.
   chmod 000 "$L334/c/.git/remotes"
-  FAKE_SESSION="chmod 000 '$L334/d/.git/remotes'" EXTRA_MOUNTS="$L334" launch "$TMP/app"; blk334
-  chmod 755 "$L334/c/.git/remotes" "$L334/d/.git/remotes"
+  FAKE_SESSION="chmod 000 '$L334/d/.git/remotes' '$L334/u/.git/remotes'" EXTRA_MOUNTS="$L334" launch "$TMP/app"; blk334
+  chmod 755 "$L334/c/.git/remotes" "$L334/d/.git/remotes" "$L334/u/.git/remotes"
   [[ "$(lw334 "$L334/c/.git")" == *'(remotes/, which cannot be listed)' && -z "$(lx334 "$L334/c/.git")" \
-     && "$(lx334 "$L334/d/.git")" == *'(remotes/, which cannot be listed)' ]] \
+     && "$(lx334 "$L334/d/.git")" == *'(remotes/, which cannot be listed)' && "$(lx334 "$L334/u/.git")" == *'(remotes/, which cannot be listed)' ]] \
     && pass "G334 a remotes directory that cannot be listed is named as one, at launch, and at exit where the session made it so" \
-    || fail "G334 an unlistable remotes directory (launch c: $(lw334 "$L334/c/.git"); exit c: $(lx334 "$L334/c/.git"); exit d: $(lx334 "$L334/d/.git"))"
+    || fail "G334 an unlistable remotes directory (launch c: $(lw334 "$L334/c/.git"); exit c: $(lx334 "$L334/c/.git"); exit d: $(lx334 "$L334/d/.git"); exit u: $(lx334 "$L334/u/.git"))"
 fi
 # Twenty of them are listed and the rest counted, at launch and at exit: the
 # agent decides how many there are.
@@ -1121,10 +1124,16 @@ mkdir -p "$C334" && for (( i = 1; i <= 22; i++ )); do
   "${G[@]}" init -q "$C334/z$i" && mkdir "$C334/z$i/.git/remotes" && : > "$C334/z$i/.git/remotes/o" || { printf 'SCAFFOLD-FAILED: G334 twenty-two\n'; exit 1; }
 done
 FAKE_SESSION="cd '$C334'; i=1; while [ \$i -le 22 ]; do : > z\$i/.git/remotes/s; i=\$((i + 1)); done" EXTRA_MOUNTS="$C334" launch "$TMP/app"; blk334
-[[ "$LAUNCH_RC" == 0 && "$(grep -c '/cap334/z[0-9]*/\.git (remotes/o)' <<<"$w334")" == 20 && "$w334" == *'… and 2 more'* \
+[[ "$LAUNCH_RC" == 0 && "$(grep -c '/cap334/z[0-9]*/\.git (remotes/o)' <<<"$w334")" == 20 && "$w334" == *'… and 2 more, which a launch lists once these are dealt with'* \
    && "$(grep -c '/cap334/z[0-9]*/\.git (remotes/s)' <<<"$x334")" == 20 && "$x334" == *'… and 2 more'* ]] \
   && pass "G334 of twenty-two git directories twenty are listed and two counted, at launch and at exit" \
   || fail "G334 the twenty (launch: $(grep -c 'cap334' <<<"$w334") lines; exit: $(grep -c 'cap334' <<<"$x334") lines)"
+# Where no git directory holds one, no launch says anything of them.
+rm -rf "$C334"; mkdir -p "$C334" && "${G[@]}" init -q "$C334/plain" || { printf 'SCAFFOLD-FAILED: G334 a plain repository\n'; exit 1; }
+EXTRA_MOUNTS="$C334" launch "$TMP/app"; blk334
+[[ "$LAUNCH_RC" == 0 && -z "$w334" && -z "$x334" ]] && ! grep -qF 'remotes git reads from files' "$ERR" \
+  && pass "G334 a launch that finds none says nothing of them" \
+  || fail "G334 a WARNING with nothing to name (rc=$LAUNCH_RC; $(grep -F 'remotes git reads' "$ERR" | head -1))"
 chmod -R u+rwX "$L334" "$O334" "$C334" 2>/dev/null; rm -rf "$L334" "$O334" "$C334"
 
 printf '\n%d failure(s)\n' "$fails"

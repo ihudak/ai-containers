@@ -6473,20 +6473,25 @@ _git_legacy_warn() {
   # in the last years.
   [[ -d "$g/remotes" || -d "$g/branches" ]] || return 0
   _git_legacy_list "$g" l || return 0
-  _git_legacy_found+=("$(_term "$g") ($(_term "$l"))")
+  # The path as a shell takes it, for the command the WARNING ends with.
+  _git_legacy_found+=("$(_q "$g") ($(_term "$l"))")
 }
 # _git_legacy_flush: the WARNING for them, one for the launch, twenty git
 # directories and then a count: one of five lines for each was a thousand
 # lines where the agent had planted two hundred (review of the GAP-31 fix).
+# Which twenty is the order of the pass, which the agent can fill with its
+# own, so the count says how the rest come to be listed.
 _git_legacy_flush() {
   local r
   (( ${#_git_legacy_found[@]} )) || return 0
   printf 'WARNING: these git directories hold remotes git reads from files, not from their config:\n' >&2
   for r in "${_git_legacy_found[@]:0:20}"; do printf '           %s\n' "$r" >&2; done
-  if (( ${#_git_legacy_found[@]} > 20 )); then printf '           … and %d more\n' "$(( ${#_git_legacy_found[@]} - 20 ))" >&2; fi
+  if (( ${#_git_legacy_found[@]} > 20 )); then
+    printf '           … and %d more, which a launch lists once these are dealt with\n' "$(( ${#_git_legacy_found[@]} - 20 ))" >&2
+  fi
   printf '         Where the config sets no url for a remote of that name, your host'\''s git fetches from\n' >&2
-  printf '         and pushes to the URL such a file holds. A session can write one, and write one that\n' >&2
-  printf '         is there again: when the container exits, only a new name is named. If you did not\n' >&2
+  printf '         and pushes to the URL such a file holds. A session can write one, and rewrite one\n' >&2
+  printf '         already there: when the container exits, only a new name is named. If you did not\n' >&2
   printf '         make them, remove them on the host; to keep one, move it into the config:\n' >&2
   printf '           git --git-dir=<git directory> remote rename <name> <name>\n' >&2
   _git_legacy_found=()
@@ -7147,9 +7152,9 @@ _git_after_session() {
     printf '         Check where each leads before you run git there.\n' >&2
   fi
   if (( ${#leg[@]} )); then
-    printf 'WARNING: the session made files git reads a remote from, in git directories of a writable\n' >&2
-    printf '         mount. Where the config sets no url for a remote of that name, your host'\''s git\n' >&2
-    printf '         fetches from and pushes to the URL such a file holds:\n' >&2
+    printf 'WARNING: the session made files git reads a remote from, in these git directories. Where\n' >&2
+    printf '         the config sets no url for a remote of that name, your host'\''s git fetches from\n' >&2
+    printf '         and pushes to the URL such a file holds:\n' >&2
     for rec in "${leg[@]:0:20}"; do printf '           %s\n' "$rec" >&2; done
     if (( ${#leg[@]} > 20 )); then printf '           … and %d more\n' "$(( ${#leg[@]} - 20 ))" >&2; fi
     printf '         Remove them on the host before you run git there, unless you made them.\n' >&2
@@ -7786,8 +7791,9 @@ declare -A _git_rep_now=()
 # How many configs this launch cannot hold read-only it has read for aliases.
 _git_alias_open_n=0
 # The remotes git reads from files (_git_legacy_list): each one a launch saw,
-# the git directories where it could not read them all, those it has warned
-# about, and those the check after the session looks at again.
+# the git directories where it could not read them all, those it has dealt
+# with, those the check after the session looks at again, and the lines of
+# the launch's WARNING (_git_legacy_flush).
 declare -A _git_legacy_seen=() _git_legacy_full=() _git_legacy_done=()
 _git_legacy_dirs=(); _git_legacy_found=()
 # The git directories _git_alias_once has dealt with at this launch; those
