@@ -765,7 +765,10 @@ EXTRA_MOUNTS="$D332" launch "$TMP/app"
 # agent can leave one so in the session that wrote it (review of the fix):
 # unparsable, or, where a mode stops you, unreadable.
 ob332='NOTE: /workspace/ov332/l/ob/.git lies under a read-only overlay'
-rm -rf "$D332"; mkdir -p "$D332" && for r in bad old mode two sub/after; do "${G[@]}" init -q "$D332/$r" || exit 1; done
+rm -rf "$D332"; mkdir -p "$D332" && for r in bad old mode two sub/after bb cwb; do "${G[@]}" init -q "$D332/$r" || exit 1; done
+# Neither file can be read; and only config.worktree cannot.
+printf '[core\n' >> "$D332/bb/.git/config"; printf '[alias]\n\tbw = log\n[core\n' > "$D332/bb/.git/config.worktree"
+"${G[@]}" -C "$D332/cwb" config alias.cw log; printf '[core\n' > "$D332/cwb/.git/config.worktree"
 "${G[@]}" -C "$D332/bad" config alias.st 'rebase --exec ./x'; cp "$D332/bad/.git/config" "$TMP/bad332.cfg"
 printf '[core\n' >> "$D332/bad/.git/config"
 printf '#!/bin/sh\n' > "$D332/bad/.git/hooks/pre-commit"; chmod 755 "$D332/bad/.git/hooks/pre-commit"
@@ -779,10 +782,23 @@ printf '#!/bin/sh\n' > "$O332/l/ob/.git/hooks/pre-commit"; chmod 755 "$O332/l/ob
 EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 && "$(fp332 bad)" == *"programs: (config, $ur332." ]] \
   && ! rec332 '' "$D332/bad/.git" && ! rec332 al: "$D332/bad/.git" \
-  && grep -qF 'or mend it, on the host, and read it before you run git there; the next launch' "$ERR" \
+  && grep -qF 'mend it, on the host, and read it before you run git there; the next launch names what it sets.' "$ERR" \
   && ! grep -qF "git config --file $D332/bad/.git/config --list" "$ERR" \
   && pass "G332 a config git cannot parse is named as not checked by the first protection, with what to do and no command that fails on it, and is not recorded as named" \
   || fail "G332 an unparsable config (rc=$LAUNCH_RC; got: $(fp332 bad); record: $(grep -cF "$D332/bad/.git" "$rec332") lines)"
+# Which file it was is said, and the command that shows the other is still
+# printed; with neither readable there is no command, and no line that
+# announces one.
+b332="$(grep -A3 -F 'NOTE: /workspace/al332/bb/.git is protected for the first time, and its config' "$ERR")"
+c332="$(grep -A5 -F 'NOTE: /workspace/al332/cwb/.git is protected for the first time, and its config' "$ERR")"
+t332="$(grep -A5 -F 'NOTE: /workspace/al332/two/.git is protected for the first time, and its config' "$ERR")"
+[[ "$b332" == *'git could not read config, config.worktree there, so nothing it sets is checked.'* && "$b332" != *'review them on the host'* \
+   && "$c332" == *'git could not read config.worktree there,'* && "$c332" == *"git config --file $D332/cwb/.git/config --list"* \
+   && "$c332" != *"cwb/.git/config.worktree --list"* && "$c332" == *"alias.cw $pa332"* \
+   && "$t332" == *'git could not read config there,'* && "$t332" == *"git config --file $D332/two/.git/config.worktree --list"* \
+   && "$t332" != *"two/.git/config --list"* ]] \
+  && pass "G332 … the file git could not read is named, and only the command for one it can read is printed" \
+  || fail "G332 which file is unread (both: $(tr '\n' ' ' <<<"$b332"); config.worktree: $(tr '\n' ' ' <<<"$c332"); config: $(tr '\n' ' ' <<<"$t332"))"
 # The directory is recorded all the same, for the scan (G333); and one read
 # after it in the same launch, a deeper one, is recorded as named.
 rec332 unread: "$D332/bad/.git" && rec332 hooks: "$D332/bad/.git" && rec332 '' "$D332/old/.git" && rec332 '' "$D332/mode/.git" \
@@ -810,14 +826,22 @@ EXTRA_MOUNTS="$D332 $O332" PATH="$nogit332" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && ! grep -qF 'NOTE: /workspace/al332/bad/.git' "$ERR" && ! grep -qF "$ob332" "$ERR" \
   && pass "G332 … and a launch where git does not run says nothing of it again" \
   || fail "G332 an unparsable config where git does not run (rc=$LAUNCH_RC; stderr: $(grep -F -e 'al332/bad/.git' -e 'l/ob/.git' "$ERR" | head -3 | tr '\n' ' '))"
+# An engine before this one takes the `hooks:` line for a launch where git
+# did not run, reads the config it cannot parse as setting nothing, and
+# records the directory as named: its line does not stand for the keys.
+printf '%s %s\n' "$(_git_ident "$D332/bad/.git")" "$D332/bad/.git" "$(_git_ident "$O332/l/ob/.git")" "$O332/l/ob/.git" >> "$rec332"
 cp "$TMP/bad332.cfg" "$D332/bad/.git/config"; cp "$TMP/ob332.cfg" "$O332/l/ob/.git/config"
 EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
 [[ "$(fp332 bad 'was protected by an earlier launch that could not read its config')" == *"programs: alias.st $pa332." ]] \
   && rec332 '' "$D332/bad/.git" && rec332 al: "$D332/bad/.git" \
   && [[ "$(grep -A1 -F "$ob332, where an earlier launch could not read its config, and its config" "$ERR" | tail -1)" == *"programs: alias.ob $pa332." ]] \
-  && rec332 al: "$O332/l/ob/.git" \
-  && pass "G332 … and once git can read it, the next launch names what it sets, and records that, under an overlay too" \
-  || fail "G332 an unparsable config mended (got: $(fp332 bad 'was protected by an earlier launch that could not read its config'); overlay: $(grep -A1 -F "$ob332" "$ERR" | tail -1))"
+  && rec332 al: "$O332/l/ob/.git" && rec332 read: "$D332/bad/.git" && rec332 read: "$O332/l/ob/.git" \
+  && pass "G332 … and once git can read it, the next launch names what it sets, and records that, under an overlay too, whatever an older engine recorded meanwhile" \
+  || fail "G332 an unparsable config mended (got: $(fp332 bad 'was protected by an earlier launch that could not read its config'); overlay: $(grep -A1 -F "$ob332" "$ERR" | tail -1); read lines: $(grep -c ' read:' "$rec332"))"
+EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
+! grep -qF 'NOTE: /workspace/al332/bad/.git' "$ERR" && ! grep -qF "$ob332" "$ERR" \
+  && pass "G332 … once: the launch after says nothing of it" \
+  || fail "G332 a mended config named again (stderr: $(grep -F -e 'al332/bad/.git' -e 'l/ob/.git' "$ERR" | head -2 | tr '\n' ' '))"
 # One that two mounts expose is reported once a launch: the first report
 # records it only as unread, which the second mount's would read as a launch
 # before this one.
@@ -856,7 +880,8 @@ unal332; "${G[@]}" -C "$D332/old" config alias.so log; cp "$D332/old/.git/config
 printf '[core\n' >> "$D332/old/.git/config"
 EXTRA_MOUNTS="$D332" launch "$TMP/app"
 [[ "$(al332 al332/old/.git)" == *"Its config sets: (config, $ur332." ]] && ! rec332 al: "$D332/old/.git" \
-  && grep -qF 'sets, a later launch names only the aliases.' <<<"$(grep -A8 -F 'NOTE: /workspace/al332/old/.git was reported by an earlier launch' "$ERR")" \
+  && grep -qF 'of what it sets, a later launch names only the aliases.' <<<"$(grep -A8 -F 'NOTE: /workspace/al332/old/.git was reported by an earlier launch' "$ERR")" \
+  && ! grep -qF "git config --file $D332/old/.git/config --get-regexp" "$ERR" \
   && cp "$TMP/old332.cfg" "$D332/old/.git/config" && EXTRA_MOUNTS="$D332" launch "$TMP/app" \
   && [[ "$(al332 al332/old/.git)" == *"Its config sets: alias.so $pa332." ]] && rec332 al: "$D332/old/.git" \
   && pass "G332 one reported before whose config git cannot parse is named as not checked, not recorded, and named once it can" \
@@ -924,6 +949,19 @@ if [[ -n "$h332" ]]; then
 else
   pass "G332 a directory docker cannot be handed: skipped, this filesystem takes no name that is not UTF-8"
 fi
+# One directory, two mounts, and docker can be handed its name in one only:
+# the config stays writable through the other, so nothing is recorded as named
+# and an alias written later is named (last review of the fix).
+V332="$TMP/v332"; Y332="$V332/x: /y"
+mkdir -p "$Y332" && "${G[@]}" init -q "$Y332/r" && "${G[@]}" -C "$Y332/r" config alias.sv log \
+  || { printf 'SCAFFOLD-FAILED: G332 two views\n'; exit 1; }
+EXTRA_MOUNTS="$V332" launch "$Y332"; r332="$LAUNCH_RC"; w332="$(grep -cF 'docker cannot be handed' "$ERR")"
+"${G[@]}" -C "$Y332/r" config alias.late 'rebase --exec ./x'
+EXTRA_MOUNTS="$V332" launch "$Y332"
+[[ "$r332" == 0 && "$w332" -ge 1 && "$(grep -cF 'alias.late' "$ERR")" == 1 ]] && ! rec332 al: "$Y332/r/.git" \
+  && pass "G332 a directory docker can be handed in one mount only is not recorded as named, and an alias written later is named" \
+  || fail "G332 two views (rc=$r332; $w332 warnings; alias.late $(grep -cF 'alias.late' "$ERR") times; al: $(grep -cF " al:$Y332/r/.git" "$rec332"))"
+rm -rf "$V332"
 # Each such read is one the agent could have every launch make, once for each
 # repository it plants: the first twenty of a launch are read, and one NOTE
 # says the rest were not.
@@ -936,8 +974,9 @@ done
 EXTRA_MOUNTS="$C332" launch "$TMP/app"; EXTRA_MOUNTS="$C332" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 && "$(grep -cF 'named at every launch. It sets: alias.sc' "$ERR")" == 20 \
    && "$(grep -cF 'NOTE: more than 20 git directories have a config this launch cannot hold read-only' "$ERR")" == 1 \
-   && "$(grep -cE '^        /workspace/cap332/c[0-9]+/\.git$' "$ERR")" == 2 ]] \
-  && pass "G332 of twenty-two configs a launch cannot hold, twenty are read for aliases and one NOTE names the two that were not" \
+   && "$(grep -cE '^        /workspace/cap332/c[0-9]+/\.git$' "$ERR")" == 2 \
+   && "$(grep -A3 -F 'NOTE: more than 20 git directories have a config' "$ERR" | grep -cE '^        /workspace/cap332/c[0-9]+/\.git$')" == 2 ]] \
+  && pass "G332 of twenty-two configs a launch cannot hold, twenty are read for aliases and one NOTE names the two that were not, together" \
   || fail "G332 the bound on such reads (rc=$LAUNCH_RC; $(grep -cF 'named at every launch' "$ERR") named, $(grep -cF 'more than 20 git directories' "$ERR") notes)"
 rm -rf "$C332"
 # The check after the session: a repository the session made whose config sets
