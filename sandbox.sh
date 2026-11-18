@@ -6543,7 +6543,11 @@ _git_runs() {
 # another one (automated security review of 7121741; review of 7121741). The
 # birth time is to the nanosecond: in whole seconds, overlayfs gave a directory
 # removed and made again within the second its inode and its second back, and
-# the re-made repository went unreported (G93 at the floor, on Colima).
+# the re-made repository went unreported (G93 at the floor, on Colima). Where
+# stat is uutils' it is in whole seconds all the same: 0.10.0 prints no
+# fraction for %.9W (measured; GNU's is there as gnustat), so one made again
+# within the second it was first made in is the same one there (bugs review
+# PLAT-12, open).
 _git_ident() {
   local i=""
   if (( _launcher_stat_gnu )); then i="$(stat -c '%d %i %.9W' -- "$1" 2>/dev/null)" || i=""
