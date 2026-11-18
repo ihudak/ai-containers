@@ -258,6 +258,19 @@ selinux_opt="$(selinux_security_opt)" || exit 1
 # A directory docker cannot be handed intact is refused, not mounted from
 # somewhere else (sandbox-common.sh: docker_bind(); LNCH-23).
 cbind=(); docker_bind cbind "$capture_dir" /workspace/.agent-discovery "" "The capture directory" || exit 1
+
+# The two lists are read here, on the host, after the extract writes them; the
+# directory is the agent's. A link left at either name pointed this script at a
+# host file of the agent's choosing: the extract's write through it fails in the
+# container, where its target does not exist, and the old list was then the
+# link's target, printed to your terminal (bugs review RT-16). So both names are
+# removed first, a link as the link, and read afterwards only as regular files.
+dns_out="$capture_dir/agent-dns.txt"
+sni_out="$capture_dir/agent-sni.txt"
+for f in "$dns_out" "$sni_out"; do
+  if [[ -d "$f" && ! -L "$f" ]]; then die "$(_ac_term "$f") is a directory; remove it and run this again."; fi
+  rm -f -- "$f" || die "cannot remove $(_ac_term "$f")."
+done
 if ! docker run --rm --pull=never --entrypoint capture-agent-destinations.sh \
      ${selinux_opt:+"$selinux_opt"} \
      "${cbind[@]}" \
@@ -265,12 +278,25 @@ if ! docker run --rm --pull=never --entrypoint capture-agent-destinations.sh \
   die "the extract failed inside $image. The pcap is untouched at $pcap."
 fi
 
-dns_out="$capture_dir/agent-dns.txt"
-sni_out="$capture_dir/agent-sni.txt"
+# Only a regular file the extract wrote is read: one that is not (a second
+# container on the same directory swapped in a link or a FIFO) is named and
+# skipped. Each list read is a copy made here, so what is counted is what is
+# compared.
+lists=()
+for f in "$dns_out" "$sni_out"; do
+  [[ -e "$f" || -L "$f" ]] || continue
+  if [[ -L "$f" || ! -f "$f" ]]; then
+    printf 'NOTE: %s is not a regular file; not read.\n' "$(_ac_term "$f")" >&2
+    continue
+  fi
+  lists+=("$f")
+done
 
 count_lines() {  # $1 = path
-  local n=0
-  [[ -f "$1" ]] && { n="$(wc -l < "$1")"; n="${n//[^0-9]/}"; }
+  local n=0 l
+  for l in ${lists[@]+"${lists[@]}"}; do
+    [[ "$l" == "$1" ]] && { n="$(wc -l < "$1")"; n="${n//[^0-9]/}"; }
+  done
   printf '%s' "${n:-0}"
 }
 
@@ -334,7 +360,7 @@ else
     awk -F, '{ for (i = 1; i <= NF; i++) {
                  h = $i; gsub(/[[:space:]]/, "", h); sub(/\.$/, "", h)
                  if (h != "") print tolower(h)
-               } }' "$dns_out" "$sni_out" 2>/dev/null | sort -u
+               } }' ${lists[@]+"${lists[@]}"} /dev/null 2>/dev/null | sort -u
   )
 
   uncovered=()
@@ -349,7 +375,9 @@ else
     printf '\nEvery hostname observed (%s) is already covered by this image.\n' "${#observed[@]}"
   else
     printf '\nNot covered by this image (%s of %s observed):\n' "${#uncovered[@]}" "${#observed[@]}"
-    printf '  %s\n' "${uncovered[@]}"
+    # Each name is what the agent queried, so it is rendered for the terminal:
+    # an escape sequence in one reached it as it was (RT-16).
+    for host in "${uncovered[@]}"; do printf '  %s\n' "$(_ac_term "$host")"; done
     printf '\nAdd the ones you want to allowlist-domains.d/custom.txt (or a wildcard\n'
     printf 'pattern to allowlist-proxy-domains.d/custom.txt), then ./build.sh and\n'
     printf 'switch to restricted mode.\n'

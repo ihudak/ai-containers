@@ -44,8 +44,9 @@ Practical consequences:
 
 At container start, an additive reconcile (`rvm-reconcile.sh`, run as the
 sandbox user and `flock`-guarded against concurrent same-group container
-starts) installs whichever configured versions are missing from the group's
-`~/.rvm`:
+starts; it waits at most 30 minutes for another container's install, then
+starts without one, and a later start installs) installs whichever configured
+versions are missing from the group's `~/.rvm`:
 - **First start after adding a version** — rvm bootstraps (if the group's
   `~/.rvm` is still empty) and then compiles that Ruby from source, the same
   one-time cost a local rvm/asdf install pays; this can take several minutes.

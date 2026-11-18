@@ -16,6 +16,20 @@ set -euo pipefail
 # Internal state (dns-map, caches) is stored under a root-only directory
 # (/run/agent-blocked-internal by default) so the sandbox user cannot
 # tamper with the self-healing lookup tables.
+#
+# <capture_dir> is the agent's: a host bind it owns and can write, kept between
+# launches. This daemon is root for the whole session, so it never writes there
+# by name. Each output is opened ONCE, at start, after removing whatever at that
+# name is not a regular file, and is used only if the open descriptor is the
+# regular file with one link that is at that name now (open_output()). A link
+# the agent plants later only renames what the daemon writes to; a link planted
+# before the start is removed, never followed. Following one wrote the
+# firewall's own allowlist as root (bugs review RT-13).
+#
+# The DNS map says only which name to try: anyone can put a DNS response on the
+# wire (port 53 is open to every address), so an address is self-healed only
+# when this container's resolver gives it for that name now (resolves_to();
+# bugs review RT-14).
 
 capture_dir="${1:-/workspace/.agent-blocked}"
 nflog_group="${NFLOG_GROUP:-100}"
@@ -42,6 +56,44 @@ blocked_ips="$capture_dir/blocked-ips.txt"
 
 mkdir -p "$capture_dir"
 : > "$dns_map"
+
+# _cbt_id: "<dev>:<ino>:<links>:<type>" of its operand, or of stdin with no
+# operand, from GNU `stat -c` or BSD `stat -f`. Probed once, never a fallback on
+# failure: GNU `stat -f` succeeds and reports the filesystem
+# (version.sh: `_ver_stat_gnu`). The suite runs this script on macOS too.
+if stat -c '%i' / >/dev/null 2>&1; then _cbt_stat_gnu=1; else _cbt_stat_gnu=0; fi
+_cbt_id() {
+  if (( _cbt_stat_gnu )); then stat -c '%d:%i:%h:%F' "${@:--}" 2>/dev/null
+  else stat -f '%d:%i:%l:%HT' "$@" 2>/dev/null; fi
+}
+
+# open_output <var> <path> [fresh]: open <path> read-write (which neither blocks
+# on a FIFO nor truncates) and put the descriptor in <var>, or return 1 with a
+# WARNING. A link, or anything but a regular file, at that name is removed first
+# (the link itself; a directory stays, and is refused), and so is the file when
+# [fresh] asks for it to start empty. Then the descriptor must be a regular file
+# with one link, and the very file at that name (stat without -L: a link's own):
+# a link swapped in between the removal and the open is refused, not written
+# through, and so is a second name of a file elsewhere on that filesystem.
+open_output() {
+  local _var="$1" path="$2" fresh="${3:-}" fd a b links type
+  if [[ -L "$path" || ( -e "$path" && ! -f "$path" ) || -n "$fresh" ]]; then
+    rm -f -- "$path" 2>/dev/null || true
+  fi
+  if ! { exec {fd}<>"$path"; } 2>/dev/null; then
+    printf 'WARNING: cannot open %s; not writing it\n' "$path" >&2
+    return 1
+  fi
+  a="$(_cbt_id <&"$fd")" || a=""
+  b="$(_cbt_id "$path")" || b=""
+  IFS=: read -r _ _ links type <<<"$a"
+  if [[ -z "$a" || "$a" != "$b" || "$links" != 1 || "$type" != [Rr]egular* ]]; then
+    exec {fd}>&-
+    printf 'WARNING: %s is not a regular file of its own (a link, or a second name); not writing it\n' "$path" >&2
+    return 1
+  fi
+  printf -v "$_var" '%s' "$fd"
+}
 
 # Build a flat list of allowlisted domains (comments and blanks stripped) for
 # fast grep lookups in the self-healing path.
@@ -77,37 +129,80 @@ strip_allowlist "$domains_file" "$allowed_domains_cache"
 wildcard_patterns_cache="$internal_dir/wildcard-patterns-cache"
 strip_allowlist "$proxy_domains_file" "$wildcard_patterns_cache"
 
+# Every write goes to one of these descriptors, opened by open_output(), and
+# /dev/null for an output that could not be opened. The two lists' lines from
+# earlier sessions are read through their descriptors (which leaves each at its
+# end, where the next line is written) into listed[], which deduplicates them.
+fd_log="" fd_domains="" fd_ips="" fd_dns_err="" fd_nflog_err=""
+declare -A listed=()
+
+read_listed() {   # $1 = descriptor; its lines from the current offset to the end
+  local line=""
+  while IFS= read -r line <&"$1" || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == '#'* ]] || listed["$line"]=1
+  done
+}
+
 init_output_files() {
-  if [[ ! -f "$blocked_domains" ]]; then
-    cat > "$blocked_domains" <<'HEADER'
+  open_output fd_domains "$blocked_domains" || fd_domains=""
+  open_output fd_ips "$blocked_ips" || fd_ips=""
+  open_output fd_log "$blocked_log" || fd_log=""
+  open_output fd_dns_err "$capture_dir/tshark-dns-errors.log" fresh || fd_dns_err=""
+  open_output fd_nflog_err "$capture_dir/tshark-nflog-errors.log" fresh || fd_nflog_err=""
+  local f nul
+  for f in fd_domains fd_ips fd_log fd_dns_err fd_nflog_err; do
+    [[ -z "${!f}" ]] || continue
+    exec {nul}<>/dev/null; printf -v "$f" '%s' "$nul"
+  done
+  # Empty: new, so its header first. Otherwise read to its end.
+  if [[ -n "$(_cbt_empty "$fd_domains")" ]]; then
+    cat >&"$fd_domains" <<'HEADER'
 # Blocked domains — copy-paste these lines into allowlist-domains.txt
 # Generated automatically while the container runs in restricted mode.
 # Each domain below was attempted but rejected by the outbound firewall.
 
 HEADER
-  fi
-  if [[ ! -f "$blocked_ips" ]]; then
-    cat > "$blocked_ips" <<'HEADER'
+  else read_listed "$fd_domains"; fi
+  if [[ -n "$(_cbt_empty "$fd_ips")" ]]; then
+    cat >&"$fd_ips" <<'HEADER'
 # Blocked IPs with no known domain — copy-paste into allowlist-cidrs.txt
 # If you can identify the owning service, prefer adding the domain to allowlist-domains.txt instead.
 # Generated automatically while the container runs in restricted mode.
 
 HEADER
-  fi
-  if [[ ! -f "$blocked_log" ]]; then
-    printf '%-25s  %-10s  %-42s  %s\n' "TIMESTAMP" "PROTO:PORT" "IP" "DOMAIN" >> "$blocked_log"
-    printf '%s\n' "$(printf '─%.0s' {1..100})" >> "$blocked_log"
-  fi
+  else read_listed "$fd_ips"; fi
+  if [[ -n "$(_cbt_empty "$fd_log")" ]]; then
+    printf '%-25s  %-10s  %-42s  %s\n' "TIMESTAMP" "PROTO:PORT" "IP" "DOMAIN" >&"$fd_log"
+    printf '%s\n' "$(printf '─%.0s' {1..100})" >&"$fd_log"
+  else cat <&"$fd_log" >/dev/null; fi
 }
 
-lookup_domain() {
-  grep -m1 "^${1} " "$dns_map" 2>/dev/null | awk '{print $2}' || true
+# _cbt_empty <fd>: prints something when the regular file open on <fd> is empty.
+# /dev/null, for an output not opened, is no regular file and prints nothing.
+_cbt_empty() {
+  local s
+  if (( _cbt_stat_gnu )); then s="$(stat -c '%s:%F' - <&"$1" 2>/dev/null)"
+  else s="$(stat -f '%z:%HT' <&"$1" 2>/dev/null)"; fi
+  [[ "$s" == 0:[Rr]egular* ]] && printf 'empty'
+}
+
+lookup_domain() {   # the first name the map holds for this address, matched as text
+  awk -v ip="$1" '$1 == ip { print $2; exit }' "$dns_map" 2>/dev/null || true
 }
 
 is_allowlisted_domain() {
   local domain="$1"
   [[ -z "$domain" ]] && return 1
-  grep -qxF "$domain" "$allowed_domains_cache" 2>/dev/null
+  grep -qxF -- "$domain" "$allowed_domains_cache" 2>/dev/null
+}
+
+# resolves_to <name> <address>: does this container's resolver give <address>
+# for <name> now? What the map holds came off the wire from anyone; this is the
+# answer the refresh loop itself would get (refresh-ipset-allowlist.sh uses
+# getent too). A name starting with `-` is no host name and is never asked.
+resolves_to() {
+  [[ -n "$1" && "$1" != -* ]] || return 1
+  getent ahosts "$1" 2>/dev/null | awk -v ip="$2" '$1 == ip { found = 1 } END { exit !found }'
 }
 
 matches_wildcard_domain() {
@@ -140,18 +235,24 @@ log_blocked() {
   # wildcard), add it to the ipset immediately so subsequent packets go through
   # without waiting for the next scheduled refresh.
   if [[ "$self_healing" == "1" ]] && { is_allowlisted_domain "$domain" || matches_wildcard_domain "$domain"; }; then
-    auto_allow_ip "$dst_ip"
-    printf '%-25s  %-10s  %-42s  %s (auto-allowed)\n' \
-      "$timestamp" "$proto:$dst_port" "$dst_ip" "$domain" >> "$blocked_log"
+    if resolves_to "$domain" "$dst_ip"; then
+      auto_allow_ip "$dst_ip"
+      printf '%-25s  %-10s  %-42s  %s (auto-allowed)\n' \
+        "$timestamp" "$proto:$dst_port" "$dst_ip" "$domain" >&"$fd_log"
+    else
+      printf '%-25s  %-10s  %-42s  %s (not auto-allowed: the resolver does not give this address for it)\n' \
+        "$timestamp" "$proto:$dst_port" "$dst_ip" "$domain" >&"$fd_log"
+    fi
     return
   fi
 
   printf '%-25s  %-10s  %-42s  %s\n' \
-    "$timestamp" "$proto:$dst_port" "$dst_ip" "${domain:-(no domain)}" >> "$blocked_log"
-  if [[ -n "$domain" ]]; then
-    grep -qxF "$domain" "$blocked_domains" 2>/dev/null || printf '%s\n' "$domain" >> "$blocked_domains"
-  else
-    grep -qxF "$dst_ip" "$blocked_ips" 2>/dev/null || printf '%s\n' "$dst_ip" >> "$blocked_ips"
+    "$timestamp" "$proto:$dst_port" "$dst_ip" "${domain:-(no domain)}" >&"$fd_log"
+  local item="${domain:-$dst_ip}"
+  if [[ -z "${listed["$item"]:-}" ]]; then
+    listed["$item"]=1
+    if [[ -n "$domain" ]]; then printf '%s\n' "$domain" >&"$fd_domains"
+    else printf '%s\n' "$dst_ip" >&"$fd_ips"; fi
   fi
 }
 
@@ -170,7 +271,7 @@ start_dns_map_builder() {
       -f "port 53" \
       -Y "dns.flags.response == 1 and (dns.a or dns.aaaa)" \
       -T fields -E "separator=|" -e dns.resp.name -e dns.a -e dns.aaaa \
-      2>"$capture_dir/tshark-dns-errors.log" | \
+      2>&"$fd_dns_err" | \
     while IFS='|' read -r raw_name a_list aaaa_list; do
       # dns.resp.name can return comma-separated duplicates; take the first.
       local name="${raw_name%%,*}"
@@ -233,7 +334,7 @@ start_blocked_watcher() {
   (
     tshark -i "nflog:$nflog_group" -l -n \
       -T fields -E "separator=|" -e ip.dst -e ipv6.dst -e tcp.dstport -e udp.dstport \
-      2>"$capture_dir/tshark-nflog-errors.log" | \
+      2>&"$fd_nflog_err" | \
     while IFS='|' read -r dst4 dst6 tcp_port udp_port; do
       local dst="${dst4:-$dst6}"
       local port="${tcp_port:-$udp_port}"

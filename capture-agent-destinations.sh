@@ -6,8 +6,16 @@ capture_dir="${2:-/workspace/.agent-discovery}"
 pcap_file="$capture_dir/agent-traffic.pcap"
 dns_out="$capture_dir/agent-dns.txt"
 sni_out="$capture_dir/agent-sni.txt"
-pid_file="$capture_dir/tcpdump.pid"
 log_file="$capture_dir/tcpdump.log"
+# The capture directory is the agent's, kept on the host between launches, and
+# `start` runs as root. So the pid file is in a root-only directory of this
+# container's own /run, which a new container starts without: a tcpdump.pid the
+# agent left in the capture directory named a live pid (1 always is), and the
+# next launch reported "already running" and captured nothing (bugs review
+# RT-15). DISCOVERY_INTERNAL_DIR is for the tests only; the entrypoint never
+# sets it.
+internal_dir="${DISCOVERY_INTERNAL_DIR:-/run/agent-discovery-internal}"
+pid_file="$internal_dir/tcpdump.pid"
 
 require_command() {
   local command_name="$1"
@@ -45,17 +53,41 @@ extract_capture() {
   printf 'TLS SNI hostnames saved to %s\n' "$sni_out"
 }
 
+# _cad_id: "<dev>:<ino>:<links>:<type>" of its operand, or of stdin with no
+# operand, from GNU `stat -c` or BSD `stat -f`, probed once (the suite runs
+# this on macOS too; capture-blocked-traffic.sh: `_cbt_id()`).
+if stat -c '%i' / >/dev/null 2>&1; then _cad_stat_gnu=1; else _cad_stat_gnu=0; fi
+_cad_id() {
+  if (( _cad_stat_gnu )); then stat -c '%d:%i:%h:%F' "${@:--}" 2>/dev/null
+  else stat -f '%d:%i:%l:%HT' "$@" 2>/dev/null; fi
+}
+
 start_capture() {
   ensure_capture_dir
   require_command tcpdump
+  mkdir -p "$internal_dir"; chmod 700 "$internal_dir"
 
   if tcpdump_running; then
     printf 'Capture already running with PID %s\n' "$(cat "$pid_file")"
     exit 0
   fi
 
-  : > "$log_file"
-  nohup tcpdump -i any -n -s 0 -U -w "$pcap_file" 'port 53 or port 443' </dev/null >>"$log_file" 2>&1 &
+  # Root writes the log and tcpdump the pcap: never through anything the agent
+  # left at those names. Both are removed, a link as the link (a pid file an
+  # older engine kept here too), and the log is opened read-write, which does
+  # not block on a FIFO, then used only if the descriptor is the regular file of
+  # one link at that name now, not one a second container swapped in between.
+  rm -f -- "$log_file" "$pcap_file" "$capture_dir/tcpdump.pid"
+  local lfd a b links type
+  exec {lfd}<>"$log_file"
+  a="$(_cad_id <&"$lfd")" || a=""
+  b="$(_cad_id "$log_file")" || b=""
+  IFS=: read -r _ _ links type <<<"$a"
+  if [[ -z "$a" || "$a" != "$b" || "$links" != 1 || "$type" != [Rr]egular* ]]; then
+    printf 'Refusing to start the capture: %s is not a regular file of its own\n' "$log_file" >&2
+    exit 1
+  fi
+  nohup tcpdump -i any -n -s 0 -U -w "$pcap_file" 'port 53 or port 443' </dev/null >&"$lfd" 2>&1 &
   local tcpdump_pid=$!
   disown "$tcpdump_pid" 2>/dev/null || true
   echo "$tcpdump_pid" > "$pid_file"

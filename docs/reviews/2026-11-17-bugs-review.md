@@ -589,7 +589,9 @@
 ## 5. Container-start runtime and the capture daemons
 
 ### RT-13: the blocked-traffic daemon, as root, appends to files in a directory the agent owns, so a symlink there writes the firewall's allowlist
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-18, WSL native agent). `capture-blocked-traffic.sh: open_output()` opens each output once, at start: a link or anything but a regular file at the name is removed first (the link itself), the file is opened read-write (which neither blocks on a FIFO nor truncates), and the descriptor is kept only if it is the regular file of one link at that name now, so a link swapped in between the removal and the open, or a second name of a file elsewhere, is refused with a `WARNING:`. Every write after goes to the descriptor, so a link the agent plants during the session only renames what the daemon writes to. The tshark error logs, truncated by name at start, start empty the same way. The two lists from earlier sessions are read through their descriptors into the deduplication table, so nothing is read by name either. Not done: the refresh loop reading a root-only copy of the allowlists, since nothing writes them now.
+- **Fix:** `capture-blocked-traffic.sh`: `open_output()`, `init_output_files()`, `log_blocked()`.
+- **Tests:** `tests/test-blocked-capture.sh`: every output and both tshark logs a link to a sentinel (none written or truncated, each replaced by a regular file holding what was recorded), a hard link refused and named, a FIFO replaced, a link swapped in between the removal and the open (a fake `rm`) refused, a list from an earlier session appended to and still deduplicated; the old daemon fails 10 checks, and removing the identity or the link-count check alone fails its own. The launch harness no longer waits unbounded for a daemon blocked at start. Case `090-agent-link-not-written-by-root` (`slow`): as the agent, `blocked-ips.txt` becomes a link to `/tmp/allowlist-cidrs.txt` in a real launch; after a drop the allowlist is unchanged and, one refresh later, the address is still not in `allowed_ipv4`; mutation `090-blocked-ips-written-by-name` makes it fail.
 - **Severity:** HIGH
 - **Confidence:** CONFIRMED (the write through the link and the refresh picking it up, with the suite's fakes; that the daemon is root and the directory is the agent's is from `entrypoint.sh` and the mount layout)
 - **Location:** `capture-blocked-traffic.sh`: `log_blocked()` (`printf '%s\n' "$dst_ip" >> "$blocked_ips"`), and `init_output_files()`, which takes a link for the file (`[[ ! -f "$blocked_ips" ]]`)
@@ -611,7 +613,9 @@
 - **Suggested fix:** keep everything the daemon writes in the root-only `$internal_dir` and publish to the capture directory without following links: write as the sandbox user (`setpriv`/`runuser` for the append), or create a fresh file and `rename` it over the name. Also have the refresh loop read a copy of the allowlists made at start in a root-only directory, so no later write to `/tmp/allowlist-*.txt` can matter. Add a case to `tests/test-blocked-capture.sh` with each output a link.
 
 ### RT-14: self-healing trusts any DNS answer seen on the wire, so the agent can have any address allowed; docs/security.md says it cannot
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-18, WSL native agent). The DNS map still names the domain to try, but `log_blocked()` heals an address only when `resolves_to()` finds it among `getent ahosts <domain>`'s answers, the container's own resolver as the refresh loop uses it; otherwise the row says it was not auto-allowed. A name starting with `-` is never asked, and every `grep` that takes a sniffed name has `--`; `lookup_domain()` matches the address as text, not as a regex. docs/security.md item 5 is corrected. The trade-off, stated in AGENTS.md: a CDN rotating its answers faster than the resolver caches them can make an address miss, which the next refresh covers. The map was not restricted to responses from `/etc/resolv.conf`'s servers instead, because the agent can bind `127.0.0.11:53` (Docker sets `ip_unprivileged_port_start=0`) and send itself a response from that source. The variant that needs no server is closed by the same check, so it was not confirmed with a real `tshark`.
+- **Fix:** `capture-blocked-traffic.sh`: `resolves_to()`, `log_blocked()`, `is_allowlisted_domain()`, `lookup_domain()`.
+- **Tests:** `tests/test-blocked-capture.sh` has a fake `getent` answering from the scenario; a forged answer `exact.example.test → 6.6.6.6` heals nothing and its row says why, and a name `-v` is neither an option nor asked; replacing the check with `true` fails both. Case `080-selfheal-admits-wildcard` still heals through its own resolver (run 2026-11-18).
 - **Severity:** HIGH
 - **Confidence:** CONFIRMED for the decision (reproduced with the suite's fake `tshark`) and for the firewall rule that lets the answer in (quoted). PLAUSIBLE for the variant that needs no server at all: confirming it takes a real `tshark` in a container.
 - **Location:** `capture-blocked-traffic.sh`: `start_dns_map_builder()` (`-f "port 53"` with `-Y "dns.flags.response == 1 and (dns.a or dns.aaaa)"`) and `log_blocked()`; `entrypoint.sh`: `iptables -A OUTPUT -p udp --dport 53 -j ACCEPT`
@@ -625,7 +629,9 @@
 - **Suggested fix:** on a block, have root resolve the candidate name itself (`getent ahosts`, as the refresh does) and add the address only if it is among the answers; or build the map only from responses whose source is a nameserver in `/etc/resolv.conf` and whose destination is not port 53. Pass `--` to every `grep` that takes a sniffed name. Correct docs/security.md either way.
 
 ### RT-15: a `tcpdump.pid` the agent leaves behind makes the next discovery launch record nothing, under a banner saying everything is captured
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-18, WSL native agent). The pid file is in `/run/agent-discovery-internal` (root-only, made by `start`, new with every container; `DISCOVERY_INTERNAL_DIR` for the tests only). `start` removes whatever is at `tcpdump.log`, the pcap and the old `tcpdump.pid` in the capture directory, links as links, and opens the log read-write, used only if the descriptor is the regular file of one link at that name, refusing the start otherwise; tcpdump writes its output to that descriptor.
+- **Fix:** `capture-agent-destinations.sh`: `start_capture()`.
+- **Tests:** `tests/test-capture-destinations.sh` C9 (a `tcpdump.pid` with a live pid in the capture directory: tcpdump starts and the file is removed), C10 (links at the log, the pcap and `tcpdump.pid`: none written through), C11 (a link swapped in after the removal: the start is refused, nothing written). Against the old script C9 fails, and its `stop` then signalled the test itself; C10 and C11 fail. C1 to C8 follow the pid file to its new place.
 - **Severity:** LOW (the agent can also swap the pcap during a session, since it owns the directory; this one silently disables a later session's capture)
 - **Confidence:** CONFIRMED
 - **Location:** `capture-agent-destinations.sh`: `tcpdump_running()` and `start_capture()`
@@ -641,7 +647,9 @@
 - **Suggested fix:** in `start`, ignore a pid file unless `/proc/<pid>/comm` is `tcpdump`, or have the entrypoint remove `tcpdump.pid` before the call; keep the pid file in a root-only directory under `/run`.
 
 ### RT-16: extract-discovery.sh prints a file the agent chose to the host terminal, unrendered
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-18, WSL native agent). Both lists are removed before the extract (a link as the link; a directory there stops the script), are read afterwards only if regular files (a link or FIFO a second container swapped in is named in a `NOTE:` and skipped), and every name printed under "Not covered" goes through `sandbox-common.sh: _ac_term()`.
+- **Fix:** `extract-discovery.sh`.
+- **Tests:** `tests/test-extract-discovery.sh` section 7: a link at `agent-dns.txt` to a file of escape sequences, the extract writing nothing (as through the link in the container), prints none of it and leaves the target alone; a link swapped in after the extract is named and not read; a hostname holding an escape is printed rendered. All three fail against the old script.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED (with a fake `docker`; that the in-container write through the link fails is from the code: `sort -u > "$dns_out" || true`)
 - **Location:** `extract-discovery.sh`: `printf '  %s\n' "${uncovered[@]}"`, fed by `awk … "$dns_out" "$sni_out"`
@@ -660,7 +668,9 @@
 - **Suggested fix:** remove `agent-dns.txt` and `agent-sni.txt` (links included) before the extract and refuse them afterwards unless `-f` and not `-L`; print only names matching a hostname pattern, or through the same quoting helper the launcher uses.
 
 ### RT-17: the tool and Ruby reconciles wait for the group lock with no bound, so one container can hang every later start of the group
-- **Status: OPEN** (filed 2026-11-17).
+- **Status: FIXED** (2026-11-18, WSL native agent). Both reconciles wait with `flock -w` (900 s for the tools, 1800 s for Ruby, a first compile taking minutes; `AI_CONTAINERS_RECONCILE_LOCK_WAIT`, a test knob), then start without the reconcile and say so in a `NOTE:`. A lock path that is a link or no regular file is not opened (a FIFO would block the open itself), with a `NOTE:`. Everything after the lock runs inside `{ … } 9>&-`, which closes fd 9 for the body while bash keeps a close-on-exec copy that holds the lock, so no installer, and nothing one leaves running, inherits it (checked: an exec'd child sees neither). A filesystem with no lock support still runs unlocked, as before (`-E 75` tells it from a held lock).
+- **Fix:** `agent-tools-reconcile.sh`, `rvm-reconcile.sh`.
+- **Tests:** `tests/test-agent-tools-reconcile.sh`, with util-linux `flock` (skipped where there is none): a lock held by another process is waited for 1 s and the start goes on without installing; a process an installer leaves running does not hold the lock after the reconcile; a FIFO at the lock path does not hold up the start. The old script times out on the first and third and leaves the lock held on the second; without the `9>&-` alone the second fails. `tests/test-rvm-reconcile.sh`: its stub `flock` reports a held lock past the wait, and no Ruby is installed.
 - **Severity:** LOW
 - **Confidence:** CONFIRMED
 - **Location:** `agent-tools-reconcile.sh`: `flock 9`; `rvm-reconcile.sh`: `flock 9`

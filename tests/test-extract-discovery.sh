@@ -124,8 +124,15 @@ for a in "$@"; do
   prev="$a"
 done
 [[ -d "$src" ]] || { echo "stub: no host dir in -v" >&2; exit 4; }
-cp "$STUB_DIR/dns-lines.txt" "$src/agent-dns.txt"
-cp "$STUB_DIR/sni-lines.txt" "$src/agent-sni.txt"
+# STUB_LISTS: `none` writes no list, as when the container's write went through
+# a link whose target is not there (`sort -u > "$dns_out" || true`); `link` puts
+# a link to $STUB_DIR/payload.txt where the DNS list goes, as a second container
+# on the same directory could after the extract.
+case "${STUB_LISTS:-}" in
+  none) ;;
+  link) ln -s "$STUB_DIR/payload.txt" "$src/agent-dns.txt"; cp "$STUB_DIR/sni-lines.txt" "$src/agent-sni.txt" ;;
+  *) cp "$STUB_DIR/dns-lines.txt" "$src/agent-dns.txt"; cp "$STUB_DIR/sni-lines.txt" "$src/agent-sni.txt" ;;
+esac
 printf 'DNS queries saved to %s/agent-dns.txt\n' "$src"
 printf 'TLS SNI hostnames saved to %s/agent-sni.txt\n' "$src"
 exit 0
@@ -157,10 +164,10 @@ APPARMOR_DAEMON='["name=apparmor","name=seccomp,profile=builtin","name=cgroupns"
 SELINUX_DAEMON='["name=seccomp,profile=builtin","name=selinux","name=cgroupns"]'
 OUT=""; RC=0
 RUN_IMAGE=""; RUN_IMAGE_MISSING=0; RUN_EXTRACT_FAIL=0; RUN_CAT_FAIL=0; RUN_STDIN=/dev/null
-RUN_SECURITY_OPTIONS="$APPARMOR_DAEMON"; RUN_SELINUX_LABEL=""
+RUN_SECURITY_OPTIONS="$APPARMOR_DAEMON"; RUN_SELINUX_LABEL=""; RUN_LISTS=""
 reset_run_env() {
   RUN_IMAGE=""; RUN_IMAGE_MISSING=0; RUN_EXTRACT_FAIL=0; RUN_CAT_FAIL=0; RUN_STDIN=/dev/null
-  RUN_SECURITY_OPTIONS="$APPARMOR_DAEMON"; RUN_SELINUX_LABEL=""
+  RUN_SECURITY_OPTIONS="$APPARMOR_DAEMON"; RUN_SELINUX_LABEL=""; RUN_LISTS=""
 }
 run_in() {
   local tree="$1" cwd="$2"; shift 2
@@ -173,6 +180,7 @@ run_in() {
     export STUB_IMAGE_MISSING="$RUN_IMAGE_MISSING"
     export STUB_EXTRACT_FAIL="$RUN_EXTRACT_FAIL"
     export STUB_CAT_FAIL="$RUN_CAT_FAIL"
+    export STUB_LISTS="$RUN_LISTS"
     export STUB_SECURITY_OPTIONS="$RUN_SECURITY_OPTIONS"
     export SELINUX_LABEL="$RUN_SELINUX_LABEL"
     export PATH="$tree/bin:$PATH"
@@ -737,6 +745,45 @@ if [[ "$RC" != 0 ]] && ! grep -q '^docker run' "$T/docker-argv.log" && grep -qF 
   pass "a capture directory docker cannot be handed intact is refused before the extract runs"
 else
   fail "capture directory ':' and a trailing space (rc=$RC; runs: $(grep -c '^docker run' "$T/docker-argv.log"); out: $(tr '\n' ' ' <<<"$OUT" | cut -c1-300))"
+fi
+
+# ── 7. The lists are the agent's directory's: read only as the extract wrote them (RT-16)
+# A link the agent left at agent-dns.txt, to a host file holding escape
+# sequences: the container's write through it failed, and the report printed
+# the link's target. It is removed before the extract, so nothing of it is read.
+ESC=$'\033'
+T="$(fresh)"; reset_run_env
+printf 'evil\033]0;OWNED\007\033[2Jhost.example\n' > "$T/payload.txt"
+ln -s "$T/payload.txt" "$T/launch/.agent-discovery/agent-dns.txt"
+RUN_LISTS=none
+run_in "$T" "$T/launch"
+if [[ "$RC" -eq 0 && "$OUT" != *"$ESC"* && "$OUT" != *host.example* && ! -L "$T/launch/.agent-discovery/agent-dns.txt" ]]; then
+  pass "a link left at agent-dns.txt is removed before the extract, its target never read (RT-16)"
+else
+  fail "a link at agent-dns.txt (rc=$RC; out: $(cat -v <<<"$OUT" | tr '\n' ' ' | cut -c1-300))"
+fi
+[[ "$(cat "$T/payload.txt")" == $'evil\033]0;OWNED\007\033[2Jhost.example' ]] \
+  && pass "  … and the file it led to is untouched" || fail "  … the link's target was changed"
+
+# One swapped in after the extract is named and not read.
+T="$(fresh)"; reset_run_env
+printf 'evil\033]0;OWNED\007host.example\n' > "$T/payload.txt"
+RUN_LISTS=link
+run_in "$T" "$T/launch"
+if [[ "$RC" -eq 0 && "$OUT" == *"agent-dns.txt is not a regular file; not read."* && "$OUT" != *"$ESC"* && "$OUT" != *host.example* ]]; then
+  pass "a list that is a link after the extract is named and not read (RT-16)"
+else
+  fail "a link at agent-dns.txt after the extract (rc=$RC; out: $(cat -v <<<"$OUT" | tr '\n' ' ' | cut -c1-300))"
+fi
+
+# A name the agent queried holding an escape sequence is shown, rendered.
+T="$(fresh)"; reset_run_env
+printf 'evil\033]0;owned\007.example.net\n' >> "$T/dns-lines.txt"
+run_in "$T" "$T/launch"
+if [[ "$RC" -eq 0 && "$OUT" != *"$ESC"* && "$OUT" == *'  evil?]0;owned?.example.net'* ]]; then
+  pass "a hostname holding control characters is printed rendered, never raw (RT-16)"
+else
+  fail "a hostname with an escape (rc=$RC; out: $(cat -v <<<"$OUT" | tr '\n' ' ' | cut -c1-300))"
 fi
 
 printf '\n%s\n' "----------------------------------------"

@@ -180,6 +180,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The agent can no longer lift the restricted firewall through the capture
+  daemon** (bugs review RT-13, RT-14). The blocked-traffic daemon runs as root
+  and wrote `.agent-blocked/blocked-ips.txt` by name, so a link the agent put
+  there made it append addresses to the firewall's own allowlist; it now opens
+  each file once, removing a link first, and writes only to what it opened.
+  Self-healing trusted any DNS response seen on the wire, and port 53 is open
+  to every resolver, so a resolver of the agent's could get any address
+  allowed by naming an allowlisted host; an address is now healed only when
+  the container's own resolver gives it for that name. docs/security.md had
+  said this could not happen.
+
+- **Discovery captures, extracts and reconciles no longer trust what the agent
+  left behind** (bugs review RT-15 to RT-17). A `tcpdump.pid` in
+  `.agent-discovery` no longer makes the next discovery launch record nothing
+  under a banner saying everything is captured; `extract-discovery.sh` no
+  longer prints a file a link there pointed at, or a hostname's escape
+  sequences, to your terminal; and the tool and Ruby reconciles wait at most
+  15 and 30 minutes for the group's lock, rather than forever, so one container
+  holding it can no longer stop every later start of the group.
+
 - **`--version` and a sync no longer pass on what the engine checkout's
   writer chose** (bugs review ENV-10, ENV-11). An `engine-version` that is a
   link, or not a regular file, is not read, so a link to a credentials file no

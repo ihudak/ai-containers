@@ -89,15 +89,16 @@ EOF
   # never declared it needed, and its absence surfaces as bash's own
   # "flock: command not found" text leaking into captured output instead of a
   # clear, attributable failure.
-  # FLOCK_BUSY=1: another container holds the lock, so the non-blocking try fails.
-  printf '#!/usr/bin/env bash\n[[ "$1" == -n && "${FLOCK_BUSY:-0}" == 1 ]] && exit 1\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
+  # FLOCK_BUSY=1: another container holds the lock, so the non-blocking try
+  # reports it held (-E 75); FLOCK_HELD=1: it keeps it past the bounded wait.
+  printf '#!/usr/bin/env bash\ncase " $* " in\n  *" -n "*) [[ "${FLOCK_BUSY:-0}" == 1 ]] && exit 75 ;;\n  *" -w "*) [[ "${FLOCK_HELD:-0}" == 1 ]] && exit 75 ;;\nesac\nexit 0\n' > "$bin/flock"; chmod +x "$bin/flock"
   # A pre-existing rvm script so no bootstrap fetch runs (and if a damaged
   # check fetches anyway, SANDBOX_PATH's curl fails and records it).
   install -d "$home/.rvm/scripts"; printf 'true\n' > "$home/.rvm/scripts/rvm"
   PATH="$bin:$SANDBOX_PATH" HOME="$home" RUBY_VERSIONS="$want" \
     STUB_HAS_DEFAULT="${STUB_HAS_DEFAULT:-0}" STUB_INSTALL_FAILS="${STUB_INSTALL_FAILS:-0}" \
     STUB_FAIL_VERSIONS="${STUB_FAIL_VERSIONS:-}" STUB_FAIL_ONCE="${STUB_FAIL_ONCE:-0}" \
-    FLOCK_BUSY="${FLOCK_BUSY:-0}" \
+    FLOCK_BUSY="${FLOCK_BUSY:-0}" FLOCK_HELD="${FLOCK_HELD:-0}" \
     bash "$REPO_DIR/rvm-reconcile.sh" >"$home/out.log" 2>&1
   # Return the requested stream: 'out' = the reconcile's own log lines; 'calls' = the rvm calls.
   if [[ "$sink" == "out" ]]; then cat "$home/out.log" 2>/dev/null; else cat "$home/calls.log" 2>/dev/null; fi
@@ -132,6 +133,12 @@ out_busy="$(FLOCK_BUSY=1 run_case "3.4.5" "3.4.5" out)"
 [[ "$out_busy" == *"another container in this group is installing Ruby — waiting for it to finish"* ]] \
   && pass "a lock held elsewhere is announced as a wait" \
   || fail "a lock held elsewhere was not announced ($out_busy)"
+# RT-17: held past the bounded wait, the start goes on without installing Ruby.
+calls_held="$(FLOCK_BUSY=1 FLOCK_HELD=1 run_case "" "3.4.5" calls)"
+out_held="$(FLOCK_BUSY=1 FLOCK_HELD=1 run_case "" "3.4.5" out)"
+[[ "$out_held" == *"is still held after 1800s; starting without installing Ruby"* && "$calls_held" != *"rvm install"* ]] \
+  && pass "a lock held past the bounded wait starts the container without installing Ruby (RT-17)" \
+  || fail "a lock held past the wait (out: $out_held; calls: $calls_held)"
 
 # entrypoint wires the reconcile in all three modes, before agent-skill install.
 grep -q 'run_ruby_reconcile' "$REPO_DIR/entrypoint.sh" \
@@ -397,7 +404,7 @@ grep -q 'grep -Fqx "ruby-\$v"' "$REPO_DIR/rvm-reconcile.sh" \
 
 # The flock wait must be reported, not silent: a first-run Ruby compile takes minutes and
 # this runs BEFORE the shell, so a silent block is indistinguishable from a hung container.
-grep -q 'flock -n 9' "$REPO_DIR/rvm-reconcile.sh" \
+grep -q 'flock -n -E 75 9' "$REPO_DIR/rvm-reconcile.sh" \
   && pass "reconcile tries a non-blocking flock first" \
   || fail "reconcile tries a non-blocking flock first"
 grep -q 'waiting for it to finish' "$REPO_DIR/rvm-reconcile.sh" \
