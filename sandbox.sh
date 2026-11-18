@@ -3153,7 +3153,7 @@ container_env_filter() {
           why="only the container's root setup reads $name, and container.env does not reach it: set it in sandbox.env" ;;
         ALLOWLIST_DOMAINS_FILE|ALLOWLIST_CIDRS_FILE|ALLOWLIST_PROXY_DOMAINS_FILE|ALLOWLIST_IPV4_SET)
           why="only the container's root setup reads $name, and container.env does not reach it" ;;
-        ALLOWLIST_IPV6_SET|BLOCKED_CAPTURE_ENABLED|BLOCKED_INTERNAL_DIR|NFLOG_GROUP)
+        ALLOWLIST_IPV6_SET|BLOCKED_CAPTURE_ENABLED|BLOCKED_INTERNAL_DIR|NFLOG_GROUP|DISCOVERY_INTERNAL_DIR)
           why="only the container's root setup reads $name, and container.env does not reach it" ;;
       esac
     fi

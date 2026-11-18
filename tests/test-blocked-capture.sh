@@ -409,8 +409,10 @@ expect_eq "blocked-ips.txt lists each nameless address once" \
   "198.51.100.7
 198.51.100.9
 198.51.100.10" "$(data_lines "$scn/cap/blocked-ips.txt")"
-head -n 1 "$scn/cap/blocked-ips.txt" | grep -qxF '# Blocked IPs with no known domain — copy-paste into allowlist-cidrs.txt' \
-  && head -n 1 "$scn/cap/blocked-domains.txt" | grep -qxF '# Blocked domains — copy-paste these lines into allowlist-domains.txt' \
+# Here-strings, not pipes: under pipefail a `head | grep -q` can report the
+# opposite of what it saw (tests/test-grep-q-pipelines.sh).
+grep -qxF '# Blocked IPs with no known domain — copy-paste into allowlist-cidrs.txt' <<<"$(head -n 1 "$scn/cap/blocked-ips.txt")" \
+  && grep -qxF '# Blocked domains — copy-paste these lines into allowlist-domains.txt' <<<"$(head -n 1 "$scn/cap/blocked-domains.txt")" \
   && pass "a new list starts with its header" \
   || fail "a new list starts with its header — got: $(head -n 1 "$scn/cap/blocked-ips.txt") / $(head -n 1 "$scn/cap/blocked-domains.txt")"
 grep -qxF 'Capturing on any' "$scn/cap/tshark-dns-errors.log" 2>/dev/null \
@@ -523,7 +525,7 @@ expect_eq "a list kept from an earlier session is appended to, each name still o
   "old.example.test
 blocked.example.test
 notwild.example.test" "$(data_lines "$scn/cap/blocked-domains.txt")"
-head -n 1 "$scn/cap/blocked-domains.txt" | grep -qxF '# old header' \
+grep -qxF '# old header' <<<"$(head -n 1 "$scn/cap/blocked-domains.txt")" \
   && pass "  … its own header kept, no second one written" \
   || fail "  … its own header kept — got: $(head -n 3 "$scn/cap/blocked-domains.txt")"
 
