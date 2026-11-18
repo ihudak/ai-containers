@@ -55,14 +55,15 @@ else
   fail "$cidrs changed under the agent's link — now: $(tr '\n' ' ' <<<"$after")"
 fi
 
-# One refresh later (every 60 s), the live set still lacks it, and so the
-# destination is still dropped.
+# One refresh later (every 60 s), the live set still lacks it. That set is what
+# the firewall enforces; a connection attempt would say nothing here, since
+# 192.0.2.1 is routable nowhere and fails allowed or not (measured under the
+# mutation: the address was in the set and the attempt still failed).
 sleep 65
 if docker exec "$IT_CID" ipset list allowed_ipv4 2>/dev/null | grep -qxF '192.0.2.1'; then
   fail "192.0.2.1 is in allowed_ipv4 after a refresh"
 else
   pass "192.0.2.1 is not in allowed_ipv4 after a refresh"
 fi
-assert_blocked "$IT_CID" 192.0.2.1 80
 
 it_finish
