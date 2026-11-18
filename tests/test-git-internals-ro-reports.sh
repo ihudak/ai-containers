@@ -776,13 +776,14 @@ printf '#!/bin/sh\n' > "$D332/bad/.git/hooks/pre-commit"; chmod 755 "$D332/bad/.
 # Its config.worktree is read, its config not: that file's keys are named once.
 "${G[@]}" -C "$D332/two" config extensions.worktreeConfig true; "${G[@]}" -C "$D332/two" config --worktree alias.tw log
 printf '[core\n' >> "$D332/two/.git/config"
+"${G[@]}" init -q "$O332/l/k" && "${G[@]}" -C "$O332/l/k" config alias.kk log || { printf 'SCAFFOLD-FAILED: G332 l/k\n'; exit 1; }
 "${G[@]}" init -q "$O332/l/ob" && "${G[@]}" -C "$O332/l/ob" config alias.ob log && cp "$O332/l/ob/.git/config" "$TMP/ob332.cfg" \
   && printf '[core\n' >> "$O332/l/ob/.git/config" || { printf 'SCAFFOLD-FAILED: G332 an unparsable config\n'; exit 1; }
 printf '#!/bin/sh\n' > "$O332/l/ob/.git/hooks/pre-commit"; chmod 755 "$O332/l/ob/.git/hooks/pre-commit"
 EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
 [[ "$LAUNCH_RC" == 0 && "$(fp332 bad)" == *"programs: (config, $ur332." ]] \
   && ! rec332 '' "$D332/bad/.git" && ! rec332 al: "$D332/bad/.git" \
-  && grep -qF 'mend it, on the host, and read it before you run git there; the next launch names what it sets.' "$ERR" \
+  && grep -qF 'run git there; the next launch names what it sets.' "$ERR" \
   && ! grep -qF "git config --file $D332/bad/.git/config --list" "$ERR" \
   && pass "G332 a config git cannot parse is named as not checked by the first protection, with what to do and no command that fails on it, and is not recorded as named" \
   || fail "G332 an unparsable config (rc=$LAUNCH_RC; got: $(fp332 bad); record: $(grep -cF "$D332/bad/.git" "$rec332") lines)"
@@ -792,10 +793,10 @@ EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
 b332="$(grep -A3 -F 'NOTE: /workspace/al332/bb/.git is protected for the first time, and its config' "$ERR")"
 c332="$(grep -A5 -F 'NOTE: /workspace/al332/cwb/.git is protected for the first time, and its config' "$ERR")"
 t332="$(grep -A5 -F 'NOTE: /workspace/al332/two/.git is protected for the first time, and its config' "$ERR")"
-[[ "$b332" == *'git could not read config, config.worktree there, so nothing it sets is checked.'* && "$b332" != *'review them on the host'* \
-   && "$c332" == *'git could not read config.worktree there,'* && "$c332" == *"git config --file $D332/cwb/.git/config --list"* \
+[[ "$b332" == *'git could not read config, config.worktree, which it reads for that git directory'* && "$b332" != *'review them on the host'* \
+   && "$c332" == *'git could not read config.worktree, which'* && "$c332" == *"git config --file $D332/cwb/.git/config --list"* \
    && "$c332" != *"cwb/.git/config.worktree --list"* && "$c332" == *"alias.cw $pa332"* \
-   && "$t332" == *'git could not read config there,'* && "$t332" == *"git config --file $D332/two/.git/config.worktree --list"* \
+   && "$t332" == *'git could not read config, which'* && "$t332" == *"git config --file $D332/two/.git/config.worktree --list"* \
    && "$t332" != *"two/.git/config --list"* ]] \
   && pass "G332 … the file git could not read is named, and only the command for one it can read is printed" \
   || fail "G332 which file is unread (both: $(tr '\n' ' ' <<<"$b332"); config.worktree: $(tr '\n' ' ' <<<"$c332"); config: $(tr '\n' ' ' <<<"$t332"))"
@@ -815,7 +816,16 @@ rec332 unread: "$D332/bad/.git" && rec332 hooks: "$D332/bad/.git" && rec332 '' "
 # Still unparsable at the next launch: said again, for what it is, and the
 # hooks, named once, are not.
 h332="$(grep -cF 'bad/.git is protected for the first time, and its hooks/' "$ERR")$(grep -cF "$ob332 and was not reported before, and its hooks/" "$ERR")"
+# One an earlier engine reported, under the overlay: its config can be read,
+# its config.worktree, which the session of such an engine could write, cannot.
+grep -vF " al:$O332/l/k/.git" "$rec332" > "$rec332.n"; mv "$rec332.n" "$rec332"; printf '[core\n' > "$O332/l/k/.git/config.worktree"
 EXTRA_MOUNTS="$D332 $O332" launch "$TMP/app"
+k332="$(grep -A7 -F 'NOTE: /workspace/ov332/l/k/.git was reported by an earlier launch, which named no alias but a shell' "$ERR")"
+[[ "$k332" == *"Its config sets: (config.worktree, $ur332, alias.kk $pa332."* && "$k332" == *"git config --file $O332/l/k/.git/config --get-regexp"* \
+   && "$k332" != *"l/k/.git/config.worktree --get-regexp"* && "$k332" == *'git could not read config.worktree, which'* ]] \
+  && ! rec332 al: "$O332/l/k/.git" \
+  && pass "G332 … for one reported before, the command for the file git can read is printed, and only that" \
+  || fail "G332 a readable config beside an unparsable config.worktree, reported before (got: $(tr '\n' ' ' <<<"$k332"))"
 [[ "$h332" == 11 && "$(fp332 bad 'was protected by an earlier launch that could not read its config')" == *"programs: (config, $ur332." ]] \
   && ! grep -qF 'and its hooks/' "$ERR" && ! grep -qF 'that did not report it' "$ERR" \
   && pass "G332 … the next launch says it could not be read before, names it as not checked again, and does not repeat the hooks, under an overlay either" \
@@ -882,6 +892,7 @@ EXTRA_MOUNTS="$D332" launch "$TMP/app"
 [[ "$(al332 al332/old/.git)" == *"Its config sets: (config, $ur332." ]] && ! rec332 al: "$D332/old/.git" \
   && grep -qF 'of what it sets, a later launch names only the aliases.' <<<"$(grep -A8 -F 'NOTE: /workspace/al332/old/.git was reported by an earlier launch' "$ERR")" \
   && ! grep -qF "git config --file $D332/old/.git/config --get-regexp" "$ERR" \
+  && [[ "$(grep -A5 -F 'NOTE: /workspace/al332/old/.git was reported by an earlier launch' "$ERR")" != *'review them on the host'* ]] \
   && cp "$TMP/old332.cfg" "$D332/old/.git/config" && EXTRA_MOUNTS="$D332" launch "$TMP/app" \
   && [[ "$(al332 al332/old/.git)" == *"Its config sets: alias.so $pa332." ]] && rec332 al: "$D332/old/.git" \
   && pass "G332 one reported before whose config git cannot parse is named as not checked, not recorded, and named once it can" \
