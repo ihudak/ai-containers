@@ -373,7 +373,8 @@ launcher_ro_overlay() {
   local x f e q w c inner how fin
   local -a hsrc=() hdst=()
   local -A hvdone=()
-  local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you
+  local uid="${SANDBOX_UID:-$(id -u)}" gid="${SANDBOX_GID:-$(id -g)}" you gident arep awt
+  local -a acf=()
   local -a found unreadable cand bsrc=() bdst=() cl=() cat=() csrc=() cdst=() cdep=() ckind=() ro_dsts=() psrc pdst
   local -a _xm_t=() _xm_by=() _xm_j=() _xm_k=() ro_srcs=() _gdi_nowt=() rosrc=()
   local rs
@@ -1031,15 +1032,35 @@ launcher_ro_overlay() {
           # made inside a launcher it made, named when the container exited, was
           # not named again, and its config was then taken for frozen (bugs
           # review GIT-80; G202). After _git_cd_check, so a launch it refuses
-          # records nothing. Where git did not run the hooks were named, and the
-          # keys are by the next launch with git, alone.
-          rep=""; hk=""
-          if ! _git_reported "$g"; then
-            if ! _git_reported "$g" hooks; then rep="lies under a read-only overlay and was not reported before"
-            elif _git_usable; then rep="lies under a read-only overlay and was reported where git did not run"; hk=1
+          # records nothing. Where git did not run, or could not read the config,
+          # the hooks were named, and the keys are by the next launch that can
+          # read them, alone.
+          rep=""; hk=""; gident="$(_git_ident "$g")"; arep=""; acf=()
+          if ! _git_reported "$g" "" "$gident" || { _git_reported "$g" unread "$gident" && ! _git_reported "$g" read "$gident"; }; then
+            if ! _git_reported "$g" hooks "$gident"; then rep="lies under a read-only overlay and was not reported before"
+            elif ! _git_usable; then :
+            elif _git_reported "$g" unread "$gident"; then rep="lies under a read-only overlay, where an earlier launch could not read its config"; hk=1
+            else rep="lies under a read-only overlay and was reported where git did not run"; hk=1
             fi
           fi
-          if [[ -n "$rep" ]]; then _git_report_once "$g" "$at" "$rep" "" "$hk"; fi
+          # Once a launch: a second mount that exposes it says nothing again.
+          if [[ -n "${_git_rep_now[$g]:-}" ]]; then arep="${_git_rep_now[$g]}"
+          elif [[ -n "$rep" ]]; then
+            _git_report_once "$g" "$at" "$rep" "" "$hk"
+            arep=named; if [[ -n "$_git_runs_unread" ]]; then arep=unread; fi
+            _git_rep_now[$g]="$arep"
+          fi
+          # One an earlier engine reported had no alias named but a shell
+          # command (_git_alias_once). Its config.worktree too, whether or not
+          # a launch named keys there: no launch names that file on its own
+          # under an overlay, which holds it read-only as it is.
+          if [[ -z "$arep" ]]; then
+            if [[ -n "$gown" ]]; then acf+=("$g/config"); fi
+            acf+=("$g/config.worktree")
+          fi
+          # The overlay holds a file read-only, not what a link there leads to.
+          x=1; if [[ -L "$g/config" || -L "$g/config.worktree" ]]; then x=""; fi
+          _git_alias_once "$g" "$at" "$gident" "$x" "$arep" "" ${acf[@]+"${acf[@]}"}
           # gitdir too, which names a linked worktree's checkout (final review of
           # the GIT-46 fix).
           for f in config config.worktree commondir gitdir; do
@@ -1130,7 +1151,7 @@ launcher_ro_overlay() {
         # Who it is, and whether its commondir is one git writes (_git_cd_check):
         # any other refuses the launch. Placeholders in one that holds no
         # repository are inert to git.
-        cdir=""; gmade=""
+        cdir=""; gmade=""; gident=""; arep=""; acf=(); awt=""
         _git_cd_check "$g" gown
         if [[ -n "$gown" ]]; then
           cfg="$g/config"; gmade=1
@@ -1188,15 +1209,24 @@ launcher_ro_overlay() {
           # Where git does not run no key is read, so the record says only that
           # the hooks were named (`hooks:`): the next launch where git runs names
           # the keys, and the hooks NOTE is not repeated meanwhile (re-review of
-          # the GIT-24 fix).
-          rep=""; hk=""
+          # the GIT-24 fix). The same where git could not read the config
+          # (`unread:` beside it), until a launch can and names them (`read:`).
+          rep=""; hk=""; gident="$(_git_ident "$g")"
           if [[ -n "$first" ]]; then rep="is protected for the first time"; al=" already"
-          elif ! _git_reported "$g"; then
-            if ! _git_reported "$g" hooks; then rep="was protected by an earlier launch that did not report it"; al=""
-            elif _git_usable; then rep="was protected by an earlier launch where git did not run"; al=""; hk=1
+          elif ! _git_reported "$g" "" "$gident" || { _git_reported "$g" unread "$gident" && ! _git_reported "$g" read "$gident"; }; then
+            if ! _git_reported "$g" hooks "$gident"; then rep="was protected by an earlier launch that did not report it"; al=""
+            elif ! _git_usable; then :
+            elif _git_reported "$g" unread "$gident"; then rep="was protected by an earlier launch that could not read its config"; al=""; hk=1
+            else rep="was protected by an earlier launch where git did not run"; al=""; hk=1
             fi
           fi
-          if [[ -n "$rep" ]]; then _git_report_once "$g" "$at" "$rep" "$al" "$hk"; fi
+          # Once a launch: a second mount that exposes it says nothing again.
+          if [[ -n "${_git_rep_now[$g]:-}" ]]; then arep="${_git_rep_now[$g]}"
+          elif [[ -n "$rep" ]]; then
+            _git_report_once "$g" "$at" "$rep" "$al" "$hk"
+            arep=named; if [[ -n "$_git_runs_unread" ]]; then arep=unread; fi
+            _git_rep_now[$g]="$arep"
+          fi
         elif [[ -f "$g/commondir" ]]; then
           # Physically, as git resolves it (strbuf_add_real_path), and without the
           # trailing CR git strips: `cd` reads `s/..` lexically, which named the
@@ -1219,6 +1249,18 @@ launcher_ro_overlay() {
         if [[ -n "$cfg" && ! -e "$g/config.worktree" && ! -L "$g/config.worktree" ]]; then
           ( set -C; : > "$g/config.worktree" ) 2>/dev/null || _git_cant_make "$g" config.worktree
         fi
+        # The aliases that are no shell command, in a directory an earlier engine
+        # reported and named none of (_git_alias_once): which files hold them is
+        # decided here, before config.worktree's keys are named below, which
+        # names its aliases with them; they are named, and recorded, once this
+        # launch knows whether it binds the config. A linked worktree's
+        # directory has only its config.worktree, and one that is empty has
+        # nothing to name: not asked, and so not stat'ed, at every launch.
+        if [[ -z "$arep" && ( -n "$gown" || -s "$g/config.worktree" ) ]]; then
+          if [[ -z "$gident" ]]; then gident="$(_git_ident "$g")"; fi
+          if [[ -n "$gown" ]]; then acf+=("$g/config"); fi
+          if _git_reported "$g" wt "$gident"; then acf+=("$g/config.worktree"); fi
+        fi
         # One that holds something no launch has named: an earlier engine made
         # none while the extension was off, so a session could write it. Its keys
         # are named once, where git runs (_git_exec_keys reads none where it does
@@ -1226,7 +1268,10 @@ launcher_ro_overlay() {
         # (`wt:`): one that sets none, empty or not, is not recorded, so what a
         # container an earlier engine started writes into it later is still named
         # (G200; final review of the fix).
-        if [[ -s "$g/config.worktree" ]] && ! _git_reported "$g" wt; then
+        # Not where this launch's report has just named that file's keys, or
+        # could not read a config: it named them twice, and said the extension
+        # was off where it could not read the config that turns it on.
+        if [[ -z "$arep" && -s "$g/config.worktree" ]] && ! _git_reported "$g" wt "$gident"; then
           ek=(); mapfile -d '' -t ek < <(_git_exec_keys "$g/config.worktree")
           if (( ${#ek[@]} )); then
             rk=""; for e in "${ek[@]:0:10}"; do rk+="${rk:+, }$e"; done
@@ -1238,7 +1283,8 @@ launcher_ro_overlay() {
             printf '      launch made none where that was off, so a session could write one.\n' >&2
             printf '      If you did not set them yourself, review them on the host:\n' >&2
             printf '        git config --file %s --list\n' "$(_q "$g/config.worktree")" >&2
-            _git_report_record "$g" wt
+            # Not one git could not read: the launch that can names what it sets.
+            if ! _git_keys_unread "${ek[@]}"; then _git_report_record "$g" wt; awt=1; fi
           fi
         fi
         # Where a relative core.hooksPath has git look for the hooks a push runs:
@@ -1304,7 +1350,12 @@ launcher_ro_overlay() {
         done
         gro+=(${hgro[@]+"${hgro[@]}"})
       fi
-      if (( ${#gro[@]} == 0 )); then continue; fi
+      # One with nothing to bind (every file git reads there a link) holds no
+      # config read-only: its aliases are named by every launch.
+      if (( ${#gro[@]} == 0 )); then
+        if [[ "$kind" == dir ]]; then _git_alias_once "$g" "$at" "$gident" "" "$arep" "$awt" ${acf[@]+"${acf[@]}"}; fi
+        continue
+      fi
       psrc=(); pdst=()
       if [[ "$base" != "$src" ]]; then
         rest="${base#"$src"/}"; path="$src"; pin="$dst"
@@ -1325,8 +1376,15 @@ launcher_ro_overlay() {
       if [[ -z "$ok" ]]; then
         printf 'WARNING: cannot protect the git internals of %s: docker cannot be handed\n' "$(_term "$g")" >&2
         printf '         that name intact, so they stay writable. Rename it on the host.\n' >&2
-        continue
       fi
+      # Its aliases that are no shell command (_git_alias_once), now that the
+      # launch knows whether it holds the config read-only: not one that is a
+      # link, nor in a directory docker cannot be handed.
+      if [[ "$kind" == dir ]]; then
+        x=1; if [[ -z "$ok" || -L "$g/config" || -L "$g/config.worktree" ]]; then x=""; fi
+        _git_alias_once "$g" "$at" "$gident" "$x" "$arep" "$awt" ${acf[@]+"${acf[@]}"}
+      fi
+      if [[ -z "$ok" ]]; then continue; fi
       gn=$((gn + 1))
       for k2 in ${psrc[@]+"${!psrc[@]}"}; do
         seen[${pdst[k2]}]=1; pinned[${pdst[k2]}]=1
@@ -1393,6 +1451,7 @@ launcher_ro_overlay() {
     [[ -z "$x" ]] || seqrec+=("$(_term "${pgd[k]}") ($(_term "$x"))")
   done
   _git_seq_warn "" ${seqrec[@]+"${seqrec[@]}"}
+  _git_alias_flush
   # The record is what the next launch's scan finds a protected git directory by
   # when a session has cut it from the index that led to it (GIT-105); one this
   # launch could not add to is said, once.
@@ -5903,7 +5962,10 @@ _git_prog_iopt() {
 # given no script, which runs what git hands it. A key git runs with no shell
 # is read as git reads it (core.askpass, core.gitproxy,
 # gpg.ssh.defaultKeyCommand, a credential helper it prefixes). Not: a boolean
-# core.fsmonitor, an alias or submodule update that is not a shell command.
+# core.fsmonitor, an alias or submodule update that is not a shell command
+# (such an alias is named once, by _git_exec_keys, and what the git command it
+# stands for may run is not judged here; nor is one in a file the config
+# includes, where only the include is named).
 # Bytes, in the C locale, and every step linear in the value, which the agent
 # writes: a strip by pattern took 17 s for one with 64000 leading spaces
 # (review of the fix).
@@ -6145,8 +6207,22 @@ _git_prog() {
 # git run a program, or read another file of keys (an include), NUL-separated,
 # each once, values never printed. Read with git, which runs nothing from a
 # file it only lists; with no git on this host, none. A boolean core.fsmonitor
-# is git's own daemon, and an alias or a submodule's update runs a program only
-# when it starts with '!'. A file that does not exist sets nothing. git lists
+# is git's own daemon, and a submodule's update runs a program only when it
+# starts with '!'. An alias that does not is a git command with arguments, and
+# some git commands run a program an argument names (`rebase --exec ./x`); a
+# repository's alias is used over one of the same name in your own config, so
+# `git st` there ran ./x (measured, git 2.53). Each is named too, as what it is,
+# after the keys that run a program for certain, so that ten of them cannot
+# push one of those out of the ten a NOTE shows. With -p before the files, only
+# those aliases (_git_alias_once); an argument, since a variable could come
+# from the environment and silence the list (review of the GAP-30 fix). A file
+# that does not exist sets nothing. One that is there and cannot be read, or
+# that git cannot parse, is named as not checked, first, and the caller records
+# nothing as named (_git_keys_unread): read as setting nothing, a config the
+# agent made unreadable in the session that wrote it was recorded, and what it
+# held was named by no launch once you made it readable again (the same
+# review; git exits 1 for a file it may not open, as for no match, and 128 for
+# one it cannot parse: measured, git 2.53). git lists
 # only the keys that count (--get-regexp, as _git_walk_keys does, in the C
 # locale, GIT-91), at most 1200
 # of them a file, and a file cut there is named first: read whole, in this
@@ -6157,15 +6233,19 @@ _git_prog() {
 # once git reads that file; named there in words of its own, never from config,
 # where a repository used with --git-dir sets it (GIT-73, GIT-88).
 _git_exec_keys() {
-  local f rec k v n ks
+  local f rec k v n ks plain="" rc
+  if [[ "${1:-}" == -p ]]; then plain=1; shift; fi
   local re="^(core\\.hookspath|core\\.worktree|include\\.path|includeif\\..+\\.path|protocol\\.(ext\\.)?allow|${_git_prog_keys})\$"
-  local -A had=()
-  local -a out=() cut=()
+  local -A had=() hadp=()
+  local -a out=() cut=() pa=()
   _git_usable || return 0
   for f in "$@"; do
     if [[ ! -f "$f" ]]; then continue; fi
-    n=0
+    if [[ ! -r "$f" ]]; then cut+=("(${f##*/}, which git could not read: not checked)"); continue; fi
+    n=0; rc=""
     while IFS= read -r -d '' rec; do
+      # git's status, which the reader writes after git's keys: no key starts with `=`.
+      if [[ "$rec" == =* ]]; then rc="${rec#=}"; continue; fi
       if (( ++n > 1200 )); then cut+=("(${f##*/}: more than 1200 keys that can run a program, the rest not read)"); break; fi
       # A key over 256 bytes is named by its size, once (GIT-49).
       if ! _git_kv "$rec" k v; then
@@ -6177,7 +6257,12 @@ _git_exec_keys() {
       if [[ -n "${had[$k]:-}" ]]; then continue; fi
       case "$k" in
         core.fsmonitor) if [[ "${v,,}" =~ ^(true|false|yes|no|on|off|-?[0-9]+)?$ ]]; then continue; fi ;;
-        alias.*|submodule.*.update) if [[ "$v" != '!'* ]]; then continue; fi ;;
+        alias.*)
+          if [[ "$v" != '!'* ]]; then
+            if [[ -z "${hadp[$k]:-}" ]]; then hadp[$k]=1; pa+=("$k"); fi
+            continue
+          fi ;;
+        submodule.*.update) if [[ "$v" != '!'* ]]; then continue; fi ;;
         # A path runs a program; a host name does not (review of the batch 10 branch).
         sendemail.smtpserver|sendemail.*.smtpserver) if [[ "$v" != /* ]]; then continue; fi ;;
         core.worktree)
@@ -6186,9 +6271,137 @@ _git_exec_keys() {
       esac
       had[$k]=1
       _git_key_shown "$k" ks; out+=("$ks")
-    done < <(LC_ALL=C _git_file_config "$f" --null --get-regexp "$re" 2>/dev/null)
+    done < <(rc=0; LC_ALL=C _git_file_config "$f" --null --get-regexp "$re" 2>/dev/null || rc=$?; printf '=%d\0' "$rc" 2>/dev/null || true)
+    # 1 is no key that counts. The status comes down the pipe, never from a
+    # wait on the process substitution, which bash 5.1 to 5.3 report as failed
+    # now and then under load (version.sh: `_ver_run()`; GIT-50, TST-29). A
+    # reader that wrote none ended before it could, and its file counts as
+    # unread; not where the loop stopped reading at the cut, which is what
+    # ended it.
+    if (( n <= 1200 )) && [[ "$rc" != 0 && "$rc" != 1 ]]; then cut+=("(${f##*/}, which git could not read: not checked)"); fi
   done
+  if [[ -n "$plain" ]]; then out=(); fi
   for k in ${cut[@]+"${cut[@]}"} ${out[@]+"${out[@]}"}; do printf '%s\0' "$k"; done
+  # One set both ways (the last wins for git) is named above, as a program.
+  for k in ${pa[@]+"${pa[@]}"}; do
+    if [[ -n "${had[$k]:-}" ]]; then continue; fi
+    _git_key_shown "$k" ks; printf '%s (a git command, which may itself run a program)\0' "$ks"
+  done
+}
+# _git_keys_unread <item>...: whether _git_exec_keys named a file among these
+# as one git could not read. No key starts with a parenthesis, so no key the
+# agent writes passes for it.
+_git_keys_unread() {
+  local e
+  for e; do
+    if [[ "$e" == '('*', which git could not read: not checked)' ]]; then return 0; fi
+  done
+  return 1
+}
+
+# _git_unread_say <names, each between spaces> <what to do> <its second line>:
+# the lines a NOTE ends with where git could not read a config it names. Which
+# git reads for the directory: its own, or its common directory's.
+_git_unread_say() {
+  local n="${1# }"
+  n="${n% }"; n="${n//  /, }"
+  printf '      git could not read %s, which it reads for that git directory, so nothing it\n' "$n" >&2
+  printf '      sets is checked. Make it readable, or mend it, on the host, and %s\n' "$2" >&2
+  printf '      %s\n' "$3" >&2
+}
+# _git_alias_once <git dir> <where the agent sees it> <identity> <frozen> <reported> <wt-named> [<config file>...]:
+# name, once, the aliases a git directory's config sets that are no shell
+# command, where an earlier engine reported the directory and named none of
+# them: a launch names them with the keys that run programs (_git_exec_keys)
+# only since they were found to reach one (`alias.st = rebase --exec ./x`), and
+# a config reported before that is frozen as it was. The caller chooses the
+# files: the directory's own config where git reads it (not a linked
+# worktree's), and its config.worktree where a launch has named that file's
+# keys (`wt:`) or an overlay holds it; one not yet named is named whole, aliases
+# too, where the launch decides that, and with <wt-named> and no file it has
+# just done so, which is the naming. With <reported> this launch's report has
+# just named them (`named`), or could not read a config (`unread`), and nothing
+# is read here. Recorded (`al:`, by _git_alias_flush) once they were named or
+# none was set, and only where <frozen> says the launch holds the config
+# read-only, in every mount that exposes the directory: one it cannot bind (a
+# link, a directory with nothing to bind, or, in one mount and not another, a
+# name docker cannot be handed) the agent can still write, so its aliases are
+# named by every launch. Of those, the first twenty of a launch: each is a read
+# the agent could otherwise have a launch make up to SANDBOX_GIT_MAX times, and
+# every one past them is named as not read (reviews of the GAP-30 fix). A
+# directory is dealt with once a launch, however many mounts expose it. Where
+# git does not run nothing is read and nothing recorded.
+_git_alias_once() {
+  local g="$1" at="$2" id="$3" fz="$4" rep="$5" awt="$6" rk="" e f un=""
+  local -a ek=() cmd=()
+  shift 6
+  # Before any return: another mount's call may be the one that names them.
+  if [[ -z "$fz" ]]; then _git_alias_open[$g]=1; fi
+  if [[ -z "$rep" && $# -eq 0 ]]; then
+    if [[ -z "$awt" ]]; then return 0; fi
+    rep=named
+  fi
+  _git_usable || return 0
+  [[ -z "${_git_alias_now[$g]:-}" ]] || return 0
+  _git_alias_now[$g]=1
+  if [[ -z "$id" ]]; then id="$(_git_ident "$g")"; fi
+  ! _git_reported "$g" al "$id" || return 0
+  if [[ -n "$rep" ]]; then
+    if [[ "$rep" == unread ]]; then un=" ? "; fi
+  else
+    if [[ -z "$fz" ]] && (( ++_git_alias_open_n > 20 )); then _git_alias_skipped+=("$at"); return 0; fi
+    mapfile -d '' -t ek < <(_git_exec_keys -p "$@")
+    for e in ${ek[@]+"${ek[@]}"}; do
+      if _git_keys_unread "$e"; then e="${e#\(}"; un+=" ${e%%,*} "; fi
+    done
+    if (( ${#ek[@]} )); then
+      for e in "${ek[@]:0:10}"; do rk+="${rk:+, }$e"; done
+      if (( ${#ek[@]} > 10 )); then rk+=", and $(( ${#ek[@]} - 10 )) more"; fi
+      if [[ -n "$fz" ]]; then
+        printf 'NOTE: %s was reported by an earlier launch, which named no alias but a shell\n' "$(_term "$at")" >&2
+        printf '      command. Its config sets: %s.\n' "$(_term "$rk")" >&2
+      else
+        printf 'NOTE: %s has a config this launch cannot hold read-only, so its aliases are\n' "$(_term "$at")" >&2
+        printf '      named at every launch. It sets: %s.\n' "$(_term "$rk")" >&2
+      fi
+      printf '      Some git commands run a program an argument names (rebase --exec), and git uses a\n' >&2
+      printf '      repository'\''s alias over one of the same name in your own config.\n' >&2
+      # Not for a file git cannot read: the command fails on it.
+      for f; do
+        if [[ -f "$f" && "$un" != *" ${f##*/} "* ]]; then cmd+=("$f"); fi
+      done
+      if (( ${#cmd[@]} )); then
+        printf '      If you did not set them yourself, review them on the host:\n' >&2
+        for f in "${cmd[@]}"; do printf '        git config --file %s --get-regexp '\''^alias\\.'\''\n' "$(_q "$f")" >&2; done
+      fi
+      # Only aliases are named here, so the whole file is the host's to read.
+      if [[ -n "$un" ]]; then
+        _git_unread_say "$un" 'read all of it' 'before you run git there: of what it sets, a later launch names only the aliases.'
+      fi
+    fi
+  fi
+  if [[ -n "$fz" && -z "$un" ]]; then _git_alias_rec[$g]="$id"; fi
+}
+# _git_alias_flush: once every mount that exposes each git directory has been
+# seen, record (`al:`) those whose aliases this launch named, but for one some
+# mount exposes without holding its config read-only (a name docker can be
+# handed in one mount and not in another: recorded by the first, an alias
+# written through the second was named by no launch; last review of the GAP-30
+# fix); and name those past the twenty that were not read, together, where
+# each printed as it was met read as the end of another directory's WARNING.
+_git_alias_flush() {
+  local g
+  for g in ${_git_alias_rec[@]+"${!_git_alias_rec[@]}"}; do
+    if [[ -n "${_git_alias_open[$g]:-}" ]]; then continue; fi
+    _git_report_record "$g" al "${_git_alias_rec[$g]}"
+  done
+  _git_alias_rec=()
+  if (( ${#_git_alias_skipped[@]} )); then
+    printf 'NOTE: more than 20 git directories have a config this launch cannot hold read-only\n' >&2
+    printf '      (each has a WARNING of its own); the aliases of the rest are not named at this launch:\n' >&2
+    for g in "${_git_alias_skipped[@]}"; do printf '        %s\n' "$(_term "$g")" >&2; done
+  fi
+  _git_alias_skipped=()
 }
 
 # _git_report_once <git dir> <where the agent sees it> <what happened> <al> [hooks-named]:
@@ -6197,20 +6410,27 @@ _git_exec_keys() {
 # (_git_runs) — and record that they were named (_git_report_record): at a first
 # protection, for one an earlier launch protected without naming them, and for
 # one under a read-only overlay, which gets no binds of its own (GIT-80). With a
-# fifth argument the hooks were named by a launch where git did not run, and are
-# not named again.
+# fifth argument the hooks were named by an earlier launch, which read no key
+# (git did not run, or could not read the config), and are not named again.
 _git_report_once() {
   local g="$1" at="$2" rep="$3" al="$4" hk="${5:-}" rk rh f
-  local -a ek=()
+  local -a ek=() cmd=()
   _git_runs "$g" rk rh
   if [[ -n "$hk" ]]; then rh=""; fi
   if [[ -n "$rk" ]]; then
     printf 'NOTE: %s %s, and its config%s sets\n' "$(_term "$at")" "$rep" "$al" >&2
     printf '      what makes your host'\''s git run programs: %s.\n' "$(_term "$rk")" >&2
-    printf '      If you did not set them yourself, review them on the host:\n' >&2
+    # Not for one git cannot read: the command fails on it.
     for f in "$g/config" "$g/config.worktree"; do
-      if [[ -f "$f" ]]; then printf '        git config --file %s --list\n' "$(_q "$f")" >&2; fi
+      if [[ -f "$f" && "$_git_runs_unread" != *" ${f##*/} "* ]]; then cmd+=("$f"); fi
     done
+    if (( ${#cmd[@]} )); then
+      printf '      If you did not set them yourself, review them on the host:\n' >&2
+      for f in "${cmd[@]}"; do printf '        git config --file %s --list\n' "$(_q "$f")" >&2; done
+    fi
+    if [[ -n "$_git_runs_unread" ]]; then
+      _git_unread_say "$_git_runs_unread" 'read it before you' 'run git there; the next launch names what it sets.'
+    fi
   fi
   # The same moment freezes hooks/ as it is, and a repository the agent
   # made in a subdirectory arrives with whatever hooks it put there.
@@ -6226,10 +6446,28 @@ _git_report_once() {
   # A config.worktree whose keys that read named is recorded too (`wt:`);
   # one that named none is not, so what is written into it later is named
   # by the launch that finds it (final review of the GIT-81 fix).
+  # Nor where a config could not be read (_git_runs_unread): the launch that
+  # can read it names what it sets (review of the GAP-30 fix). That the aliases
+  # were named is recorded once the launch knows whether every mount holds the
+  # config read-only (`al:`, _git_alias_once, _git_alias_flush).
+  # The directory is recorded all the same, as one whose hooks were named
+  # (`hooks:`): the record is what the next scan finds it by (GIT-105), an
+  # older engine's scan too, which knows that line. `unread:` beside it says
+  # why no key was named, for what the next launch says.
+  # One recorded as unread gets `read:` once its keys are named: an engine
+  # before this one takes the `hooks:` line for a launch where git did not
+  # run, reads the config it cannot parse as setting nothing, and records the
+  # directory as named, so `unread:` with no `read:` means the keys are still
+  # to be named whatever else the record holds (last review of the GAP-30 fix).
   if _git_usable; then
-    _git_report_record "$g"
-    ek=(); mapfile -d '' -t ek < <(_git_exec_keys "$g/config.worktree")
-    if (( ${#ek[@]} )); then _git_report_record "$g" wt; fi
+    if [[ -z "$_git_runs_unread" ]]; then
+      _git_report_record "$g"
+      if _git_reported "$g" unread; then _git_report_record "$g" read; fi
+      ek=(); mapfile -d '' -t ek < <(_git_exec_keys "$g/config.worktree")
+      if (( ${#ek[@]} )); then _git_report_record "$g" wt; fi
+    else
+      _git_report_record "$g" hooks; _git_report_record "$g" unread
+    fi
   else _git_report_record "$g" hooks; fi
 }
 
@@ -6244,12 +6482,15 @@ _git_report_once() {
 # `git worktree add`), else that one's. A commondir or hooks/ that is a link, or
 # a commondir that leads nowhere, cannot be checked here and is named as such.
 # With a fourth argument the directory is read as a common directory a commondir
-# named, its own config, its commondir unread (GIT-69).
+# named, its own config, its commondir unread (GIT-69). _git_runs_unread holds
+# the names of the configs among them git could not read (_git_keys_unread),
+# each between spaces.
+_git_runs_unread=""
 _git_runs() {
   local -n _gr_k=$2 _gr_h=$3
   local g="$1" c="$1" cd="" e hp="" own=1 n=0
   local -a ek=() cf=()
-  _gr_k=""; _gr_h=""
+  _gr_k=""; _gr_h=""; _git_runs_unread=""
   # With a fourth argument it is a common directory as a commondir named it:
   # git reads its config, its own commondir unread (GIT-69).
   if [[ -n "${4:-}" ]]; then :
@@ -6271,6 +6512,9 @@ _git_runs() {
   if [[ -n "$own" ]]; then cf+=("$c/config"); fi
   cf+=("$g/config.worktree")
   mapfile -d '' -t ek < <(_git_exec_keys "${cf[@]}")
+  for e in ${ek[@]+"${ek[@]}"}; do
+    if _git_keys_unread "$e"; then e="${e#\(}"; _git_runs_unread+=" ${e%%,*} "; fi
+  done
   for e in ${ek[@]+"${ek[@]:0:10}"}; do _gr_k+="${_gr_k:+, }$e"; done
   if (( ${#ek[@]} > 10 )); then _gr_k+=", and $(( ${#ek[@]} - 10 )) more"; fi
   [[ -n "$own" ]] || return 0
@@ -6299,7 +6543,11 @@ _git_runs() {
 # another one (automated security review of 7121741; review of 7121741). The
 # birth time is to the nanosecond: in whole seconds, overlayfs gave a directory
 # removed and made again within the second its inode and its second back, and
-# the re-made repository went unreported (G93 at the floor, on Colima).
+# the re-made repository went unreported (G93 at the floor, on Colima). Where
+# stat is uutils' it is in whole seconds all the same: 0.10.0 prints no
+# fraction for %.9W (measured; GNU's is there as gnustat), so one made again
+# within the second it was first made in is the same one there (bugs review
+# PLAT-12, open).
 _git_ident() {
   local i=""
   if (( _launcher_stat_gnu )); then i="$(stat -c '%d %i %.9W' -- "$1" 2>/dev/null)" || i=""
@@ -6371,8 +6619,9 @@ _git_unq() {
 # _git_rec_add <line>: one line of the record, for the scan: `<device> <inode>
 # <birth> <path>`, the path as it is, `hooks:` or `file:` before it, or `want:`
 # before a checkout a launch could not reach (no identity: `0 0 0`). Not one
-# whose identity could not be read (`?`), nor `wt:` and `push:` lines, which
-# say what was named about a directory another line holds.
+# whose identity could not be read (`?`), nor `wt:`, `push:`, `al:`, `unread:`
+# and `read:` lines, which say what was named, or not read, about a directory
+# another line holds.
 _git_rec_add() {
   local LC_ALL=C _ra_l="$1" _ra_i _ra_p _ra_k=dir
   [[ "$_ra_l" == [0-9]*" "*" "*" "?* ]] || return 0
@@ -6398,10 +6647,14 @@ _git_reported_load() {
     _git_reported_set[$line]=1; _git_rec_add "$line"
   done < "$_git_reported_file" 2>/dev/null || true
 }
-# A second argument, `hooks`, is the record of a launch where git did not run,
-# which named the hooks and read no key: `<identity> hooks:<path>`, a line no
-# physical path can make, so an older engine matches it to nothing.
-_git_reported() {    # <git dir, physical> [hooks]: rc 0 when it is in the record
+# A second argument, `hooks`, is the record of a launch that named the hooks
+# and read no key, since git did not run or could not read the config:
+# `<identity> hooks:<path>`, a line no physical path can make, so an older
+# engine matches it to nothing. Any other is the kind before the path of a line
+# that says more about a directory: `unread` (git could not read its config),
+# `read` (it since could, and the keys were named), `wt`, `al`, `push`.
+# A third argument is the identity, where the caller has it (_git_ident forks).
+_git_reported() {    # <git dir, physical> [hooks] [identity]: rc 0 when it is in the record
   local p="$1"
   # A path with a newline as %q writes it in the C locale ($'…'), which no
   # physical path starts with: one line was all it could not be, and it was
@@ -6409,7 +6662,7 @@ _git_reported() {    # <git dir, physical> [hooks]: rc 0 when it is in the recor
   # byte past ASCII otherwise in another (review of the plan).
   if [[ "$p" == *$'\n'* ]]; then LC_ALL=C printf -v p '%q' "$p"; fi
   _git_reported_load
-  [[ -n "${_git_reported_set["$(_git_ident "$1") ${2:+$2:}$p"]:-}" ]]
+  [[ -n "${_git_reported_set["${3:-$(_git_ident "$1")} ${2:+$2:}$p"]:-}" ]]
 }
 # A third argument is the identity, where the caller has it (_git_ident forks).
 # A line that cannot be written is said by the launch, once (_git_rec_lost):
@@ -7419,6 +7672,17 @@ _git_wt_cfg() {
 # The git directories whose config this launch bound read-only, or that lie under
 # a read-only overlay: their own common directory, config included (_git_runs).
 declare -A _git_cfg_frozen=()
+# The git directories this launch's report has named, each `named` or `unread`
+# (_git_alias_once's <reported>): one two mounts expose is reported once.
+declare -A _git_rep_now=()
+# How many configs this launch cannot hold read-only it has read for aliases.
+_git_alias_open_n=0
+# The git directories _git_alias_once has dealt with at this launch; those
+# whose aliases are named, with the identity to record; those some mount
+# exposes without holding their config read-only; and those past the twenty
+# that were not read (_git_alias_flush).
+declare -A _git_alias_now=() _git_alias_rec=() _git_alias_open=()
+_git_alias_skipped=()
 # _git_watch_add <directory> [named by]: one a commondir names is git's common
 # directory as it is, its own commondir unread, so its own config is what the
 # check after the session reads there (GIT-69).

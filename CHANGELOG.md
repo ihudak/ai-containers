@@ -1151,6 +1151,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `gpg.program = ~/…` in a repository's own config, now get a `NOTE:` at each
   launch (bugs review GIT-106).
 
+- **An alias that is not a shell command is named too.** The first protection
+  of a repository lists the config keys that make your host's git run a
+  program, and of the aliases only those starting with `!`. But
+  `alias.st = rebase --exec ./x` has no `!`, `git st` runs `./x` from the
+  checkout, and git uses a repository's alias over one of the same name in your
+  own config (measured, git 2.53). Every alias in a repository's own config is
+  now in that list, marked as a git command that may itself run a program, and
+  so is one in a repository a session made, in the warning when the container
+  exits. A repository an earlier engine already reported has its aliases named
+  once, ten and then a count, at the next launch where git runs. A config git
+  cannot read or parse is named as not checked, with what to do, and is read
+  again by the next launch: read as setting nothing, one the agent left
+  unreadable was recorded as named. Where the launch cannot hold a config
+  read-only (it is a link), its aliases are named at every launch, for the
+  first twenty such repositories. Two limits: what such an alias runs is not
+  checked at each launch, as a `!` alias's program is, and an alias in a file
+  the config includes is not named, only the include (feature-gaps review
+  GAP-30).
+
 - **Planted `.git` files no longer make a refused launch slow.** Past
   `SANDBOX_GIT_MAX` git directories the scan stops and the launch is refused,
   but `.git` files were not counted: 3000 of them were each read and resolved

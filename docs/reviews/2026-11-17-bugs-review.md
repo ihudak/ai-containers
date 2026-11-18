@@ -15,7 +15,7 @@
 
 ## Summary
 
-39 bugs: 3 HIGH, 8 MEDIUM, 28 LOW. No SVC or BLD findings. TST-41, found while fixing them, is in section 9.
+39 bugs: 3 HIGH, 8 MEDIUM, 28 LOW. No SVC or BLD findings. TST-41 and PLAT-12, found while fixing them, are in section 9.
 
 ### HIGH — fix first
 
@@ -71,6 +71,7 @@
 | DOC-16 | CONFIRMED | the group-mount table in docs/repos-and-mounts.md leaves out five mounts the launcher makes |
 | DOC-17 | CONFIRMED | two counts in AGENTS.md no longer match the code |
 | TST-41 | CONFIRMED | `tests/test-report.sh` fails wherever `TMPDIR` lies under `HOME` (found while fixing PRJ-15) |
+| PLAT-12 | CONFIRMED | with uutils' `stat`, a git directory's recorded identity has its birth time in whole seconds (found while reviewing GAP-30's fix) |
 
 ---
 
@@ -908,3 +909,15 @@ No TODO, FIXME, "follow-up" or "deferred" marker added to code since bec1c57 pro
 - **What happens:** the check wants the markdown path cell to start with `` `/ ``, but the report shortens a path under `$HOME` to `~/…` (`ai-containers-report.sh`: `display_path()`). With `TMPDIR` under `HOME` (Claude Code's own scratch directories are; so is any `TMPDIR=~/tmp`), the check fails at `HEAD`, and passes with `TMPDIR=/tmp`. Found running the file for PRJ-15.
 - **Repro:** `TMPDIR="$HOME/some-dir" bash tests/test-report.sh` → `FAIL: --markdown backticks the path cell only`.
 - **Expected:** the suite passes wherever `TMPDIR` is.
+
+### PLAT-12: with uutils' `stat`, a git directory's recorded identity has its birth time in whole seconds
+- **Status: OPEN** (logged 2026-11-18, Fable 5.2 session). The comment at `_git_ident()` now says so; nothing else is changed. Whether to read the birth time with `gnustat` there is the user's decision: it changes what the record holds.
+- **Severity:** LOW
+- **Confidence:** CONFIRMED (measured on Ubuntu 26.04 under WSL2, uutils coreutils 0.10.0)
+- **Location:** `sandbox.sh`: `_git_ident()`
+- **Introduced:** before the window (the distribution's change of `stat`, not a commit here)
+- **What happens:** the identity a launch records for a git directory is `stat -c '%d %i %.9W'`: device, inode and birth time, the last to the nanosecond so that a directory removed and made again on a reused inode is another one. uutils' `stat` prints no fraction for `%.9W` (`1792966024`, where `gnustat` prints `1792966024.956043086`), so there the identity is to the second, and a git directory made again within the second it was first made in has the identity the record holds: it is not reported again, and its `al:`, `wt:` and `hooks:` lines stand for it.
+- **Reach:** both directories must be made within one second, so a scripted sequence or a test (G93 failed so at the floor before the nanoseconds), not a session against a repository made earlier.
+- **Repro:** `stat -c '%.9W' .` and `gnustat -c '%.9W' .` on a host whose `stat` is uutils'.
+- **Expected:** the nanoseconds wherever a `stat` on the host gives them.
+- **Suggested approach:** where `stat` prints no fraction and `gnustat` does, use `gnustat`, as `_timeout_prefix()` takes `gnutimeout`. The record's lines written before then hold whole seconds: a recorded birth time with no fraction has to be compared to the second, or every repository is reported once more and the scan loses the lines it finds a protected directory by (GIT-105).
