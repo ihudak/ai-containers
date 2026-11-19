@@ -1164,3 +1164,156 @@ capture-blocked-traffic.sh:logic-flip:ab3380775e7c771af14933f41af3da99bd5282e5
     directory and is only ever replaced by `mv`, so it is always there. A test
     could delete it mid-run, but the daemon never meets that state: nothing but
     root reaches that directory.
+
+# project.sh — move helpers (GAP-28)
+GROUP: project.sh — _prj_logical's stop at /, which no walk reaches
+project.sh:return-flip:641a5342ec858006a3483dcfdaacc8b2b684617d
+    [[ "$up" != / ]] || return 1                (_prj_logical)
+  damaged:  `return 1` becomes `return 0`, with nothing printed.
+  EQUIVALENT: the line runs only after the test just above it failed for the
+    directory the walk has reached, and that test is `[[ -d "$up" ]]` and
+    `cd "$up" && pwd`. The walk climbs one name at a time from an absolute
+    path, `up="${up:-/}"` never lets it go empty, so it ends at /, which is a
+    directory, and `cd /` succeeds for every user (/ is searchable by all on
+    any system this runs on): there the function prints and returns 0 first.
+    So the line is reached only where up is /, and there it never is. If /
+    could be made unsearchable, a test of `_prj_logical /x` would tell them
+    apart; nothing a hermetic test may do arranges that.
+
+GROUP: project.sh — `|| true` turned into `&& true` where nothing reads the status
+project.sh:logic-flip:e755bc805eccecb80572aeb26c54a82366a1dfde
+project.sh:logic-flip:6be0b76b5d092b1b7e4fb87d3c0693b2baceff10
+project.sh:logic-flip:7117e875101aa03c8d9ed9128c7a1eccbb86c21d
+project.sh:logic-flip:7eecb957a88fd8ae25576f7eb91e643d58825d5c
+project.sh:logic-flip:cc35f1dbdda4e94f69816cc6a526598e85728871
+project.sh:logic-flip:dce541e32317dab6fb53d6cb85a38426554151dc
+    rmdir -- "$tmpd" 2>/dev/null || true        (_prj_move_dot, twice)
+    ( unset "$2"; load_env_defaults "$1" local 2>/dev/null || true; printf '%s' "${!2-}" ) || true
+                                                (_prj_env_get: two mutants, one per `||`)
+    if [[ "$_pd_k" != PATH ]]; then unset "$_pd_k" 2>/dev/null || true; fi
+    load_env_defaults "$1" local 2>/dev/null || true
+                                                (_prj_env_dump)
+    read -r -a ents <<<"$(_prj_env_get "$tmpd/old" EXTRA_MOUNTS)" || true
+    read -r -a got <<<"$(_prj_env_get "$tmpd/new" EXTRA_MOUNTS)" || true
+                                                (prj_add_mount)
+  damaged:  each `|| true` becomes `&& true`.
+  EQUIVALENT: in every one the damaged list is not the last command of its
+    function, or its status is that of a command that cannot fail, and a
+    failure on the left of `&&` never trips `set -e` (nor does an `if` whose
+    body failed that way, bash's rule for a compound command), so the next
+    command runs either way and nothing reads the status. The two rmdirs are
+    followed by a printf and by `_prj_mv_tmp=""`, and cmd_mv calls
+    `_prj_move_dot … || mrc=$?`, which turns errexit off inside it anyway.
+    In _prj_env_get the inner list is followed by the printf, inside a
+    subshell that is itself the left of the outer `||` (or `&&`), so errexit
+    is off in it; its status is the printf's, a few bytes into a command
+    substitution, 0, and `0 && true` is 0 as `0 || true` is. _prj_env_dump's
+    loop and load_env_defaults are followed by the second loop, which prints
+    the dump. A here-string always ends in a newline, so those reads return
+    0 whatever the value. The results are asserted where they matter
+    (tests/test-project-mv.sh: "_prj_env_dump: the file's keys but the one
+    named", the EXTRA_MOUNTS rewrites of mv).
+
+# project.sh — helpers before cmd_rm (GAP-28)
+GROUP: confirm's y/Y test needs util-linux script(1)
+project.sh:cmp-flip:160d04657a84efb5c936594fc59efebf50891143
+project.sh:cond-negate:160d04657a84efb5c936594fc59efebf50891143
+project.sh:logic-flip:160d04657a84efb5c936594fc59efebf50891143
+  [[ "$reply" == "y" || "$reply" == "Y" ]]
+  ENV-DEPENDENT: KILLED on Linux by tests/test-project-tool.sh's "confirm at a
+  terminal takes y and Y for yes, anything else for no", which feeds answers
+  through util-linux `script -qec` so that confirm sees a terminal. macOS's
+  script(1) has no -e or -c, so there the test prints SKIP and these mutants
+  survive: the verdict moves with the userland, and neither reading is wrong.
+
+GROUP: project.sh helpers — `|| true` turned into `&& true` where what fails is not the list's last command
+project.sh:logic-flip:199ebc64681596d2b8fbaa59830ef7908bf0e8c0
+project.sh:logic-flip:faa9c1971a5ac5351cb69380cdd4b99498187d92
+project.sh:logic-flip:9911d6a06498aecf355629ad496729253d232873
+project.sh:logic-flip:a4e434dcdd05fdf594ecbb97facb3a635b9ed7e2
+project.sh:logic-flip:e1a608d577fb5e1c983708f7f2e8f1140104751c
+project.sh:logic-flip:eeeb705f0151de5b08fb66dc21fc3f37cf12c16a
+project.sh:logic-flip:e35ac31c7c1d721d429872c6a0d3a7a6e24a2f82
+  prj_resolve():    [[ -d "$arg" ]] && phys="$(cd "$arg" 2>/dev/null && pwd -P)" || true
+  _prj_rewrite():   chmod u+w "$tmp" 2>/dev/null || true
+  _prj_edit():      rm -f -- "$out" 2>/dev/null || true
+  prj_env():        load_env_defaults "$dot/sandbox.local.env" local || true
+                    load_env_defaults "$dot/sandbox.env" || true
+  prj_copy_risk():  recs="$(inspect_git "$vol")" || true
+  _prj_shared():    read -r -d '' -a list < <(prj_env "$dot" REPOS) || true
+  damaged:  each `|| true` becomes `&& true`.
+  EQUIVALENT: in each, what can fail stands before the last `&&` of its
+    list, so bash does not act on it under set -e (project.sh runs under
+    it, and prj_env's subshell inherits it), and each is a statement in the
+    middle of its function, followed by another, so its status is never
+    read. What each sets is set by the command that fails or not at all,
+    either way: phys, recs and list are assigned by that command itself
+    (read -d '' fails at every end of input), and the chmod, the rm and
+    load_env_defaults set nothing a later line reads differently. The
+    failure paths are asserted by what follows them: a rewrite of a
+    read-only registry stays read-only, a failed edit leaves no temp file,
+    an inspection cut short says NOT CHECKED, a project's REPOS are named.
+
+GROUP: project.sh helpers — `|| true` turned into `&& true` where the status goes nowhere
+project.sh:logic-flip:8873f3fe3a7dc7d4d892365156df70b8746ed6bb
+project.sh:logic-flip:610de9587b3392cb76fae4600ca4acaf1ac98f7e
+  prj_env():      printf '%s' "${!key:-$def}" ) 2>/dev/null || true
+  prj_running():  done < <(docker inspect --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$name" 2>/dev/null || true)
+  damaged:  each `|| true` becomes `&& true`.
+  EQUIVALENT: prj_env's subshell is its last statement, so with `&& true`
+    the subshell's status would become prj_env's, which `v="$(prj_env …)"`
+    reads under set -e. But the subshell cannot fail: its last command is a
+    printf into a command substitution, and before it the two loads are in
+    `||` lists and `unset "$key"` fails only for a readonly variable, which
+    no caller names (every key is a literal: IMAGE_NAME, REPOS, the four
+    pointers, REPO_VOLUME_PREFIX, AI_CONTAINER_GROUP, SANDBOX_WORKDIR,
+    EXTRA_MOUNTS). The docker inspect runs in a process substitution, whose
+    status bash never gives to the loop it feeds, and `&& true` prints
+    nothing, so the loop reads the same lines either way.
+
+# project.sh — cmd_rm (GAP-28)
+project.sh:logic-flip:e01d1afaf38d93bc16027c006d66f0245a382ed2
+    if (( rm_root )) && [[ -d "$root" && ! -L "$root" ]] && rmdir -- "$root" 2>/dev/null; then
+                                               (cmd_rm, step 6: the root it listed)
+  damaged:  `-d "$root" && ! -L "$root"` becomes `-d "$root" || ! -L "$root"`
+    (the other flip, `(( rm_root )) || …`, is killed by "rm keeps a root it
+    did not list as left empty").
+  EQUIVALENT: the two tests differ only where $root is a link to a directory
+    (-d and -L both true) or is neither a directory nor a link (not there, or
+    a file). In both the mutant goes on to `rmdir -- "$root"`, which fails:
+    rmdir(2) does not follow a final link and gives ENOTDIR for a link, for a
+    file, and ENOENT for nothing there. Its stderr goes to /dev/null and the
+    `if` is false either way, so nothing is printed or removed.
+
+# project.sh — cmd_mv (GAP-28)
+GROUP: project.sh cmd_mv — `|| true` turned into `&& true` on a read to EOF
+project.sh:logic-flip:d668c3b2064e26855c83175438c3e9f82091a82f
+project.sh:logic-flip:e48ff849b90dccad702a23397567813a325bf327
+project.sh:logic-flip:acf6621cbba46a1932b35db2b7944ce01f7d50e7
+project.sh:logic-flip:fd4354629564ac48b7d0a69882543af7fc3fdaaf
+  read -r -d '' -a em < <(prj_env "$src_dot" EXTRA_MOUNTS) || true
+  read -r -d '' -a em_sh <<<"${_prj_shell[EXTRA_MOUNTS]}" || true
+  read -r -d '' -a rp < <(prj_env "$src_dot" REPOS) || true
+  read -r -d '' -a rp_sh <<<"${_prj_shell[REPOS]}" || true
+  damaged:  each `|| true` becomes `&& true`.
+  EQUIVALENT: read -d '' fails at the end of its input, which is every time
+    here: neither prj_env's output nor a here-string holds a NUL. So each list
+    ends non-zero with `&& true` and zero with `|| true`, and that is the only
+    difference. Bash ignores the failure of a command in an `&&` list that is
+    not its last, under project.sh's `set -e` too, so neither ends cmd_mv; the
+    array is filled by the read either way, and no line after reads `$?` (the
+    next is a loop over the array). None of the four is the function's last
+    statement.
+
+GROUP: project.sh cmd_mv — the empty old root's rmdir guard, && turned into ||
+project.sh:logic-flip:17108257b5888f3300d54c94344cdc0d6c54cce4
+  if [[ -d "$old_root" && ! -L "$old_root" ]] && rmdir -- "$old_root" 2>/dev/null; then
+  damaged:  `[[ -d "$old_root" || ! -L "$old_root" ]]`
+  EQUIVALENT: the guard only decides whether rmdir runs, and every input the
+    mutant lets through that the original stopped is one rmdir refuses, so the
+    same NOTE is printed and nothing is removed. A link (to a directory or
+    not) passes `-d` or `! -L` under the mutant, and rmdir does not follow a
+    link: it fails with ENOTDIR (measured, GNU coreutils; POSIX rmdir(2)
+    names the link itself). A path that is not there, or a regular file,
+    passes `! -L`, and rmdir fails on both. A plain directory passes both
+    guards. No input separates the two programs.

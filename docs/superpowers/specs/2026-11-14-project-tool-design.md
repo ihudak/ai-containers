@@ -4,7 +4,11 @@
 the `WORKTREE` record), see the plan
 `docs/superpowers/plans/2026-11-14-project-tool.md`; amended in the final review
 (what `gc` before `mv` loses; working copies labelled by owner, the user's
-choice; `gc --all`).
+choice; `gc --all`). The constraint "`project.sh` registered as a falsify
+target" was not met when this said IMPLEMENTED: the row was deferred, its one
+oracle too slow for CI (feature-gaps review GAP-28). Met 2026-11-18: the oracle
+is four files by command, and `project.sh` has six CI shards of its own, one
+slice of its mutants each (`run.sh --slice`).
 
 Date: 2026-11-14.
 

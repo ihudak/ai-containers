@@ -90,6 +90,13 @@
 # `TARGET|` line at all is refused (exit 2) rather than reported clean: a gate
 # fed nothing must not pass.
 #
+# A SLICE of a target (`run.sh --slice K/N`, CI's project-K shards) measures
+# only the identities dealt to it. The run records every identity it dealt to
+# another slice (ELSEWHERE|), and an entry for one of those is skipped, saying
+# so, like an entry for a file the run did not measure. An entry for an
+# identity the run neither measured nor dealt elsewhere is stale, as in a whole
+# run: the generator did not produce it at all.
+#
 # This reads run.sh's STDOUT only. run.sh's own exit status is a separate
 # signal — an oracle that was not green on the pristine tree makes it exit 1 —
 # and a caller must honour both.
@@ -285,6 +292,7 @@ declare -A CL_SURV_TEXT=()   # "identity|text" → 1, the F10 dedupe key
 declare -A CL_SCOPE=()       # target file → 1
 declare -A CL_SCOPE_OPS=()   # target file → " op op " from its OPERATORS| record
 declare -A CL_FAILLINE=()    # identity → what killed its mutants, from NOTE|failline (TST-29)
+declare -A CL_ELSEWHERE=()   # identity → "K/N", dealt to another slice by run.sh --slice
 CL_RUN_OPS=""                # " op op " from RUN|operators=, "" when unknown
 CL_MUTANTS=0
 
@@ -292,7 +300,7 @@ cl_read_run() {   # <run output file or ->
   local src="$1" line rest verdict ident text target
   CL_SURVIVED=(); CL_SEEN=(); CL_SURV_TEXT=(); CL_SCOPE=(); CL_MUTANTS=0
   CL_SCOPE_OPS=(); CL_RUN_OPS=""
-  CL_UNPROVEN=(); CL_HAS_SURV=(); CL_FAILLINE=()
+  CL_UNPROVEN=(); CL_HAS_SURV=(); CL_FAILLINE=(); CL_ELSEWHERE=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
       'RUN|'*)
@@ -315,6 +323,12 @@ cl_read_run() {   # <run output file or ->
         rest="${line#TARGET|}"
         target="${rest%%|*}"
         [[ -n "$target" ]] && CL_SCOPE["$target"]=1
+        ;;
+      'ELSEWHERE|'*)
+        # ELSEWHERE|<identity>|<K>/<N>: generated, dealt to another slice.
+        rest="${line#ELSEWHERE|}"
+        ident="${rest%%|*}"
+        [[ -n "$ident" && "$rest" == *'|'* ]] && CL_ELSEWHERE["$ident"]="${rest#*|}"
         ;;
       'NOTE|failline|'*)
         # NOTE|failline|<identity>|L<line> seq <n>: <first FAIL: line // …> — what
@@ -403,7 +417,7 @@ cl_check_deep_ops() {
 
 # ── checks B, C, D ────────────────────────────────────────────────────────────
 cl_check_run() {   # <ledger file>
-  local ident skipped=0
+  local ident skipped=0 sliced=0
   # B: every survivor is written down. Sorted, so a run's findings are stable
   # across the arbitrary iteration order of an associative array.
   while IFS= read -r ident; do
@@ -442,6 +456,11 @@ cl_check_run() {   # <ledger file>
       cl_note "SKIPPED $ident — ${ident%%:*} was not among this run's targets"
       continue
     fi
+    if [[ -z "${CL_SEEN[$ident]:-}" && -n "${CL_ELSEWHERE[$ident]:-}" ]]; then
+      sliced=$(( sliced + 1 ))
+      cl_note "SKIPPED $ident — dealt to slice ${CL_ELSEWHERE[$ident]}, which this run did not measure"
+      continue
+    fi
     if [[ -z "${CL_SEEN[$ident]:-}" ]]; then
       cl_err "$ident is a ledger entry ($1:${CL_IDENT_LINE[$ident]}) for a mutant that no longer exists — stale, delete it"
     elif [[ -z "${CL_SURVIVED[$ident]:-}" ]]; then
@@ -470,6 +489,7 @@ cl_check_run() {   # <ledger file>
     fi
   done
   (( skipped > 0 )) && cl_note "$skipped ledger entr(y/ies) skipped: outside this run's ${#CL_SCOPE[@]} target(s) or their operators"
+  (( sliced > 0 )) && cl_note "$sliced ledger entr(y/ies) skipped: in another slice of a target this run measured"
   return 0
 }
 
