@@ -224,7 +224,7 @@ jobs:
         # took 405 min on 4 workers, so it is split by mutant, not by target.
         # The list here and FALSIFY_PROJECT_SLICES below must agree;
         # tests/test-falsify-shards.sh checks that slices 1..N each run once.
-        shard: [repo-git-reset, project-1, project-2, project-3, project-4, project-5, project-6, rest, deep]
+        shard: [repo-git-reset, version, project-1, project-2, project-3, project-4, project-5, project-6, rest, deep]
     env:
       FALSIFY_SPLIT_TARGET: repo-git-reset.sh
       # project.sh (feature-gaps review GAP-28) has shards of its own too, by
@@ -236,6 +236,10 @@ jobs:
       # workers, measured 2026-11-18), so each of the N shards runs one slice.
       FALSIFY_PROJECT_TARGET: project.sh
       FALSIFY_PROJECT_SLICES: 6
+      # version.sh has a shard of its own by the same rule: rest ran 68-86 min
+      # against the 90-min cap and was cancelled at it twice in ten runs
+      # (2026-11-18/19); version.sh was 13 of its 72 min, its largest target.
+      FALSIFY_VERSION_TARGET: version.sh
 
     steps:
       - uses: actions/checkout@v7
@@ -284,7 +288,8 @@ jobs:
             repo-git-reset) select=(--target "$FALSIFY_SPLIT_TARGET") ;;
             project-*) select=(--target "$FALSIFY_PROJECT_TARGET" --slice "${SHARD#project-}/$FALSIFY_PROJECT_SLICES"
                                --select-oracles --stop-at-kill) ;;
-            rest) select=(--exclude-target "$FALSIFY_SPLIT_TARGET" --exclude-target "$FALSIFY_PROJECT_TARGET") ;;
+            version) select=(--target "$FALSIFY_VERSION_TARGET") ;;
+            rest) select=(--exclude-target "$FALSIFY_SPLIT_TARGET" --exclude-target "$FALSIFY_VERSION_TARGET" --exclude-target "$FALSIFY_PROJECT_TARGET") ;;
             deep) select=(--deep) ;;
             *) echo "unknown falsify shard: $SHARD" >&2; exit 2 ;;
           esac
