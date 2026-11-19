@@ -81,7 +81,9 @@ want_tags="$(
   # shellcheck disable=SC2086  # KNOWN_VARIANTS is run.sh's space-separated list
   for v in $KNOWN_VARIANTS; do variant_image "$v"; printf '\n'; done )"
 n_want="$(grep -c . <<<"$want_tags")"
-if (( n_want >= 5 )); then
+# 3, not this corpus's 5: a checkout without the database-server variants
+# (mgd-ai-containers) has default, agents and native.
+if (( n_want >= 3 )); then
   pass "run.sh names $n_want image variants"
 else
   fail "run.sh names $n_want image variants — the cleanup check below would prove little"

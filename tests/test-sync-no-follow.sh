@@ -7,8 +7,13 @@
 # checked to be the regular file its path names.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Layout-tolerant: the engine is here at the repo root, and in base/ in a
+# checkout that keeps it there (mgd-ai-containers), as ENGINE_DIR is elsewhere.
+# REPO_DIR names the engine; TESTS_HERE names this directory.
+TESTS_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[[ -f "$REPO_DIR/sandbox.sh" ]] || REPO_DIR="$REPO_DIR/base"
 # shellcheck source=portability.sh
-source "$REPO_DIR/tests/portability.sh"
+source "$TESTS_HERE/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
@@ -24,7 +29,9 @@ export GIT_CONFIG_GLOBAL="$TMP/home/.gitconfig" GIT_CONFIG_NOSYSTEM=1
 source "$REPO_DIR/sync-to-projects.sh"
 set +e  # it turns errexit on; the checks below read non-zero returns
 
-V="$TMP/victims"; DIRS="allowlist-domains.d allowlist-proxy-domains.d allowlist-cidrs.d tools.d services.d"
+V="$TMP/victims"; DIRS="allowlist-domains.d allowlist-proxy-domains.d allowlist-cidrs.d tools.d"
+# services.d only where the engine has one (mgd-ai-containers has no database servers).
+[[ ! -d "$REPO_DIR/services.d" ]] || DIRS+=" services.d"
 for x in $DIRS; do mkdir -p "$V/dir-$x"; done
 for f in rootgi innergi conf engine shared; do printf 'victim %s\n' "$f" > "$V/$f"; chmod 600 "$V/$f"; done
 snap() { local f x; for f in "$V"/*; do [[ -f "$f" ]] && printf '%s %s %s\n' "$f" "$(p_sha1 "$f")" "$(p_stat_mode "$f")"; done; for x in $DIRS; do ls -A "$V/dir-$x"; done; }

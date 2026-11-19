@@ -12,17 +12,22 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Layout-tolerant: the engine is at the repo root here; mgd-ai-containers keeps it in
+# base/ with check-/bump-sandbox-version.sh at the root, sourcing base/bash-floor.sh.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/sandbox.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
 
 TMP="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/work/eng" "$TMP/decoy/eng"
+mkdir -p "$TMP/work/eng/base" "$TMP/decoy/eng/base"
 for d in work decoy; do
   word=REAL; [[ "$d" == decoy ]] && word=DECOY
   for s in bash-floor.sh sandbox-common.sh; do
     printf 'printf "%%s\\n" %s; exit 0\n' "$word" > "$TMP/$d/eng/$s"
+    cp "$TMP/$d/eng/$s" "$TMP/$d/eng/base/$s"
   done
 done
 
@@ -39,11 +44,12 @@ while IFS= read -r p; do
   b="${p##*/}"
   [[ "$listed" == *" $b "* ]] && continue
   fail "$b resolves its own directory with cd \"\$(dirname …)\" and is in neither ENTRY_POINTS nor LIBS here"
-done < <(grep -lE 'cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"' "$REPO_DIR"/*.sh)
+done < <(grep -lE 'cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"' "$ENGINE_DIR"/*.sh)
 
 for f in "${ENTRY_POINTS[@]}"; do
-  if [[ ! -f "$REPO_DIR/$f" ]]; then fail "$f: not in this repository"; continue; fi
-  cp "$REPO_DIR/$f" "$TMP/work/eng/$f"
+  src="$ENGINE_DIR/$f"; [[ -f "$src" ]] || src="$REPO_DIR/$f"
+  if [[ ! -f "$src" ]]; then fail "$f: not in this repository"; continue; fi
+  cp "$src" "$TMP/work/eng/$f"
   out="$(cd "$TMP/work" && CDPATH="$TMP/decoy" bash "eng/$f" </dev/null 2>&1)"
   first="$(head -n 1 <<<"$out")"
   if [[ "$first" == REAL ]]; then
@@ -58,7 +64,7 @@ done
 # built and started THAT project, with no error at all (review of GIT-20).
 mkdir -p "$TMP/work/proj/.ai-containers" "$TMP/decoy/proj/.ai-containers"
 # shellcheck disable=SC1091
-( source "$REPO_DIR/project-init.sh" 2>/dev/null; emit_launcher "$TMP/work/proj/.ai-containers/runme.sh" proj )
+( source "$ENGINE_DIR/project-init.sh" 2>/dev/null; emit_launcher "$TMP/work/proj/.ai-containers/runme.sh" proj )
 for d in work decoy; do
   word=REAL; [[ "$d" == decoy ]] && word=DECOY
   for s in build.sh sandbox.sh; do

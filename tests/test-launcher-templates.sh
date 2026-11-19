@@ -10,8 +10,13 @@
 # backfill inserted `unset CDPATH`) — and rewrites it with emit_launcher().
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Layout-tolerant: the engine is here at the repo root, and in base/ in a
+# checkout that keeps it there (mgd-ai-containers), as ENGINE_DIR is elsewhere.
+# REPO_DIR names the engine; TESTS_HERE names this directory.
+TESTS_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[[ -f "$REPO_DIR/sandbox.sh" ]] || REPO_DIR="$REPO_DIR/base"
 # shellcheck source=portability.sh
-source "$REPO_DIR/tests/portability.sh"
+source "$TESTS_HERE/portability.sh"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }

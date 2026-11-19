@@ -924,6 +924,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   native install exists. The partial file is left in place; delete it by hand
   to reclaim the space.
 
+- **The leftover npm Claude is used again when no native version runs**
+  (bugs review RT-5). The fallback fired only when `~/.local/share/claude` was
+  missing, but `sandbox.sh` creates and mounts that directory for every named
+  group with `claude-code` on, so it never fired, and `~/.local/bin/claude` was
+  missing whenever the native install failed. It now fires when the directory
+  has no executable version, the same check the native install uses.
+
 - **Images built on 2026-10-28 before the fix had a `node` that would not
   start** (bugs review BLD-10). Node 26's binary links `libatomic.so.1`, which
   the image's cleanup step removed with the build toolchain; `npm` and every

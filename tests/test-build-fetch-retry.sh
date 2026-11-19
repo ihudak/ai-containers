@@ -33,6 +33,9 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Layout-tolerant: the engine is at the repo root here; mgd-ai-containers keeps it in base/.
+ENGINE_DIR="$REPO_DIR"
+[[ -f "$ENGINE_DIR/Dockerfile" ]] || ENGINE_DIR="$REPO_DIR/base"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails + 1)); }
@@ -263,13 +266,13 @@ check_layer() {  # $1 name  $2 raw extraction
   fi
 }
 
-check_layer nvm "$(extract_layer '^ARG NVM_VERSION=' 'ln -sf .*/npx /usr/local/bin/npx' "$REPO_DIR/Dockerfile")"
+check_layer nvm "$(extract_layer '^ARG NVM_VERSION=' 'ln -sf .*/npx /usr/local/bin/npx' "$ENGINE_DIR/Dockerfile")"
 nvm_run="$LAYER_BODY"
 # The loop lives in install-node-lts.sh, which the layer runs (BLD-9): read with
 # the layer, or the reset below is not seen. tests/test-install-node-lts.sh
 # drives that loop itself.
 if [[ "$nvm_run" == *"bash /tmp/install-node-lts.sh"* ]]; then
-  nvm_run+=$'\n'"$(cat "$REPO_DIR/install-node-lts.sh")"
+  nvm_run+=$'\n'"$(cat "$ENGINE_DIR/install-node-lts.sh")"
 fi
 if [[ -n "$nvm_run" ]]; then
   if grep -qE 'for attempt in|for \(\( attempt' <<< "$nvm_run"; then
@@ -313,7 +316,7 @@ fi
 # `ln -sf "$PYENV_ROOT/shims/uvx" /usr/local/bin/uvx`, and the earlier attempt to
 # name both `uvx`es either side of a space could not match across the quote. The
 # install path is unique in this file; check_layer proves the anchor still fires.
-check_layer pyenv "$(extract_layer '^ENV PYENV_ROOT=' '/usr/local/bin/uvx$' "$REPO_DIR/Dockerfile")"
+check_layer pyenv "$(extract_layer '^ENV PYENV_ROOT=' '/usr/local/bin/uvx$' "$ENGINE_DIR/Dockerfile")"
 pyenv_run="$LAYER_BODY"
 if [[ -n "$pyenv_run" ]]; then
   if grep -q 'for attempt in' <<< "$pyenv_run"; then
@@ -415,7 +418,7 @@ fi
 # reaches a shell. The boundary matters — `| shasum` starts with "sh" and is not
 # a shell; the real pipes in these files go to tar, dd and gpg.
 pipe_hits=0
-for t in "$REPO_DIR/Dockerfile" "$REPO_DIR/install-tools.sh"; do
+for t in "$ENGINE_DIR/Dockerfile" "$ENGINE_DIR/install-tools.sh"; do
   logical=""; lineno=0; origin=0
   while IFS= read -r raw || [[ -n "$raw" ]]; do
     lineno=$((lineno + 1))
@@ -470,7 +473,7 @@ for layer in nvm:"$nvm_run" pyenv:"$pyenv_run"; do
 done
 
 # ── 2. the real files ────────────────────────────────────────────────────────
-declare -a targets=("$REPO_DIR/Dockerfile" "$REPO_DIR/install-tools.sh")
+declare -a targets=("$ENGINE_DIR/Dockerfile" "$ENGINE_DIR/install-tools.sh")
 total=0
 for t in "${targets[@]}"; do
   rel="${t#"$REPO_DIR"/}"
@@ -639,7 +642,7 @@ fi
 # gave up in 10 s, and a GitHub outage of a few minutes (504s) failed the
 # nightly's native image (2026-11-08). With no --retry-delay curl backs off
 # exponentially, and --retry 8 keeps trying for 256 s (measured).
-wk="$(tr -d '\\\n' < "$REPO_DIR/Dockerfile" | grep -o 'curl [^&]*wkhtmltox[^&]*' | head -1)"
+wk="$(tr -d '\\\n' < "$ENGINE_DIR/Dockerfile" | grep -o 'curl [^&]*wkhtmltox[^&]*' | head -1)"
 if [[ -z "$wk" ]]; then
   fail "the wkhtmltopdf download is found in the Dockerfile"
 elif [[ "$wk" =~ --retry\ ([0-9]+) ]] && (( BASH_REMATCH[1] >= 8 )) && [[ "$wk" != *--retry-delay* ]]; then

@@ -61,7 +61,7 @@ T_REPOSH="${ENGINE_REL}repo.sh"
 # likely to stay so. It used group.sh's until falsify stage 2 activated that
 # (GAP-1, 2026-11-03). bump-sandbox-version.sh shares its oracle with the three
 # migration hooks, which is a reason about the oracle, not about coverage.
-T_DEFERWHOLE="${ENGINE_REL}bump-sandbox-version.sh"
+T_DEFERWHOLE="bump-sandbox-version.sh"  # the repo root in both layouts
 # gate 4c below needs a row that is DEFERRED, EXECUTED-PARTIAL, and likely to
 # STAY that way. install-tools.sh is the durable choice: its two unreached
 # functions (api_get, main) need the network and a real GitHub API, so no

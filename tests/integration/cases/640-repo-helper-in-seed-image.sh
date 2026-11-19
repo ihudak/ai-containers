@@ -32,10 +32,15 @@ ctx="$(it_scratch)"
 out="$(docker build -q -t "$seed" -f "$IT_REPO_DIR/Dockerfile.seed" "$ctx" 2>&1)" \
   || { fail "the seed image did not build: $out"; it_finish; }
 
+# The checkout, not the engine: the test is under tests/ at the checkout root,
+# and IT_REPO_DIR is base/ in a checkout that keeps the engine there
+# (mgd-ai-containers). The test finds the engine in either layout itself.
+it_checkout="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+
 run_in_seed() {  # $1=root|user → the test's output; status is the test's
   local as="$1"
   docker run --rm --pull=never --label "$IT_LABEL" ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} \
-    -v "$IT_REPO_DIR:/src:ro" -e AS="$as" "$seed" sh -c '
+    -v "$it_checkout:/src:ro" -e AS="$as" "$seed" sh -c '
       set -e
       if [ "$AS" = user ]; then
         adduser -D -u 1500 itest >/dev/null 2>&1

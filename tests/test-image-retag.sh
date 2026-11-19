@@ -55,10 +55,10 @@ ME="$TMP/proj/.ai-containers"; mkdir -p "$ME"; ME="$(cd "$ME" && pwd -P)"
 # pipe of this test's, and opening the FIFO read-write lets it go on, so a
 # regression fails here rather than hanging the suite.
 bounded() {
-  local fifo="$1" rc i; shift
+  local fifo="$1" rc; shift
   p_timeout 10 "$@" > "$TMP/bounded.out" 2>&1; rc=$?
   if [[ "$rc" == 124 ]]; then
-    for i in 1 2 3; do
+    for _ in 1 2 3; do
       if [[ -p "$fifo" ]]; then { exec 3<>"$fifo"; exec 3>&-; } 2>/dev/null; fi
       sleep 1
     done

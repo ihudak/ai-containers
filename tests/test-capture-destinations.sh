@@ -40,9 +40,11 @@ BIN="$TMP/bin"; mkdir -p "$BIN"
 { printf '#!%s\n' "$BASH_BIN"; cat <<'FAKE'
 w=""; prev=""
 for a in "$@"; do [[ "$prev" == -w ]] && w="$a"; prev="$a"; done
-printf '%s\n' "$*" > "$CAP_STATE/tcpdump.args"
 printf 'PCAP\n' > "$w"
 printf '%s\n' "$$" > "$CAP_STATE/started.$$"
+# Last: the cases wait for tcpdump.args and then read the markers above, so
+# writing it first let a loaded runner look before they existed (C9 flaked).
+printf '%s\n' "$*" > "$CAP_STATE/tcpdump.args"
 trap 'printf "%s\n" TERM > "$CAP_STATE/tcpdump.term"; exit 0' TERM
 while :; do sleep 0.1; done
 FAKE

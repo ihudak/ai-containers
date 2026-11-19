@@ -57,14 +57,18 @@ else
 fi
 
 # A scratch repository holding the two files the job could touch.
-mkdir -p "$TMP/r"
-cp "$REPO_DIR/Dockerfile" "$REPO_DIR/sandbox.conf" "$TMP/r/" \
+# Layout-tolerant: the step edits the Dockerfile where the engine is, at the root
+# here and under base/ in mgd-ai-containers, so the scratch repository is laid
+# out the same way.
+ER=""; [[ -f "$REPO_DIR/Dockerfile" ]] || ER="base/"
+mkdir -p "$TMP/r/$ER"
+cp "$REPO_DIR/${ER}Dockerfile" "$REPO_DIR/${ER}sandbox.conf" "$TMP/r/$ER" \
   || { printf 'SCAFFOLD-FAILED: could not copy the Dockerfile and sandbox.conf\n'; exit 1; }
 ( cd "$TMP/r" \
     && { git init -q -b main . >/dev/null 2>&1 || git init -q . >/dev/null 2>&1; } \
     && git add -A && git -c user.email=t@example -c user.name=t commit -q -m base ) >/dev/null 2>&1 \
   || { printf 'SCAFFOLD-FAILED: could not commit the scratch repository\n'; exit 1; }
-current="$(sed -n 's/^ARG NVM_VERSION=//p' "$TMP/r/Dockerfile")"
+current="$(sed -n 's/^ARG NVM_VERSION=//p' "$TMP/r/${ER}Dockerfile")"
 [[ -n "$current" ]] || { printf 'SCAFFOLD-FAILED: the Dockerfile has no ARG NVM_VERSION= line\n'; exit 1; }
 
 # Render the two step outputs the script reads, as GitHub would. `sed -i ` is
@@ -129,9 +133,9 @@ changed="$(cd "$TMP/r" && git diff --name-only | LC_ALL=C sort)"
 # give (review of the TST-39 fix).
 upenv=()
 while IFS= read -r kv; do upenv+=("$kv"); done < <(step_env "$current")
-mkdir -p "$TMP/r2" && cp "$TMP/r/sandbox.conf" "$TMP/r2/" && git -C "$TMP/r" show HEAD:Dockerfile > "$TMP/r2/Dockerfile"
+mkdir -p "$TMP/r2/$ER" && cp "$TMP/r/${ER}sandbox.conf" "$TMP/r2/$ER" && git -C "$TMP/r" show "HEAD:${ER}Dockerfile" > "$TMP/r2/${ER}Dockerfile"
 ( cd "$TMP/r2" && env -u LATEST -u CURRENT ${upenv[@]+"${upenv[@]}"} GITHUB_OUTPUT="$TMP/out3" bash -e "$TMP/rendered.sh" ) >/dev/null 2>&1; rc=$?
-if [[ "$rc" == 0 ]] && grep -qx 'changed=false' "$TMP/out3" 2>/dev/null && cmp -s "$TMP/r2/Dockerfile" <(git -C "$TMP/r" show HEAD:Dockerfile); then
+if [[ "$rc" == 0 ]] && grep -qx 'changed=false' "$TMP/out3" 2>/dev/null && cmp -s "$TMP/r2/${ER}Dockerfile" <(git -C "$TMP/r" show "HEAD:${ER}Dockerfile"); then
   pass "the step with the Dockerfile's own version reports changed=false and changes nothing"
 else
   fail "the step with the Dockerfile's own version reports changed=false and changes nothing (rc $rc; $(cat "$TMP/out3" 2>/dev/null))"
