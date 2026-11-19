@@ -49,6 +49,9 @@ r="$(res "$A/")";         ok "resolve finds it with a trailing slash" [ "$r" = "
 r="$(res "alpha/../alpha" "" "$TMP/work")"; ok "resolve finds it by a relative path" [ "$r" = "$A|$A/.ai-containers" ]
 r="$(res "$TMP/link-to-alpha")"; ok "resolve finds it through a symlink to it" [ "$r" = "$A|$A/.ai-containers" ]
 r="$(res "alpha")";       ok "resolve finds it by its unique basename" [ "$r" = "$A|$A/.ai-containers" ]
+# Beside it, the bare name is the same physical directory, found first: the
+# basename lookup and its "a directory here" refusal are not reached.
+r="$(res "alpha" "" "$TMP/work")"; ok "resolve takes a bare name beside the registered project as that project" [ "$r" = "$A|$A/.ai-containers" ]
 r="$(res "sp ace")";      ok "resolve handles a path with a space" [ "$r" = "$S|$S/.ai-containers" ]
 r="$(res "beta")"; rc=$?
 ok "resolve refuses a basename two projects share, naming both" \

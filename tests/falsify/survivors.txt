@@ -1226,6 +1226,18 @@ project.sh:logic-flip:160d04657a84efb5c936594fc59efebf50891143
   script(1) has no -e or -c, so there the test prints SKIP and these mutants
   survive: the verdict moves with the userland, and neither reading is wrong.
 
+GROUP: prj_resolve's match by another path to the same directory needs a mount namespace
+project.sh:logic-flip:bce66ed77a43590477212157e9d71e039a24e627
+      if [[ "$rp" == "$phys" || "$r" -ef "$phys" ]]; then found="$r"; break; fi
+  damaged:  `||` becomes `&&`, so a root is matched only when its physical
+    path is the same string AND the same directory.
+  ENV-DEPENDENT: KILLED where tests/test-project-tool.sh's "resolve takes a
+    bind-mounted view of the registered root for that project" runs: only
+    there are the two paths different strings for one directory. It needs
+    `unshare -rm`, which GitHub's ubuntu-24.04 runners refuse (unprivileged
+    user namespaces are restricted) and macOS does not have, so there the
+    test prints SKIP and the mutant survives.
+
 GROUP: project.sh helpers — `|| true` turned into `&& true` where what fails is not the list's last command
 project.sh:logic-flip:199ebc64681596d2b8fbaa59830ef7908bf0e8c0
 project.sh:logic-flip:faa9c1971a5ac5351cb69380cdd4b99498187d92
