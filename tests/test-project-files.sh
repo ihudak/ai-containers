@@ -11,6 +11,10 @@
 # project-files.sh slice). Hermetic: no docker, a private HOME and git config.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Layout-tolerant: the engine is here at the repo root, and in base/ in a
+# checkout that keeps it there (mgd-ai-containers), as ENGINE_DIR is elsewhere.
+# REPO_DIR names the engine.
+[[ -f "$REPO_DIR/sandbox.sh" ]] || REPO_DIR="$REPO_DIR/base"
 fails=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; fails=$((fails+1)); }
