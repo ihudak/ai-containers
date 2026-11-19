@@ -108,6 +108,14 @@ exit "$fails"
 EOF
 } > "$FX/tests/test-fx-a.sh"
 
+# Oracle S — oracle A's assertions after reading its stdin to the end, as
+# util-linux `script -qec` does, and failing if anything was on it. A worker
+# that inherited the runner's list of mutants as stdin lost the rest of it to
+# such a test, and a baseline that inherited the caller's waited on it
+# (measured 2026-11-19).
+sed 's|^# shellcheck source=/dev/null$|if IFS= read -r -t 1 _l; then printf "FAIL: the oracle was handed a stdin holding: %s\\n" "$_l"; exit 1; fi; cat > /dev/null\n&|' \
+  "$FX/tests/test-fx-a.sh" > "$FX/tests/test-fx-stdin.sh"
+
 # Oracle B — kills through the EXIT STATUS ONLY. Nothing it or the driver prints
 # contains the string `FAIL:` (the driver's own `   FAIL  (exit 1)` has no
 # colon), so breaking the FAIL:-line check cannot mask this kill and breaking
@@ -587,6 +595,7 @@ conf() { printf '%s\n' "$2" > "$TMP/$1.conf"; printf '%s' "$TMP/$1.conf"; }
 CONF_A="$(conf a 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-a.sh')"
 CONF_B="$(conf b 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-b.sh')"
 CONF_C="$(conf c 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-c.sh')"
+CONF_STDIN="$(conf stdin 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-stdin.sh')"
 CONF_SILENT="$(conf silent 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-silent.sh')"
 CONF_SLOW="$(conf slow 'fixture-slow.sh|EXECUTED-WHOLE|test-fx-slow.sh')"
 CONF_TYPO="$(conf typo 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-nosuchtest.sh')"
@@ -1635,6 +1644,63 @@ grep -q -- '--target nosuch.sh matches no active row' <<< "$FX_ERR" \
   && pass "a --target that matches nothing is named as such beside a valid --exclude-target" \
   || fail "a --target that matches nothing is named as such beside a valid --exclude-target: $FX_ERR"
 
+# ── 12a'. an oracle that reads its stdin does not cut the list short ─────────
+# The runner reads its list of mutants on a descriptor of its own and runs
+# every oracle with /dev/null for stdin, so oracle S, which fails on anything
+# in its stdin and reads it to the end, passes its baseline though the runner
+# is handed a line, and sees every mutant oracle A sees. --jobs 1: one worker,
+# so the first mutant's run would have eaten everything after it.
+fx_run "$RUN" "$CONF_A" "$FX" "$TMP/wit-stdin-a" --jobs 1 --controls 0
+n_a="$(grep -c '^MUTANT|' <<< "$FX_OUT")"
+fx_run "$RUN" "$CONF_STDIN" "$FX" "$TMP/wit-stdin" --jobs 1 --controls 0 <<< "a line on the runner's stdin"
+check "an oracle that reads its stdin runs (exit 0)" "0" "$FX_RC"
+(( n_a > 1 )) && [[ "$(grep -c '^MUTANT|' <<< "$FX_OUT")" == "$n_a" ]] \
+  && pass "  … and every mutant of the list is run ($n_a)" \
+  || fail "  … and every mutant of the list is run: $(grep -c '^MUTANT|' <<< "$FX_OUT") of $n_a"
+
+# ── 12b'. --slice K/N: slices 1..N of a target cover it exactly once ────────
+# (GAP-28.) CI runs project.sh as N jobs, one slice each, so the slices must
+# partition the target's mutants, keep every mutant of one identity together,
+# and name the identities they left to the other slices, which check-ledger.sh
+# skips rather than calls stale.
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-whole" --jobs 2 --controls 0 --target fixture-lib.sh
+whole="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $NF }' <<< "$FX_OUT" | sort)"
+slice_all="" slice_rc=0 slice_out=()
+for k in 1 2; do
+  fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-slice$k" --jobs 2 --controls 0 --target fixture-lib.sh --slice "$k/2"
+  (( FX_RC == 0 )) || slice_rc="$FX_RC"
+  slice_all+="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $NF }' <<< "$FX_OUT")"$'\n'
+  slice_out[k]="$FX_OUT"
+done
+check "--slice 1/2 and 2/2 both run (exit 0)" "0" "$slice_rc"
+check "  … and together run every mutant of the whole run, each once" "$whole" "$(grep . <<< "$slice_all" | sort)"
+ids1="$(awk -F'|' '$1 == "MUTANT" { print $3 }' <<< "${slice_out[1]}" | sort -u)"
+ids2="$(awk -F'|' '$1 == "MUTANT" { print $3 }' <<< "${slice_out[2]}" | sort -u)"
+[[ -n "$ids1" && -n "$ids2" && -z "$(comm -12 <(printf '%s\n' "$ids1") <(printf '%s\n' "$ids2"))" ]] \
+  && pass "  … no identity in both slices, neither slice empty" \
+  || fail "  … no identity in both slices, neither slice empty: [$ids1] [$ids2]"
+# Dealt to the slice with the fewest mutants so far: the two differ by no more
+# than the largest number of mutants one identity carries.
+n1="$(grep -c '^MUTANT|' <<< "${slice_out[1]}")"; n2="$(grep -c '^MUTANT|' <<< "${slice_out[2]}")"
+big="$(awk -F'|' '{ print $1 }' <<< "$whole" | sort | uniq -c | sort -rn | awk 'NR == 1 { print $1 }')"
+(( (n1 > n2 ? n1 - n2 : n2 - n1) <= big )) \
+  && pass "  … holding as many mutants as their identities allow ($n1 and $n2)" \
+  || fail "  … holding as many mutants as their identities allow: $n1 and $n2, an identity holds at most $big"
+check "  … each slice names the other's identities as ELSEWHERE" "$ids2" \
+  "$(awk -F'|' '$1 == "ELSEWHERE" && $3 == "2/2" { print $2 }' <<< "${slice_out[1]}" | sort)"
+check "  … and records its slice and counts" "1" \
+  "$(grep -cE "^SLICE\|fixture-lib.sh\|1/2\|$(grep -c '^MUTANT|' <<< "${slice_out[1]}")\|$(grep -c . <<< "$whole")$" <<< "${slice_out[1]}")"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-listslice" --target fixture-lib.sh --slice 2/2 --list-targets
+check "--list-targets with --slice names the slice" "fixture-lib.sh 2/2" "$FX_OUT"
+for bad in 3/2 0/2 2 x/2 ''; do
+  fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-badslice" --jobs 1 --controls 0 --target fixture-lib.sh --slice "$bad"
+  check "--slice '$bad' is refused (exit 2)" "2" "$FX_RC"
+done
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-bigslice" --jobs 1 --controls 0 --target fixture-lib.sh --slice 99/99
+[[ "$FX_RC" -ne 0 ]] && grep -q 'holds no mutant' <<< "$FX_ERR" && ! grep -q '^MUTANT|' <<< "$FX_OUT" \
+  && pass "a slice past the target's identities is refused, naming why, not run empty" \
+  || fail "a slice past the target's identities is refused, naming why, not run empty (rc=$FX_RC): $FX_ERR"
+
 # ── 12c. --deep: only deep.conf's targets, under only their extra operators ──
 # (GAP-4.) fixture-lib.sh has one simple statement, fx_never_called's
 # `return 0`, so stmt-delete gives it exactly one mutant; fixture-slow.sh is
@@ -2418,6 +2484,15 @@ out="$(bash "$RUN" --list-targets --exclude-target postgres.sh 2>/dev/null)"; rc
 check "--list-targets exits 0" "0" "$rc"
 check "  … and --exclude-target postgres.sh drops services.d/postgres.sh" "0" "$(grep -c '^services.d/postgres.sh$' <<< "$out")"
 check "  … keeping its neighbour services.d/redis.sh" "1" "$(grep -c '^services.d/redis.sh$' <<< "$out")"
+# Given twice, each name is left out (CI's rest shard leaves out every target
+# with a shard of its own), and each must match an active row.
+out="$(bash "$RUN" --list-targets --exclude-target postgres.sh --exclude-target redis.sh 2>/dev/null)"; rc=$?
+check "--exclude-target given twice leaves out both (exit 0)" "0:0:0:1" \
+  "$rc:$(grep -c '^services.d/postgres.sh$' <<< "$out"):$(grep -c '^services.d/redis.sh$' <<< "$out"):$(grep -c '^version.sh$' <<< "$out")"
+out="$(bash "$RUN" --list-targets --exclude-target postgres.sh --exclude-target nosuch.sh 2>&1)"; rc=$?
+check "  … and a second name that matches no active row is refused (exit 2)" "2" "$rc"
+grep -q 'exclude-target nosuch.sh matches no active row' <<< "$out" \
+  && pass "  … naming that one" || fail "  … naming that one: $out"
 n_active="$(bash "$TESTS_DIR/falsify/derive-targets.sh" --rows "$TESTS_DIR/falsify/targets.conf" \
             | awk -F'|' '$1 == "ACTIVE" && $4 == "EXECUTED-WHOLE"' | grep -c .)"
 if [[ "$n_active" -ge 1 ]]; then

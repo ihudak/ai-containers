@@ -8,7 +8,7 @@
 #                            [--jobs N|auto] [--timeout S]
 #                            [--operators <list> | --deep] [--max-unproven-pct N]
 #                            [--max-assertless N] [--controls N] [--select-oracles]
-#                            [--stop-at-kill]
+#                            [--stop-at-kill] [--slice K/N]
 #
 #   --select-oracles        per-mutant oracle selection (feature-gaps review
 #                           GAP-2). For a target whose oracle field names two or
@@ -72,7 +72,7 @@
 #                           that `git status` does not show (a file git
 #                           ignores, an empty directory, one under .git, one
 #                           outside the tree) is not seen, and the order's
-#                           verdict stands. Opt-in, used by no shard. Also
+#                           verdict stands. Opt-in, used by the project-K shards. Also
 #                           FALSIFY_STOP_AT_KILL=1.
 #   --deep                  the per-target deep pass (feature-gaps review
 #                           GAP-4): only the targets tests/falsify/deep.conf
@@ -82,13 +82,34 @@
 #                           adds what a target earned by a measured score, and
 #                           nothing else. Refused together with --operators.
 #                           FALSIFY_DEEP_CONF overrides the file (tests).
+#   --slice K/N             run the K-th of N slices of each selected target's
+#                           mutants (feature-gaps review GAP-28: project.sh's
+#                           mutants take ~1,600 worker-minutes, ~4.5 CI jobs'
+#                           worth). A target's distinct identities are dealt in
+#                           the order the generator emits them, each to the
+#                           slice holding the fewest mutants so far, so every
+#                           mutant sharing an identity is in one slice, slices
+#                           1..N of one tree cover the target exactly once, and
+#                           the expensive stretches of a file are spread over
+#                           every slice. Round-robin dealing gave project.sh's
+#                           slices 176 to 250 mutants, the largest 89 min on
+#                           four workers; this deal gives each 195 to 197.
+#                           The identities dealt to other slices are recorded
+#                           (ELSEWHERE|), so check-ledger.sh skips their
+#                           entries as unmeasured rather than stale. A slice
+#                           that would hold no mutant is refused: N is larger
+#                           than the target. With --list-targets each target
+#                           is printed as `<target> K/N`.
 #   --exclude-target <file> every active target BUT this one: the complement of
 #                           --target <file>, so a run of each covers the corpus
 #                           exactly once whatever is added to it later. That is
-#                           how CI splits the corpus over two jobs. A name that
-#                           matches no active row is refused, as for --target:
-#                           a typo would silently run the file twice. An
-#                           empty name is refused for both options.
+#                           how CI splits the corpus over its jobs. Given more
+#                           than once, every one named is left out (CI's `rest`
+#                           shard leaves out each target that has a shard of
+#                           its own). A name that matches no active row is
+#                           refused, as for --target: a typo would silently run
+#                           the file twice. An empty name is refused for both
+#                           options.
 #   --list-targets          print the targets the selection chose, one per
 #                           line, and run nothing. tests/test-falsify-shards.sh
 #                           drives CI's falsify step through it to prove the
@@ -154,6 +175,11 @@
 #   NOTE|reseed|<target>|<detail>   the baseline or a control left the worker
 #              tree changed, and its slot was re-seeded before a mutant ran in
 #              it (after a mutant's own run: NOTE|reseed|<identity>|…).
+#   SLICE|<target>|<K>/<N>|<mutants-kept>|<mutants-generated>   --slice:
+#              one per target, after the OPERATORS| records.
+#   ELSEWHERE|<identity>|<K>/<N>   --slice: one per distinct identity of a
+#              target dealt to another slice K of N. Generated, not measured
+#              here: check-ledger.sh skips an entry for it.
 #   OPERATORS|<target>|<list>      one per target, right after RUN: the
 #              operators that target's mutants were generated with. The ledger
 #              gate scopes its stale/obsolete checks by them, so a deep pass and
@@ -520,8 +546,9 @@ FR_RA_CLOCKS=""   # this target's "<test>=<seconds> ...", once its baseline is i
 FR_RA_TIMES=""    # where the baseline records each test's time
 FR_RA_ORDER=""    # --stop-at-kill: this target's tests quickest first, once a baseline proved that order green
 FR_TARGET=""
-FR_EXCLUDE=""
+FR_EXCLUDE=()
 FR_LIST_TARGETS=0
+FR_SLICE=""                  # --slice K/N, "" when the whole target runs
 FR_DEEP=0
 FR_DEEP_CONF="${FALSIFY_DEEP_CONF:-$FR_HERE/deep.conf}"
 FR_OPS=()      # per target: the operator list it is generated with, "" = the run's
@@ -2006,6 +2033,7 @@ FR_UNPROVEN=0
 FR_TIMEOUTS=0
 FR_ASSERTLESS=0
 FR_BROKEN=0
+FR_SHORT=0                   # targets whose mutant list was not read to its end
 FR_RESEED_FAILED=0
 # A target whose PRISTINE baseline is not green is skipped WHOLE, and every one
 # of its mutants leaves the corpus without ever being attempted. That is not the
@@ -2254,7 +2282,8 @@ FR_TARGETS=()
 FR_ORACLES=()
 
 fr_load_targets() {
-  local kind lineno target category oracle funcs skipped=0 excluded=0 targeted=0 in_target
+  local kind lineno target category oracle funcs skipped=0 targeted=0 in_target x hit
+  local -A excluded=()
   # The 6th field is an EXECUTED-PARTIAL row's function list (its mutation
   # unit); the 7th, a DEFERRED/EXCLUDED reason, is never read here.
   while IFS='|' read -r kind lineno target category oracle funcs _; do
@@ -2283,10 +2312,11 @@ fr_load_targets() {
     else
       targeted=$(( targeted + 1 ))
     fi
-    if [[ -n "$FR_EXCLUDE" && ( "$target" == "$FR_EXCLUDE" || "${target##*/}" == "$FR_EXCLUDE" ) ]]; then
-      excluded=$(( excluded + 1 ))
-      continue
-    fi
+    hit=0
+    for x in ${FR_EXCLUDE[@]+"${FR_EXCLUDE[@]}"}; do
+      if [[ "$target" == "$x" || "${target##*/}" == "$x" ]]; then excluded["$x"]=1; hit=1; fi
+    done
+    (( hit )) && continue
     (( in_target )) || continue
     if [[ ! -f "$FR_REPO/$target" ]]; then
       fr_err "$FR_CONF:$lineno: $target does not exist under $FR_REPO"
@@ -2307,13 +2337,15 @@ fr_load_targets() {
     fr_err "--target $FR_TARGET matches no active row in $FR_CONF"
     return 2
   fi
-  if [[ -n "$FR_EXCLUDE" ]] && (( excluded == 0 )); then
-    fr_err "--exclude-target $FR_EXCLUDE matches no active row in $FR_CONF"
-    return 2
-  fi
+  for x in ${FR_EXCLUDE[@]+"${FR_EXCLUDE[@]}"}; do
+    if [[ -z "${excluded[$x]:-}" ]]; then
+      fr_err "--exclude-target $x matches no active row in $FR_CONF"
+      return 2
+    fi
+  done
   if (( ${#FR_TARGETS[@]} == 0 )); then
-    if [[ -n "$FR_TARGET" && -n "$FR_EXCLUDE" ]]; then
-      fr_err "--target $FR_TARGET with --exclude-target $FR_EXCLUDE leaves no active row in $FR_CONF"
+    if [[ -n "$FR_TARGET" && ${#FR_EXCLUDE[@]} -gt 0 ]]; then
+      fr_err "--target $FR_TARGET with --exclude-target ${FR_EXCLUDE[*]} leaves no active row in $FR_CONF"
     else
       fr_err "$FR_CONF has no active EXECUTED-* row — there is nothing to mutate"
     fi
@@ -2607,6 +2639,45 @@ fr_cover_target() {   # <target> <oracle-set> — fills FR_SEL / FR_SEL_ON, prin
   printf 'NOTE|selection|%s|lines traced per oracle (ALL: always selected — it ran the target untraced, or went red under the trace; NONE: never selected — it passes with the target gutted): %s\n' "$target" "$detail"
 }
 
+# --slice K/N: keep in <mutants> only the K-th of N slices of <target>'s
+# mutants, and write its SLICE| record and an ELSEWHERE| record per identity
+# dealt to another slice into <records>. Identities are dealt in the order they
+# first appear, each to the slice with the fewest mutants so far, so a target's
+# mutants that share one (one damage to every `return 1` of a file, or two to
+# one line) stay together, the slices hold as many mutants as identities allow,
+# and the generator's line order spreads a file's costly stretches over them.
+fr_slice_mutants() {  # <target> <mutants.tsv> <records>
+  local target="$1" mutants="$2" records="$3" k="${FR_SLICE%/*}" n="${FR_SLICE#*/}" all kept
+  all="$(grep -c . "$mutants")"
+  awk -F'\t' -v k="$((10#$k))" -v n="$((10#$n))" -v t="$target" -v kept="$mutants.kept" '
+    $1 == "" { next }
+    # First pass: each identity, in the order it first appears, and its count.
+    NR == FNR { id = t ":" $1 ":" $3; if (!(id in cnt)) order[++u] = id; cnt[id]++; next }
+    # Between the passes, deal: each identity to the slice holding the fewest
+    # mutants so far, the lowest such slice on a tie.
+    !dealt {
+      for (s = 1; s <= n; s++) tot[s] = 0
+      for (i = 1; i <= u; i++) {
+        b = 1; for (s = 2; s <= n; s++) if (tot[s] < tot[b]) b = s
+        slot[order[i]] = b; tot[b] += cnt[order[i]]
+      }
+      dealt = 1
+    }
+    slot[t ":" $1 ":" $3] == k { print > kept }
+    END {
+      close(kept)
+      for (i = 1; i <= u; i++) if (slot[order[i]] != k) printf "ELSEWHERE|%s|%d/%d\n", order[i], slot[order[i]], n
+    }' "$mutants" "$mutants" > "$records.else" || { fr_err "could not slice the mutants of $target"; return 1; }
+  if [[ ! -s "$mutants.kept" ]]; then
+    fr_err "--slice $FR_SLICE of $target holds no mutant: $target has fewer distinct identities than $n"
+    return 1
+  fi
+  mv -f "$mutants.kept" "$mutants" || return 1
+  kept="$(grep -c . "$mutants")"
+  { printf 'SLICE|%s|%s|%s|%s\n' "$target" "$FR_SLICE" "$kept" "$all"; cat "$records.else"; } > "$records"
+  rm -f "$records.else"
+}
+
 fr_usage() { sed -n '2,/^# ── end of --help/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; }
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -2623,7 +2694,7 @@ falsify_main() {
       # the whole corpus in every shard.
       --target|--exclude-target)
         if [[ -z "${2:-}" ]]; then fr_err "$1 needs a file name"; return 2; fi
-        if [[ "$1" == --target ]]; then FR_TARGET="$2"; else FR_EXCLUDE="$2"; fi
+        if [[ "$1" == --target ]]; then FR_TARGET="$2"; else FR_EXCLUDE+=("$2"); fi
         shift 2 ;;
       --list-targets) FR_LIST_TARGETS=1; shift ;;
       --jobs) FR_JOBS="${2:-}"; shift 2 || return 2 ;;
@@ -2635,6 +2706,9 @@ falsify_main() {
       --deep) FR_DEEP=1; shift ;;
       --select-oracles) FR_SELECT=1; shift ;;
       --stop-at-kill) FR_STOP=1; shift ;;
+      --slice)
+        if [[ -z "${2:-}" ]]; then fr_err "--slice needs K/N"; return 2; fi
+        FR_SLICE="$2"; shift 2 ;;
       -h|--help) fr_usage; return 0 ;;
       *) fr_err "unknown option: $1"; fr_usage >&2; return 2 ;;
     esac
@@ -2685,6 +2759,12 @@ falsify_main() {
   if [[ -n "$FR_MAX_ASSERTLESS" && ! "$FR_MAX_ASSERTLESS" =~ ^[0-9]+$ ]]; then
     fr_err "--max-assertless must be a non-negative integer, got '${FR_MAX_ASSERTLESS}'"; return 2
   fi
+  if [[ -n "$FR_SLICE" ]]; then
+    if [[ ! "$FR_SLICE" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] \
+       || (( 10#${BASH_REMATCH[1]} > 10#${BASH_REMATCH[2]} )); then
+      fr_err "--slice must be K/N with 1 <= K <= N, got '${FR_SLICE}'"; return 2
+    fi
+  fi
   if [[ ! "$FR_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
     fr_err "--timeout must be a positive integer (seconds), got '${FR_TIMEOUT}'"; return 2
   fi
@@ -2692,8 +2772,17 @@ falsify_main() {
   if [[ ! -f "$FR_GENERATE" ]]; then fr_err "no generator at $FR_GENERATE"; return 2; fi
 
   fr_load_targets || return 2
+  # Nothing here reads stdin, and every oracle it runs (the baselines, the
+  # coverage pass, the controls, each mutant) inherits it: an oracle that
+  # reads its stdin waited on the caller's terminal or pipe until its clock
+  # stopped it, so the baseline timed out and the target was skipped.
+  exec </dev/null
   if (( FR_LIST_TARGETS )); then
-    printf '%s\n' "${FR_TARGETS[@]}"
+    if [[ -n "$FR_SLICE" ]]; then
+      for target in "${FR_TARGETS[@]}"; do printf '%s %s\n' "$target" "$FR_SLICE"; done
+    else
+      printf '%s\n' "${FR_TARGETS[@]}"
+    fi
     return 0
   fi
 
@@ -2743,6 +2832,10 @@ falsify_main() {
       fr_err "$target generated NO mutant — the operators matched nothing, which measures the generator, not the suite"
       return 1
     fi
+    if [[ -n "$FR_SLICE" ]]; then
+      fr_slice_mutants "$target" "$mutants" "$FR_OUT/slice.$i" || return 1
+      n="$(grep -c . "$mutants")"
+    fi
     total=$(( total + n ))
   done
 
@@ -2752,6 +2845,9 @@ falsify_main() {
   for (( i = 0; i < ${#FR_TARGETS[@]}; i++ )); do
     printf 'OPERATORS|%s|%s\n' "${FR_TARGETS[i]}" "$(fr_target_ops "$i")"
   done
+  if [[ -n "$FR_SLICE" ]]; then
+    for (( i = 0; i < ${#FR_TARGETS[@]}; i++ )); do cat "$FR_OUT/slice.$i"; done
+  fi
 
   # Worker trees, seeded in parallel: each is a ~20 MB copy and they are
   # independent, so N of them cost about as long as one.
@@ -2926,8 +3022,13 @@ falsify_main() {
     fi
     ctl_n=0
 
+    # The list is read on descriptor 9 and every worker gets /dev/null for
+    # stdin and no descriptor 9. A backgrounded subshell inherits the loop's
+    # redirect, so a test that read its stdin (util-linux `script -qec`, which
+    # forwards its stdin to a pty) ate the rest of the list: measured
+    # 2026-11-19, a slice of project.sh ran 5 of its 250 mutants and exited 0.
     seq=0
-    while IFS=$'\t' read -r op lineno sha text; do
+    while IFS=$'\t' read -r -u 9 op lineno sha text; do
       [[ -n "$op" ]] || continue
       seq=$(( seq + 1 ))
       while (( ${#FR_FREE_SLOTS[@]} == 0 )); do fr_wait_for_slot; done
@@ -2935,7 +3036,7 @@ falsify_main() {
       FR_FREE_SLOTS=("${FR_FREE_SLOTS[@]:1}")
       res="$FR_OUT/result.$slot.$seq"
       rm -f "$res"
-      fr_run_mutant "$slot" "$target" "$oracle" "$seq" "$lineno" "$op" "$sha" "$text" "$res" &
+      fr_run_mutant "$slot" "$target" "$oracle" "$seq" "$lineno" "$op" "$sha" "$text" "$res" </dev/null 9<&- &
       FR_PID_SLOT["$!"]="$slot"
       FR_PID_RESULT["$!"]="$res"
       FR_PID_CLOCK["$!"]="$set_clock"
@@ -2951,12 +3052,17 @@ falsify_main() {
         FR_FREE_SLOTS=("${FR_FREE_SLOTS[@]:1}")
         cres="$FR_OUT/control.$cslot.$ctl_n"
         rm -f "$cres"
-        fr_run_control "$cslot" "$target" "$oracle" "$ctl_n" "$cres" &
+        fr_run_control "$cslot" "$target" "$oracle" "$ctl_n" "$cres" </dev/null 9<&- &
         FR_PID_SLOT["$!"]="$cslot"
         FR_PID_RESULT["$!"]="$cres"
       fi
-    done < "$mutants"
+    done 9< "$mutants"
     fr_drain
+    # And a list cut short anyway is a failed run, never a smaller green one.
+    if (( seq != n_mut )); then
+      fr_err "$target: $seq of its $n_mut mutant(s) were dispatched — the list was cut short, so this run measured less than it reports"
+      FR_SHORT=$(( FR_SHORT + 1 ))
+    fi
 
     printf 'TARGET|%s|%s|%s|%s|%s|%s|%s|%s\n' "$target" "$oracle" \
       "$(( FR_KILLED + FR_SURVIVED + FR_UNPROVEN ))" "$FR_KILLED" "$FR_SURVIVED" \
@@ -3022,6 +3128,8 @@ falsify_main() {
     fr_err "$FR_CONTROLS_FAILED of $(( FR_CONTROLS_OK + FR_CONTROLS_FAILED )) control run(s) FAILED: the PRISTINE oracle went red under this run's own load, so a mutant scored KILLED here may have been killed by the machine rather than by the damage. Re-run with fewer --jobs before trusting the kill count."
     rc=1
   fi
+
+  if (( FR_SHORT > 0 )); then rc=1; fi
 
   if (( FR_BROKEN > 0 )); then
     fr_err "$FR_BROKEN mutant(s) produced no verdict — they are NOT counted as kills"

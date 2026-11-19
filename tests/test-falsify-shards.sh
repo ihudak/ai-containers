@@ -13,7 +13,9 @@
 # once per matrix entry, with the job's FALSIFY_SPLIT_TARGET, against a
 # tests/falsify/run.sh that hands its arguments to the real runner with
 # --list-targets, so what is compared is the targets the real runner chose.
-# Their union must be the unfiltered corpus and no target may appear twice.
+# Their union must be the unfiltered corpus and no target may appear twice,
+# except as slices (`run.sh --slice K/N` lists `<target> K/N`): the shards
+# that run slices of one target must name one N and each K from 1 to N once.
 # The check is then run against damaged copies of the workflow (a shard
 # dropped from the matrix, a case arm that selects the same half twice) and
 # must fail on each, so it is seen failing.
@@ -77,10 +79,17 @@ split_target() {  # $1=workflow
   falsify_job "$1" | awk '/^ +FALSIFY_SPLIT_TARGET:/ { v = $0; sub(/^[^:]*: */, "", v); sub(/ +$/, "", v); print v }'
 }
 
+# Every FALSIFY_* variable of the job's env:, as NAME=value, one per line: the
+# step reads each target that has a shard of its own from one of them.
+split_env() {  # $1=workflow
+  falsify_job "$1" | awk '/^ +FALSIFY_[A-Z_]+:/ { n = $0; sub(/^ +/, "", n); v = n; sub(/:.*$/, "", n); sub(/^[^:]*: */, "", v); sub(/ +$/, "", v); print n "=" v }'
+}
+
 # rc 0 when the shards of workflow $1 cover the corpus exactly once.
 shards_cover() {  # $1=workflow  $2=label
-  local wf="$1" label="$2" sh shards=() split body d out rc all expected dup
+  local wf="$1" label="$2" sh shards=() split body d out rc all expected dup envs=()
   mapfile -t shards < <(matrix_shards "$wf")
+  mapfile -t envs < <(split_env "$wf")
   split="$(split_target "$wf")"
   body="$(step_run "$wf" "$STEP")"
   if (( ${#shards[@]} < 2 )); then
@@ -97,7 +106,7 @@ shards_cover() {  # $1=workflow  $2=label
     # The deep shard re-runs a few targets under extra operators; it is not a
     # slice of the corpus, so it is checked on its own below, not counted here.
     [[ "$sh" == deep ]] && continue
-    out="$( cd "$d" && RUNNER_TEMP="$d/rt" SHARD="$sh" FALSIFY_SPLIT_TARGET="$split" \
+    out="$( cd "$d" && env RUNNER_TEMP="$d/rt" SHARD="$sh" "${envs[@]}" \
             bash --noprofile --norc -eo pipefail step.sh 2>&1 )"; rc=$?
     if (( rc != 0 )); then
       echo "  [$label] shard '$sh' exited $rc: $(tail -n 3 <<< "$out")"; return 1
@@ -107,6 +116,23 @@ shards_cover() {  # $1=workflow  $2=label
     fi
     cat "$d/rt/falsify-run.txt" >> "$d/all"
   done
+  # Slices: every `<target> K/N` line of one target names the same N, and
+  # its Ks are 1..N, each once. The target then counts once.
+  local sliced
+  sliced="$(awk '
+    NF == 2 {
+      split($2, kn, "/"); t = $1
+      if (t in n && n[t] != kn[2]) { printf "%s is cut into %s and %s slices\n", t, n[t], kn[2]; bad = 1 }
+      n[t] = kn[2]
+      if (++seen[t, kn[1]] > 1) { printf "%s slice %s runs twice\n", t, $2; bad = 1 }
+      if (kn[1] < 1 || kn[1] > kn[2]) { printf "%s has slice %s\n", t, $2; bad = 1 }
+    }
+    END {
+      for (t in n) for (k = 1; k <= n[t]; k++) if (!((t, k) in seen)) { printf "%s slice %d/%d is in no shard\n", t, k, n[t]; bad = 1 }
+      exit bad
+    }' "$d/all")" || { echo "  [$label] $(tr '\n' ';' <<< "$sliced")"; return 1; }
+  awk 'NF == 2 { if (!($1 in s)) { s[$1] = 1; print $1 }; next } { print }' "$d/all" > "$d/all.t"
+  mv "$d/all.t" "$d/all"
   expected="$(bash "$REAL_RUN" --list-targets 2>/dev/null | sort)"
   all="$(sort -u "$d/all")"
   dup="$(sort "$d/all" | uniq -d)"
@@ -123,12 +149,13 @@ shards_cover() {  # $1=workflow  $2=label
 # rc 0 when workflow $1's `deep` shard runs exactly the deep pass: the targets
 # `run.sh --deep` selects, which are deep.conf's.
 deep_shard_ok() {  # $1=workflow  $2=label
-  local wf="$1" label="$2" body d out rc got want
+  local wf="$1" label="$2" body d out rc got want envs=()
   body="$(step_run "$wf" "$STEP")"
+  mapfile -t envs < <(split_env "$wf")
   d="$TMP/$label"; mkdir -p "$d/tests/falsify" "$d/rt"
   printf '#!/usr/bin/env bash\nexec bash %q --list-targets "$@"\n' "$REAL_RUN" > "$d/tests/falsify/run.sh"
   printf '%s\n' "$body" > "$d/step.sh"
-  out="$( cd "$d" && RUNNER_TEMP="$d/rt" SHARD=deep FALSIFY_SPLIT_TARGET="$(split_target "$wf")" \
+  out="$( cd "$d" && env RUNNER_TEMP="$d/rt" SHARD=deep "${envs[@]}" \
           bash --noprofile --norc -eo pipefail step.sh 2>&1 )"; rc=$?
   if (( rc != 0 )); then echo "  [$label] shard 'deep' exited $rc: $(tail -n 3 <<< "$out")"; return 1; fi
   got="$(sort "$d/rt/falsify-run.txt" 2>/dev/null)"
@@ -179,6 +206,32 @@ if ! cmp -s "$WF" "$TMP/twice.yml" && ! msg="$(shards_cover "$TMP/twice.yml" twi
   pass "two shards selecting the same targets are caught"
 else
   fail "two shards selecting the same targets are caught: $msg"
+fi
+
+# Seen failing: a slice of project.sh dropped from the matrix is never run.
+sed 's/ project-3,//' "$WF" > "$TMP/slicedrop.yml"
+if ! cmp -s "$WF" "$TMP/slicedrop.yml" && ! msg="$(shards_cover "$TMP/slicedrop.yml" slicedrop)"; then
+  pass "a matrix missing a slice of project.sh is caught"
+else
+  fail "a matrix missing a slice of project.sh is caught: $msg"
+fi
+
+# Seen failing: FALSIFY_PROJECT_SLICES raised without a shard for the new
+# slice, which no job would run.
+sed 's/FALSIFY_PROJECT_SLICES: [0-9]*/FALSIFY_PROJECT_SLICES: 7/' "$WF" > "$TMP/slicecount.yml"
+if ! cmp -s "$WF" "$TMP/slicecount.yml" && ! msg="$(shards_cover "$TMP/slicecount.yml" slicecount)"; then
+  pass "a slice count the matrix does not match is caught"
+else
+  fail "a slice count the matrix does not match is caught: $msg"
+fi
+
+# Seen failing: a rest arm that forgets one of the targets with a shard of its
+# own runs that target twice.
+sed 's/ --exclude-target "$FALSIFY_PROJECT_TARGET")/)/' "$WF" > "$TMP/forgot.yml"
+if ! cmp -s "$WF" "$TMP/forgot.yml" && ! msg="$(shards_cover "$TMP/forgot.yml" forgot)"; then
+  pass "a rest shard that does not leave out every split target is caught"
+else
+  fail "a rest shard that does not leave out every split target is caught: $msg"
 fi
 
 printf '\n%d failure(s)\n' "$fails"

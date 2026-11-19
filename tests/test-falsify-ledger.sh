@@ -302,6 +302,43 @@ assert_has "  … naming the entry and the missing deep row" "beta.sh:stmt-delet
 out="$(FALSIFY_DEEP_CONF="$FIX_DEEP" bash "$CHECK" --ledger "$OPS_LED" --lint 2>/dev/null)"; rc=$?
 check "an entry whose file's deep row names its operator passes --lint" "0" "$rc"
 
+# ── Scope by slice: run.sh --slice K/N measures only its share (GAP-28) ──────
+# CI runs project.sh as N slices, each scoring the one ledger. An entry for an
+# identity the run dealt to another slice (ELSEWHERE|) is unmeasured, not
+# stale; one for an identity no slice was dealt is still stale.
+EL='6666666666666666666666666666666666666666'
+SLICE_RUN="$TMP/slice-run.txt"
+cat > "$SLICE_RUN" <<EOF
+RUN|repo=/fix|conf=/fix/targets.conf|jobs=1|timeout=60|operators=<default>|targets=1|mutants=2
+OPERATORS|alpha.sh|cond-negate logic-flip return-flip cmp-flip
+SLICE|alpha.sh|1/2|2|3
+ELSEWHERE|alpha.sh:logic-flip:$EL|2/2
+BASELINE|alpha.sh|test-alpha.sh|PASS|11
+MUTANT|SURVIVED|$ID_S|test-alpha.sh|1|10|none|12|  a && b
+MUTANT|KILLED|$ID_K|test-alpha.sh|2|11|exit+failline|13|  return 1
+TARGET|alpha.sh|test-alpha.sh|2|1|1|0|30
+TOTAL|1|2|1|1|0|50|40
+EOF
+SL_LED="$(mk_ledger slice "$ID_S
+  GAP: nothing asserts the || branch.
+
+alpha.sh:logic-flip:$EL
+  GAP: a survivor of the other slice.")"
+run_gate "$SL_LED" "$SLICE_RUN"
+check "a slice does not call an entry dealt to another slice stale" "0" "$rc"
+err="$(bash "$CHECK" --ledger "$SL_LED" --run-output "$SLICE_RUN" --strict 2>&1 >/dev/null)"
+assert_has "  … and reports it SKIPPED, naming the slice it was dealt to" \
+  "SKIPPED alpha.sh:logic-flip:$EL — dealt to slice 2/2" "$err"
+SL_STALE="$(mk_ledger slicestale "$ID_S
+  GAP: nothing asserts the || branch.
+
+alpha.sh:logic-flip:$X
+  GAP: no slice was dealt this identity.")"
+run_gate "$SL_STALE" "$SLICE_RUN"
+check "a slice still finds an entry no slice was dealt stale" "1" "$rc"
+run_gate "$(mk_ledger slicemiss '# nothing recorded')" "$SLICE_RUN"
+check "a survivor of the slice with no entry still fails the gate" "1" "$rc"
+
 # ── Identity is not unique: one entry covers every mutant that shares it ──────
 # Two cond-negate mutants of the SAME line differ in `seq` alone. Both survive;
 # one entry answers for both, and the gate reports how many it is covering.
