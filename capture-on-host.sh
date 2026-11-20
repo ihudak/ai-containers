@@ -5,7 +5,10 @@
 #   bash ./capture-on-host.sh                      # whole corpus
 #   bash ./capture-on-host.sh --target tools-lib.sh --jobs 6 --timeout 300
 #
-# Every argument is forwarded verbatim to tests/falsify/run.sh.
+# Every argument is forwarded verbatim to tests/falsify/run.sh (its options:
+# `bash tests/falsify/run.sh --help`). The output goes to CAPTURE_OUT, by
+# default ${TMPDIR:-/tmp}/ai-containers-capture/<timestamp>, outside the repo;
+# REPO names the checkout when it is not the current directory.
 #
 # ── WHY THIS EXISTS, AND WHY IT IS NOT PART OF verify-on-host.sh ──────────────
 # Phase 6 already runs this tier. What it cannot do is say WHY an oracle
@@ -35,6 +38,11 @@
 # running at exactly the times it is most wanted.
 set -uo pipefail
 unset CDPATH  # a relative cd follows it and prints the directory (bugs review GIT-17, GIT-20)
+
+# Before anything else: --help must not need a checkout, nor start a run.
+case "${1:-}" in
+  -h|--help) sed -n '2,/^# ── WHY THIS EXISTS/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+esac
 
 REPO="${REPO:-$PWD}"
 LOG_PREFIX="[host-capture]"
