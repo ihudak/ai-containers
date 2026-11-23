@@ -151,11 +151,15 @@ cmd_list() {
   docker volume ls -q >/dev/null 2>&1 || dk=0
   # With no group directory left, the orphans are all there is to name: deleting
   # the directories by hand leaves exactly that, and list returned before them.
-  local g vol state
+  local g vol state dsize
   if [[ -z "$names" ]]; then
     printf 'No container groups yet (%s is empty or absent).\n' "$groups_root"
   else
-    printf '%-24s  %-40s  %s\n' "GROUP" "RVM VOLUME" "$([[ "$show_sizes" == "1" ]] && echo "SIZE" || echo "STATE")"
+    if (( show_sizes )); then
+      printf '%-24s  %-40s  %-12s  %s\n' "GROUP" "RVM VOLUME" "SIZE" "GROUP DIR"
+    else
+      printf '%-24s  %-40s  %s\n' "GROUP" "RVM VOLUME" "STATE"
+    fi
   fi
   [[ -z "$names" ]] || while IFS= read -r g; do
     [[ -n "$g" ]] || continue
@@ -173,7 +177,14 @@ cmd_list() {
       vol="-"
       state="none"
     fi
-    printf '%-24s  %-40s  %s\n' "$g" "$vol" "$state"
+    if (( show_sizes )); then
+      # The group directory holds the persistent cache, state and temp folders,
+      # so it grows on its own; du -sh | cut works with GNU and BSD du alike.
+      dsize="$(du -sh "$groups_root/$g" 2>/dev/null | cut -f1)" || dsize=""
+      printf '%-24s  %-40s  %-12s  %s\n' "$g" "$vol" "$state" "${dsize:-?}"
+    else
+      printf '%-24s  %-40s  %s\n' "$g" "$vol" "$state"
+    fi
   done <<< "$names"
   if (( ! dk )); then
     printf 'ERROR: docker could not list its volumes (is docker running?), so which groups have a\n' >&2
