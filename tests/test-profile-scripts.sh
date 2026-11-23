@@ -95,5 +95,35 @@ out="$(HOME="$H" bash -c "set -o posix; . '$AI'; echo \"rc=\$? fn=\$(type -t npm
 [[ "$out" == "rc=0 fn=" ]] && pass "posix-mode bash sources ai-tools.sh cleanly, without the function" \
   || fail "posix-mode bash and ai-tools.sh: $out"
 
+# ── TMPDIR from AI_AGENT_TMPDIR (Task 4 of persistent agent scratch) ──
+# The launcher passes AI_AGENT_TMPDIR, never TMPDIR, so no root process takes
+# the agent-writable /var/tmp folder as its temp directory; only the agent's
+# login and interactive shells export it. A fake id stands in for the user,
+# because CI's floor container runs as root and the real `id -u` is 0 there.
+FAKE="$TMP/fakebin"; mkdir -p "$FAKE" "$TMP/slot"
+printf '#!/bin/sh\necho "${FAKE_UID:-1000}"\n' > "$FAKE/id"; chmod +x "$FAKE/id"
+H3="$TMP/home-tmpdir"; mkdir -p "$H3"
+# tmpdir_case <label> <expected> <fake uid> <AI_AGENT_TMPDIR or -> <TMPDIR or ->
+tmpdir_case() {
+  local label="$1" want="$2" uid="$3" agent="$4" td="$5" shell out
+  local -a envs=(env -u TMPDIR -u AI_AGENT_TMPDIR "HOME=$H3" "PATH=$FAKE:$PATH" "FAKE_UID=$uid")
+  [[ "$agent" == - ]] || envs+=("AI_AGENT_TMPDIR=$agent")
+  [[ "$td" == - ]] || envs+=("TMPDIR=$td")
+  for shell in dash bash "bash-posix"; do
+    case "$shell" in
+      dash) command -v dash >/dev/null 2>&1 || continue
+            out="$("${envs[@]}" dash -c ". '$AI'; printf %s \"\${TMPDIR-unset}\"" 2>&1)" ;;
+      bash) out="$("${envs[@]}" bash -c ". '$AI'; printf %s \"\${TMPDIR-unset}\"" 2>&1)" ;;
+      *)    out="$("${envs[@]}" bash -c "set -o posix; . '$AI'; printf %s \"\${TMPDIR-unset}\"" 2>&1)" ;;
+    esac
+    [[ "$out" == "$want" ]] && pass "TMPDIR $label ($shell)" || fail "TMPDIR $label ($shell): got '$out', want '$want'"
+  done
+}
+tmpdir_case "is set from AI_AGENT_TMPDIR" "$TMP/slot" 1000 "$TMP/slot" -
+tmpdir_case "from container.env wins" /keep 1000 "$TMP/slot" /keep
+tmpdir_case "stays unset for a missing folder" unset 1000 "$TMP/none" -
+tmpdir_case "stays unset for root" unset 0 "$TMP/slot" -
+tmpdir_case "stays unset without the variable" unset 1000 - -
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

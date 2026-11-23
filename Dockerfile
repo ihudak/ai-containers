@@ -951,6 +951,16 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
 # refuses the name too. `if`, not `&&`, so sourcing the file under dash still
 # returns 0. Case 310 runs both, and tests/test-profile-scripts.sh runs the
 # lines below under dash, bash and posix-mode bash.
+#
+# The last line exports TMPDIR from AI_AGENT_TMPDIR, the per-container folder the
+# launcher made under the persistent /var/tmp. It is here and nowhere else on
+# purpose: /var/tmp is writable by the agent and outlives the container, so no
+# root process may take a folder in it as its temp directory, and the launcher
+# passes AI_AGENT_TMPDIR, never TMPDIR. Only a login or interactive shell of the
+# agent reads this file: the capsh shell and `docker exec ... bash -l` sessions.
+# The start-up steps run through runuser, and the database services, do not.
+# Never for root, whose id is 0. A TMPDIR already set wins, because the
+# project's container.env reaches the agent's shell before this file runs.
 RUN install -d /etc/skel/.local/bin && \
     printf '%s\n' \
       'export UV_TOOL_DIR="$HOME/.ai-tools/uv"' \
@@ -958,6 +968,7 @@ RUN install -d /etc/skel/.local/bin && \
       'export UV_PYTHON_INSTALL_DIR="$HOME/.ai-tools/uv/python"' \
       'export PATH="$HOME/.local/bin:$PATH"' \
       'if [ -n "${BASH_VERSION:-}" ] && ! shopt -oq posix; then eval '\''npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }'\''; fi' \
+      'if [ -z "${TMPDIR:-}" ] && [ -n "${AI_AGENT_TMPDIR:-}" ] && [ -d "$AI_AGENT_TMPDIR" ] && [ "$(id -u)" != 0 ]; then export TMPDIR="$AI_AGENT_TMPDIR"; fi' \
       | tee /etc/profile.d/ai-tools.sh >> /etc/bash.bashrc
 
 # Ship the runtime agent-tool scripts (invoked by entrypoint: reconcile as the sandbox
