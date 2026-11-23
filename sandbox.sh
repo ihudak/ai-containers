@@ -8636,6 +8636,11 @@ run_container() {
   install -d "$group_root/.cache" "$group_root/.local/state"
   add_mount_if_exists config_mount_flags "$group_root/.cache" "$dev_home/.cache"
   add_mount_if_exists config_mount_flags "$group_root/.local/state" "$dev_home/.local/state"
+  # /var/tmp is mounted whole too, and each launch works in a folder of its own
+  # inside it (made just before docker run), so two containers of one group never
+  # share scratch files and a container's leftovers can be found by its label.
+  install -d "$group_root/.var-tmp"
+  add_mount_if_exists config_mount_flags "$group_root/.var-tmp" "/var/tmp"
   # Gradle's and Maven's user homes hold the wrapper distributions (~130 MB per
   # Gradle version) and every dependency a build downloads; with --rm, a start
   # without these mounts fetched all of it again. Gated on ANY JVM key, not on
@@ -8742,6 +8747,10 @@ run_container() {
     container_name="${proj}-$$"
   fi
   printf 'Container name: %s\n' "$container_name" >&2
+  # This launch's folder under /var/tmp: date, time and the launcher's pid, so it
+  # is unique per launch and TMPDIR (/var/tmp/<this>) stays short enough for the
+  # 108-byte limit on a unix socket path.
+  local agent_tmp_slot; agent_tmp_slot="$(date +%y%m%d-%H%M%S)-$$"
 
   # Last, once every bind mount is known: see launcher_ro_overlay.
   # shellcheck disable=SC2034  # launcher_ro_dirs/launcher_rw_srcs: set by launcher_ro_overlay, read through _ro_fifo_search's namerefs
@@ -8943,6 +8952,10 @@ run_container() {
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}"
     -e AI_AGENTS_ENABLED="$(enabled_agents_csv)"
     -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)"
+    # Not TMPDIR itself: a -e reaches the root entrypoint, where TMPDIR would
+    # redirect root's own temporary files. The image's profile script exports
+    # TMPDIR from this for the sandbox user's shells only.
+    -e AI_AGENT_TMPDIR="/var/tmp/$agent_tmp_slot"
     -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")"
     -e AI_SERVICES="$(services_csv)"
     -e REPOS_PATH="$repos_path_ctr"
@@ -8988,9 +9001,16 @@ run_container() {
   # `docker exec` session included, starts unable to gain privileges through a
   # setuid-root or file-capability binary. The entrypoint gives the agent shell
   # the same flag itself (RT-10); an exec session is outside that tree (RT-11).
+  # mkdir without -p: an existing folder is never reused, so two launches can
+  # not end up sharing one.
+  if ! mkdir -m 0700 "$group_root/.var-tmp/$agent_tmp_slot"; then
+    printf 'ERROR: cannot create %s\n' "$group_root/.var-tmp/$agent_tmp_slot" >&2
+    exit 1
+  fi
   local _run_rc=0
   docker run -it --rm --pull=never \
     --name "$container_name" \
+    --label "ai-containers.tmpslot=$agent_tmp_slot" \
     ${capabilities[@]+"${capabilities[@]}"} \
     --security-opt=no-new-privileges \
     ${selinux_opt:+"$selinux_opt"} \

@@ -86,6 +86,8 @@ claude-code=ON'
 run_sandbox
 check "no nested mount under ~/.cache or ~/.local/state" \
   bash -c '! grep -qE ":/home/dev/\.(cache|local/state)/" "$1"' _ "$CAPTURE"
+check "whole ~/.cache and ~/.local/state still mounted" \
+  bash -c 'grep -qxF -- "$2:/home/dev/.cache:rw" "$1" && grep -qxF -- "$3:/home/dev/.local/state:rw" "$1"' _ "$CAPTURE" "$GROUP_ROOT/.cache" "$GROUP_ROOT/.local/state"
 check "claude-code still gets its own share dir" \
   mounted "$GROUP_ROOT/.local/share/claude" "/home/dev/.local/share/claude"
 teardown
@@ -101,6 +103,35 @@ check "slice: qmd still copied, other caches and state not" \
   bash -c '[[ -f "$1/.cache/qmd/i" && ! -e "$1/.cache/pip/p" && ! -e "$1/.local/state/s" ]]' _ "$NEW"
 teardown
 
-# (later cases: /var/tmp per container, pruning)
+# ── /var/tmp: one folder per container ──────────────────────────────────────────
+setup
+run_sandbox
+check "/var/tmp mounted from the group" mounted "$GROUP_ROOT/.var-tmp" "/var/tmp"
+slot="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
+check "AI_AGENT_TMPDIR names a per-container folder" \
+  bash -c '[[ "$1" =~ ^[0-9]{6}-[0-9]{6}-[0-9]+$ ]]' _ "$slot"
+check "TMPDIR stays within 30 bytes" test $(( ${#slot} + 9 )) -le 30
+check "the container carries its folder as a label" grep -qxF "ai-containers.tmpslot=$slot" "$CAPTURE"
+check "folder made on the host, 0700" \
+  bash -c '[[ -d "$1" && "$2" == 700 ]]' _ "$GROUP_ROOT/.var-tmp/$slot" "$(p_stat_mode "$GROUP_ROOT/.var-tmp/$slot")"
+check "TMPDIR itself is never passed to docker" bash -c '! grep -qE "^TMPDIR=" "$1"' _ "$CAPTURE"
+sleep 1
+run_sandbox
+slot2="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
+check "each launch gets its own folder" test -n "$slot2" -a "$slot2" != "$slot"
+teardown
+
+# container.env cannot choose the folder: the launch's own -e is refused from it.
+setup
+printf 'AI_AGENT_TMPDIR=/etc\n' > "$TMP/container.env"
+SANDBOX_ENV_FILE="$TMP/container.env" run_sandbox
+check "container.env AI_AGENT_TMPDIR refused with a WARNING naming it" \
+  grep -q 'WARNING:.*AI_AGENT_TMPDIR' "$ERR"
+check "captured AI_AGENT_TMPDIR is still the launch's folder" \
+  grep -qE '^AI_AGENT_TMPDIR=/var/tmp/[0-9]{6}-[0-9]{6}-[0-9]+$' "$CAPTURE"
+check "no AI_AGENT_TMPDIR=/etc anywhere" bash -c '! grep -q "=/etc" "$1"' _ "$CAPTURE"
+teardown
+
+# (later cases: pruning)
 
 if [[ $fails -eq 0 ]]; then printf 'ALL PASS\n'; else printf '%d FAILED\n' "$fails"; exit 1; fi

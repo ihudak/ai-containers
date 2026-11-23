@@ -10,9 +10,10 @@
 diff --git a/sandbox.sh b/sandbox.sh
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -3312,7 +3312,6 @@
+@@ -3312,8 +3312,7 @@
    docker run -it --rm --pull=never \
      --name "$container_name" \
+     --label "ai-containers.tmpslot=$agent_tmp_slot" \
      ${capabilities[@]+"${capabilities[@]}"} \
 -    --security-opt=no-new-privileges \
      ${selinux_opt:+"$selinux_opt"} \
