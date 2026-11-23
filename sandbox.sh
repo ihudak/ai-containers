@@ -8530,18 +8530,17 @@ run_container() {
     add_mount_if_exists config_mount_flags "$group_root/.local/share/kiro-cli"  "$dev_home/.local/share/kiro-cli"
   fi
   if is_enabled claude-code; then
-    install -d "$group_root/.claude" \
-               "$group_root/.local/share/claude" "$group_root/.local/state/claude"
+    install -d "$group_root/.claude" "$group_root/.local/share/claude"
     [[ -e "$group_root/.claude.json" ]] || printf '{}\n' > "$group_root/.claude.json"
     add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude"
     add_file_mount_if_exists config_mount_flags "$group_root/.claude.json" "$dev_home/.claude.json"
     # Claude Code installs natively (agent-tools-reconcile.sh): ~/.local/share/claude holds
-    # versions/<v>, ~/.local/state/claude the updater's bookkeeping. Group-scoped exactly
-    # like ~/.local/share/kiro-cli above, and for the same reason — without these the
-    # install is redone on every container start and every self-update dies with the
-    # container, which is the whole capability this is meant to restore.
+    # versions/<v>; the updater's bookkeeping in ~/.local/state/claude rides on the whole
+    # ~/.local/state mount below. Group-scoped exactly like ~/.local/share/kiro-cli above,
+    # and for the same reason — without it the install is redone on every container start
+    # and every self-update dies with the container, which is the whole capability this
+    # is meant to restore.
     add_mount_if_exists config_mount_flags "$group_root/.local/share/claude" "$dev_home/.local/share/claude"
-    add_mount_if_exists config_mount_flags "$group_root/.local/state/claude" "$dev_home/.local/state/claude"
   fi
   if is_enabled codex; then
     install -d "$group_root/.codex"
@@ -8627,23 +8626,16 @@ run_container() {
       add_mount_if_exists config_mount_flags "$group_root/$_cdir" "$dev_home/$_cdir"
     done
   done < <(tools_list_names)
-  if is_enabled qmd; then
-    install -d "$group_root/.cache/qmd"
-    add_mount_if_exists config_mount_flags "$group_root/.cache/qmd" "$dev_home/.cache/qmd"
-  fi
-  # Playwright's browser binaries (~500 MB) are NOT baked into the image — only
-  # the OS libraries they link against are. They are downloaded at run time into
-  # ~/.cache/ms-playwright, and containers run with --rm, so without this mount
-  # every single container start re-downloads all of them. Group-scoped for the
-  # same reason ~/.cache/qmd above is: the cost is paid once per group, not once
-  # per project and not once per run.
-  #
-  # is_active, NOT is_enabled: the key is ON | x.y.z | OFF, and a pinned version
-  # is just as on as ON.
-  if is_active playwright; then
-    install -d "$group_root/.cache/ms-playwright"
-    add_mount_if_exists config_mount_flags "$group_root/.cache/ms-playwright" "$dev_home/.cache/ms-playwright"
-  fi
+  # ~/.cache and ~/.local/state are mounted whole, whatever sandbox.conf says, so what any
+  # tool keeps there survives --rm: qmd's index, pip's and npm's caches, Claude Code's
+  # updater state. One nested mount per tool left every other tool's cache and state to
+  # vanish with the container. Playwright's browser binaries (~500 MB, downloaded at run
+  # time into ~/.cache/ms-playwright because only the OS libraries are baked) are the
+  # costly case: without this every container start re-downloads them. The cost is paid
+  # once per group, not once per project and not once per run.
+  install -d "$group_root/.cache" "$group_root/.local/state"
+  add_mount_if_exists config_mount_flags "$group_root/.cache" "$dev_home/.cache"
+  add_mount_if_exists config_mount_flags "$group_root/.local/state" "$dev_home/.local/state"
   # Gradle's and Maven's user homes hold the wrapper distributions (~130 MB per
   # Gradle version) and every dependency a build downloads; with --rm, a start
   # without these mounts fetched all of it again. Gated on ANY JVM key, not on

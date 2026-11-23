@@ -255,7 +255,7 @@ teardown
 # cannot fail even when the mount source IS the host home, because
 # add_mount_if_exists skips a source that does not exist. Creating them makes
 # that assertion load-bearing for all twelve rather than vacuous.
-BUILTIN_DIRS=(.config/gh .copilot .kiro .claude .codex .gemini .cache/qmd .ai-tools
+BUILTIN_DIRS=(.config/gh .copilot .kiro .claude .codex .gemini .cache .ai-tools
               .aws .azure .kube .yarn)
 setup
 printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nyarn=ON\n' > "$SANDBOX_CONF"

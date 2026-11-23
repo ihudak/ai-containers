@@ -4,12 +4,11 @@
 diff --git a/sandbox.sh b/sandbox.sh
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -3202,7 +3202,7 @@
-     install -d "$group_root/.claude" \
-                "$group_root/.local/share/claude" "$group_root/.local/state/claude"
+@@ -8533,6 +8533,6 @@
+     install -d "$group_root/.claude" "$group_root/.local/share/claude"
      [[ -e "$group_root/.claude.json" ]] || printf '{}\n' > "$group_root/.claude.json"
 -    add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude"
 +    add_mount_if_exists      config_mount_flags "$HOME/.claude"             "$dev_home/.claude"
      add_file_mount_if_exists config_mount_flags "$group_root/.claude.json" "$dev_home/.claude.json"
      # Claude Code installs natively (agent-tools-reconcile.sh): ~/.local/share/claude holds
-     # versions/<v>, ~/.local/state/claude the updater's bookkeeping. Group-scoped exactly
+     # versions/<v>; the updater's bookkeeping in ~/.local/state/claude rides on the whole

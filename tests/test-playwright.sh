@@ -243,12 +243,7 @@ pw_run() { ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/ap
 # ON: the cache is group-scoped, so the browser download survives `--rm`.
 pw_setup 'playwright=ON'
 pw_run
-if [[ -d "$GROUP_ROOT/.cache/ms-playwright" ]]; then
-  pass "playwright=ON: group browser-cache dir created"
-else
-  fail "playwright=ON: group browser-cache dir created"
-fi
-if grep -qx -- "$GROUP_ROOT/.cache/ms-playwright:/home/dev/.cache/ms-playwright:rw" "$CAPTURE"; then
+if grep -qx -- "$GROUP_ROOT/.cache:/home/dev/.cache:rw" "$CAPTURE"; then
   pass "playwright=ON: browser cache mounted from the group"
 else
   fail "playwright=ON: browser cache mounted from the group"
@@ -274,7 +269,7 @@ pw_teardown
 # assertion above, applied to the mount and the shm flag.
 pw_setup 'playwright=1.58.2'
 pw_run
-if grep -qx -- "$GROUP_ROOT/.cache/ms-playwright:/home/dev/.cache/ms-playwright:rw" "$CAPTURE"; then
+if grep -qx -- "$GROUP_ROOT/.cache:/home/dev/.cache:rw" "$CAPTURE"; then
   pass "playwright=<pinned>: browser cache mounted (is_active, not is_enabled)"
 else
   fail "playwright=<pinned>: browser cache mounted (is_active, not is_enabled)"
