@@ -29,6 +29,9 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 │   ├── .yarn/             ← yarn home, when yarn= is ON (mounted, never copied)
 │   ├── .gradle/           ← Gradle user home, when any JVM key is set (mounted, never copied)
 │   ├── .m2/               ← Maven repository, ditto
+│   ├── .cache/            ← mounted at ~/.cache, always (qmd's index, Playwright's browsers, pip's and npm's caches)
+│   ├── .local/state/      ← mounted at ~/.local/state, always
+│   ├── .var-tmp/          ← mounted at /var/tmp, always; one folder per container
 │   ├── .config/dtctl/    ← tools.d config dir, seeded once from $HOME if present
 │   └── .config/dtmgd/    ← ditto
 ├── docs/               ← custom group, same shape
@@ -47,6 +50,47 @@ can still remove it from under the others, with its `rm`, or its plain `gc` once
 its own group directory is gone, and any home can with `gc --all`. The other
 homes' groups then build their Rubies again. See
 [Several homes on one docker](troubleshooting.md#several-homes-on-one-docker-wsl-distros-or-users).
+
+## What survives a restart
+
+Containers run with `--rm`, so what survives is what is mounted. From a group:
+the agent dotfile directories, `~/.ai-tools`, and three folders mounted whole,
+whatever `sandbox.conf` says: `~/.cache`, `~/.local/state` and `/var/tmp`. The
+rest of the container, `/tmp` among it, is gone when the container exits, and so
+is anything made directly in the `/workspace` umbrella: only the repositories
+and directories mounted inside it persist, in the places they come from.
+
+Each launch gets its own folder in `/var/tmp`, named
+`<YYMMDD-HHMMSS-pid>`, and the agent's shell has `TMPDIR` pointing at it, so
+tools that follow `TMPDIR` (Claude Code's scratch folder, Python's `tempfile`,
+`mktemp`) write somewhere that is still there after a restart, at the same
+path. Two containers of a group never share a folder. Root, the start-up steps
+and the in-container database servers do not get `TMPDIR`; a `TMPDIR` set in
+your `container.env` wins. A tool that writes a literal `/tmp/x` loses it: put
+state that must last in `~/.local/state`, or `~/.cache` for what can be
+rebuilt.
+
+At launch, folders in `/var/tmp` of containers that are no longer running and
+that nothing has touched for 30 days are removed, at most 50 per launch, with a
+`NOTE:` saying how many and how much space. Nothing else in `/var/tmp`,
+`~/.cache` or `~/.local/state` is ever removed by the launcher. Two limits:
+
+- If you use several docker daemons or contexts from one home, they share a
+  group's `.var-tmp`, but `docker ps` sees only the current one. A container
+  running on another daemon whose folder went untouched for 30 days can be
+  pruned.
+- "Untouched" means modification time. Archive extraction (`tar x`, `cp -p`,
+  `rsync -a`) preserves it, so an old file restored into a folder keeps that
+  folder looking old.
+
+**Do not run `git` or `./sandbox.sh` on the host inside a repository an agent
+made in these folders.** The launcher does not scan them for hooks and
+launchers, as it does not scan a group's other folders, because the host is not
+meant to run anything from there: a repository's hooks and config are the
+agent's. Read and copy its files freely.
+
+After upgrading, rebuild the image (`./build.sh`) and run
+`./sync-to-projects.sh` so an existing project gets the change.
 
 ## Group-name rules
 
@@ -73,7 +117,7 @@ Group 'docs' not found. Initialize from:
 
 Pick `1)` to copy the group-scoped dotfile slice from `default` (or whichever group is listed first). Pick `host` to copy from `$HOME`. Pick `<empty>` to start with an empty group (only `.ssh/` and `.agents/` are scaffolded). Pick `q` to abort.
 
-The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube`. Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, `.cache/ms-playwright`, `.yarn`, `.gradle`, `.m2`): cloning a group should not clone gigabytes that each tool rebuilds by itself.
+The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube`. Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, `.cache`, `.local/state`, `.var-tmp`, `.yarn`, `.gradle`, `.m2`): cloning a group should not clone gigabytes that each tool rebuilds by itself.
 
 **Non-interactive (no TTY or scripted use):**
 
@@ -140,7 +184,7 @@ inspecting, backing up, and duplicating one:
 ```bash
 # List groups (and their rvm volumes)
 ./group.sh list
-./group.sh list --sizes
+./group.sh list --sizes   # adds a GROUP DIR column: du -sh of the group directory
 
 # Back up a group's directory
 tar czf docs-group.tgz -C "$HOME/.ai-containers" docs

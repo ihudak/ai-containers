@@ -957,8 +957,10 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
 # purpose: /var/tmp is writable by the agent and outlives the container, so no
 # root process may take a folder in it as its temp directory, and the launcher
 # passes AI_AGENT_TMPDIR, never TMPDIR. Only a login or interactive shell of the
-# agent reads this file: the capsh shell and `docker exec ... bash -l` sessions.
-# The start-up steps run through runuser, and the database services, do not.
+# agent reads this file: the capsh shell, `docker exec ... bash -l` and an
+# interactive `docker exec -it ... bash` (through /etc/bash.bashrc), but not a
+# non-interactive `docker exec ... bash -c`. The start-up steps run through
+# runuser, and the database services, do not.
 # Never for root, whose id is 0. A TMPDIR already set wins, because the
 # project's container.env reaches the agent's shell before this file runs.
 RUN install -d /etc/skel/.local/bin && \

@@ -215,7 +215,6 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.claude/` | `~/.claude` | read-write | `claude-code` |
 | `<group>/.claude.json` | `~/.claude.json` | read-write | `claude-code` |
 | `<group>/.local/share/claude/` | `~/.local/share/claude` | read-write | `claude-code` (its native install) |
-| `<group>/.local/state/claude/` | `~/.local/state/claude` | read-write | `claude-code` (its updater's state) |
 | `<group>/.codex/` | `~/.codex` | read-write | `codex` |
 | `<group>/.gemini/` | `~/.gemini` | read-write | `gemini` |
 | Docker volume `ai-containers-rvm-<group>` | `~/.rvm` | read-write | `ruby` |
@@ -223,8 +222,9 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.config/dtctl/` ² | `~/.config/dtctl` | read-write | `dtctl` |
 | `<group>/.config/dtmgd/` ² | `~/.config/dtmgd` | read-write | `dtmgd` |
 | `<group>/.config/acli/` ² | `~/.config/acli` | read-write | `acli` (its profiles and credentials) |
-| `<group>/.cache/qmd/` | `~/.cache/qmd` | read-write | `qmd` (its search index) |
-| `<group>/.cache/ms-playwright/` | `~/.cache/ms-playwright` | read-write | `playwright` (its browsers) |
+| `<group>/.cache/` ⁵ | `~/.cache` | read-write | always (`qmd`'s index, `playwright`'s browsers, every other tool's cache) |
+| `<group>/.local/state/` ⁵ | `~/.local/state` | read-write | always (`claude-code`'s updater state, anything else kept there) |
+| `<group>/.var-tmp/` ⁵ | `/var/tmp` | read-write | always |
 | `<group>/.aws/` | `~/.aws` | read-write | `aws-cli` |
 | `<group>/.azure/` | `~/.azure` | read-write | `azure-cli` |
 | `<group>/.kube/` | `~/.kube` | read-write | `kubectl` |
@@ -239,6 +239,8 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 ³ `.aws`, `.azure`, `.kube` and `.yarn` were mounted straight from `$HOME` until they joined the group — they predate the group system. The first three are part of the slice a new group inherits when you bootstrap it `from:host` or `from:<group>`; `.yarn` is mounted but deliberately **not** copied, because it is a regenerable package cache (berry's reaches gigabytes) rather than a credential, the same call made for `.ai-tools`, `.rvm` and `.cache/ms-playwright`. A group that **already existed** before this change inherits nothing — it gets an empty directory, and the container starts with no AWS credentials and no kubeconfig until you copy them across once: `cp -a ~/.aws ~/.azure ~/.kube ~/.ai-containers/<group>/`.
 
 ⁴ Containers run with `--rm`, so before these two were mounted every start downloaded the Gradle wrapper's distribution and every dependency again. Any JVM key turns them on, because `./gradlew` and `./mvnw` need only a JDK, not the `gradle`/`maven` keys. They are caches, so a bootstrapped group does not copy them; a `gradle.properties` or `settings.xml` holding repository credentials goes in the group's copy (`~/.ai-containers/<group>/.gradle/`, `.m2/`). Two containers of one group building at the same moment share Gradle's file locks, but Gradle asks a lock's holder to release it over loopback, which does not reach another container, so the second build can fail after Gradle's 60-second lock timeout. Restarts are unaffected.
+
+⁵ Mounted whole, whatever `sandbox.conf` says, so that what an agent or a tool leaves there survives the container. Each launch works in a folder of its own, `/var/tmp/<YYMMDD-HHMMSS-pid>`, which `TMPDIR` names for the agent's shell, and folders of stopped containers untouched for 30 days are removed at launch. They are caches, so a bootstrapped group does not copy them. See [What survives a restart](groups.md#what-survives-a-restart).
 
 Nothing above is mounted from `$HOME` itself: the `host` group that did is gone, and a group bootstrapped `from:host` starts as a copy instead.
 
