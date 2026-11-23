@@ -8008,6 +8008,48 @@ _group_gh_token() {
   return 0
 }
 
+# agent_tmp_prune <var-tmp-dir>: remove the per-container folders of containers
+# that are gone and that nothing has touched for 30 days. Containers run with
+# --rm, so without this every restart would leave a folder behind for good.
+# Deleting an agent's files is what the persistent /var/tmp exists to stop, so
+# anything uncertain is kept: a docker that cannot list containers, a name that
+# is not a per-container folder, a link, a file or folder that cannot be read.
+# The folders are the agent's to write, so nothing here follows a link out of one
+# (find -P, du and rm -rf all leave links alone). Always returns 0.
+agent_tmp_prune() {
+  local dir="$1" running d name n=0 kb total_kb=0 ps_out
+  [[ -d "$dir" ]] || return 0
+  ps_out="$(docker ps --filter label=ai-containers.tmpslot \
+    --format '{{.Label "ai-containers.tmpslot"}}' 2>/dev/null)" || return 0
+  running=$'\n'"$ps_out"$'\n'
+  for d in "$dir"/*; do
+    name="${d##*/}"
+    [[ "$name" =~ ^[0-9]{6}-[0-9]{6}-[0-9]+$ ]] || continue
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    [[ "$running" == *$'\n'"$name"$'\n'* ]] && continue
+    # A find that errors (an unreadable subfolder) keeps the folder, as does
+    # any file inside modified in the last 30 days.
+    local recent
+    recent="$(find -P "$d" -mtime -30 -print -quit 2>/dev/null)" || continue
+    [[ -z "$recent" ]] || continue
+    kb="$(du -sk "$d" 2>/dev/null | awk '{print $1; exit}')"
+    [[ "$kb" =~ ^[0-9]+$ ]] || kb=0
+    if rm -rf -- "$d" 2>/dev/null && [[ ! -e "$d" ]]; then
+      n=$((n + 1)); total_kb=$((total_kb + kb))
+    else
+      printf 'NOTE: could not remove %s; it is left as it is.\n' "$d" >&2
+    fi
+  done
+  (( n > 0 )) || return 0
+  local size
+  if (( total_kb >= 1048576 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fG", k/1048576}')"
+  elif (( total_kb >= 1024 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fM", k/1024}')"
+  else size="${total_kb}K"; fi
+  printf 'NOTE: removed %d temp folder(s) of stopped containers, untouched for 30 days, from %s (%s freed).\n' \
+    "$n" "$dir" "$size" >&2
+  return 0
+}
+
 run_container() {
   check_config
   validate_sandbox_ids
@@ -9029,6 +9071,14 @@ run_container() {
     fi
   fi
 
+  agent_tmp_prune "$group_root/.var-tmp"
+  # mkdir without -p: an existing folder is never reused, so two launches can
+  # not end up sharing one.
+  if ! mkdir -m 0700 "$group_root/.var-tmp/$agent_tmp_slot"; then
+    printf 'ERROR: cannot create %s\n' "$group_root/.var-tmp/$agent_tmp_slot" >&2
+    exit 1
+  fi
+
   # --pull=never: IMAGE_NAME may come from a committed sandbox.env, and an image
   # this machine never built must not be fetched from a registry and run with
   # the group's credentials mounted. ./build.sh (or runme.sh) builds it first.
@@ -9036,12 +9086,6 @@ run_container() {
   # `docker exec` session included, starts unable to gain privileges through a
   # setuid-root or file-capability binary. The entrypoint gives the agent shell
   # the same flag itself (RT-10); an exec session is outside that tree (RT-11).
-  # mkdir without -p: an existing folder is never reused, so two launches can
-  # not end up sharing one.
-  if ! mkdir -m 0700 "$group_root/.var-tmp/$agent_tmp_slot"; then
-    printf 'ERROR: cannot create %s\n' "$group_root/.var-tmp/$agent_tmp_slot" >&2
-    exit 1
-  fi
   local _run_rc=0
   docker run -it --rm --pull=never \
     --name "$container_name" \

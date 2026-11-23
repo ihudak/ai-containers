@@ -43,6 +43,11 @@ claude-code=OFF}" > "$SANDBOX_CONF"
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
+if [[ "\$1" == "ps" ]]; then
+  [[ "\${FAKE_PS_FAIL:-}" == 1 ]] && exit 1
+  [[ -n "\${FAKE_RUNNING_SLOTS:-}" ]] && printf '%s\n' "\$FAKE_RUNNING_SLOTS"
+  exit 0
+fi
 exit 1
 DOCKER
   chmod +x "$TMP/bin/docker"
@@ -115,7 +120,6 @@ check "the container carries its folder as a label" grep -qxF "ai-containers.tmp
 check "folder made on the host, 0700" \
   bash -c '[[ -d "$1" && "$2" == 700 ]]' _ "$GROUP_ROOT/.var-tmp/$slot" "$(p_stat_mode "$GROUP_ROOT/.var-tmp/$slot")"
 check "TMPDIR itself is never passed to docker" bash -c '! grep -qE "^TMPDIR=" "$1"' _ "$CAPTURE"
-sleep 1
 run_sandbox
 slot2="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
 check "each launch gets its own folder" test -n "$slot2" -a "$slot2" != "$slot"
@@ -132,6 +136,61 @@ check "captured AI_AGENT_TMPDIR is still the launch's folder" \
 check "no AI_AGENT_TMPDIR=/etc anywhere" bash -c '! grep -q "=/etc" "$1"' _ "$CAPTURE"
 teardown
 
-# (later cases: pruning)
+# ── pruning: folders of stopped containers untouched for 30 days ────────────────
+# age_tree <dir>: set every mtime to 2020, deepest first so a parent is not
+# bumped back by its children.
+age_tree() { find "$1" -depth -exec touch -h -t 202001010000 {} +; }
+# old_slot <name>: an aged per-container folder holding one file.
+old_slot() {
+  mkdir -p "$GROUP_ROOT/.var-tmp/$1"; : > "$GROUP_ROOT/.var-tmp/$1/f"
+  age_tree "$GROUP_ROOT/.var-tmp/$1"
+}
+OLD=200101-000000-1
+
+setup; old_slot "$OLD"; run_sandbox
+check "an old folder of a stopped container is removed" test ! -e "$GROUP_ROOT/.var-tmp/$OLD"
+check "the NOTE says 1 folder" grep -q 'NOTE: removed 1 temp folder(s) of stopped containers, untouched for 30 days, from .* freed)\.' "$ERR"
+teardown
+
+setup; old_slot "$OLD"; FAKE_RUNNING_SLOTS="$OLD" run_sandbox
+check "a running container's folder is kept, however old" test -d "$GROUP_ROOT/.var-tmp/$OLD"
+teardown
+
+setup; old_slot "$OLD"; : > "$GROUP_ROOT/.var-tmp/$OLD/new"; run_sandbox
+check "a folder touched within 30 days is kept" test -d "$GROUP_ROOT/.var-tmp/$OLD"
+teardown
+
+setup; mkdir -p "$GROUP_ROOT/.var-tmp/$(date +%y%m%d-%H%M%S)-2"; run_sandbox
+check "a concurrent launch's new folder is kept" \
+  bash -c 'ls "$1" | grep -q -- "-2$"' _ "$GROUP_ROOT/.var-tmp"
+teardown
+
+setup; mkdir -p "$GROUP_ROOT/.var-tmp/keepme"; : > "$GROUP_ROOT/.var-tmp/x"
+age_tree "$GROUP_ROOT/.var-tmp/keepme"; touch -h -t 202001010000 "$GROUP_ROOT/.var-tmp/x"
+run_sandbox
+check "only per-container folders are pruned" \
+  test -d "$GROUP_ROOT/.var-tmp/keepme" -a -e "$GROUP_ROOT/.var-tmp/x"
+teardown
+
+setup; old_slot "$OLD"; FAKE_PS_FAIL=1 run_sandbox
+check "docker that cannot list containers removes nothing" \
+  bash -c '[[ -d "$1" ]] && ! grep -q "removed" "$2"' _ "$GROUP_ROOT/.var-tmp/$OLD" "$ERR"
+teardown
+
+setup; mkdir -p "$TMP/outside"; : > "$TMP/outside/f"
+old_slot "$OLD"; ln -s "$TMP/outside/f" "$GROUP_ROOT/.var-tmp/$OLD/l"; age_tree "$GROUP_ROOT/.var-tmp/$OLD"
+run_sandbox
+check "a link in a pruned folder is not followed" \
+  bash -c '[[ ! -e "$1" && -f "$2" ]]' _ "$GROUP_ROOT/.var-tmp/$OLD" "$TMP/outside/f"
+teardown
+
+# As root (the suite's floor job) chmod 000 stops nothing, so this asserts only
+# what holds either way: the launch goes on.
+setup; old_slot "$OLD"; mkdir "$GROUP_ROOT/.var-tmp/$OLD/d"; : > "$GROUP_ROOT/.var-tmp/$OLD/d/g"
+age_tree "$GROUP_ROOT/.var-tmp/$OLD"; chmod 000 "$GROUP_ROOT/.var-tmp/$OLD/d"
+run_sandbox
+check "an unreadable folder does not stop the launch (rc=$RC)" test "$RC" -eq 0
+chmod 700 "$GROUP_ROOT/.var-tmp/$OLD/d" 2>/dev/null
+teardown
 
 if [[ $fails -eq 0 ]]; then printf 'ALL PASS\n'; else printf '%d FAILED\n' "$fails"; exit 1; fi
