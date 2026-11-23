@@ -2691,6 +2691,15 @@ launch "$LAUNCHER" "$TMP/app"
   && pass "T93 a group cache that links out of the group is walked" \
   || fail "T93 a group cache linked out (rc=$LAUNCH_RC; $(grep -aF -e ERROR -e 'link out' "$ERR" | head -2 | tr '\n' ' '); mounts: $(mounts | grep -aF elsewhere93 | tr '\n' ' '))"
 rm -f "$G93/.cache" && mkdir "$G93/.cache"; rm -rf "$TMP/elsewhere93"
+# The launcher that is running is overlaid wherever it lies, the group's
+# /var/tmp included: finding it costs no walk (security review of the skip).
+mkdir -p "$G93/.var-tmp/run93" && cp -R "$LAUNCHER" "$G93/.var-tmp/run93/.ai-containers" \
+  || { printf 'SCAFFOLD-FAILED: T93 launcher copy\n'; exit 1; }
+launch "$G93/.var-tmp/run93/.ai-containers" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.var-tmp/run93/.ai-containers:/var/tmp/run93/.ai-containers:ro" <<<"$(mounts)" \
+  && pass "T93 a launcher run from inside the group's /var/tmp is still overlaid there" \
+  || fail "T93 the running launcher in the group's /var/tmp (rc=$LAUNCH_RC; $(grep -aF ERROR "$ERR" | head -1); mounts: $(mounts | grep -aF run93 | tr '\n' ' '))"
+rm -rf "$G93/.var-tmp/run93"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

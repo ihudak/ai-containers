@@ -566,19 +566,22 @@ launcher_ro_overlay() {
   # see into — with where it lands in the container.
   for i in ${bsrc[@]+"${!bsrc[@]}"}; do
     src="${bsrc[i]}"; dst="${bdst[i]}"
-    # Not the group's /var/tmp, ~/.cache or ~/.local/state. The git scan below
-    # rests on the same premise: the host never runs git or a launcher from
-    # inside a group folder. Walked, they cost every launch a pass over pip's
-    # and uv's deep trees, locked read-only any copy of ai-containers an agent
-    # cloned there, and refused the launch past SANDBOX_LAUNCHER_MAX such copies
-    # or for a folder there the agent made unlistable. A launcher another
-    # mount's walk finds in them is still overlaid in their view, by the loop
-    # after this one; and the hard-link check (_fs_linked_in) still lists them,
-    # since a second name of a file git reads can lie there.
-    if _group_scratch_mount "$src" "$dst"; then continue; fi
     found=(); unreadable=()
     if [[ "$self" == "$src" || "$self" == "$src"/* ]]; then found+=("$self"); fi
-    launcher_dirs_in found unreadable "$src" "$uid" "$gid" "$you"
+    # The group's /var/tmp, ~/.cache and ~/.local/state are not walked. The git
+    # scan below rests on the same premise: the host never runs git or a
+    # launcher from inside a group folder. Walked, they cost every launch a pass
+    # over pip's and uv's deep trees, locked read-only any copy of ai-containers
+    # an agent cloned there, and refused the launch past SANDBOX_LAUNCHER_MAX
+    # such copies or for a folder there the agent made unlistable. The launcher
+    # that is running is still overlaid in them, since finding it costs no walk
+    # (security review of the skip); a launcher another mount's walk finds in
+    # them is still overlaid in their view, by the loop after this one; and the
+    # hard-link check (_fs_linked_in) still lists them, since a second name of a
+    # file git reads can lie there.
+    if ! _group_scratch_mount "$src" "$dst"; then
+      launcher_dirs_in found unreadable "$src" "$uid" "$gid" "$you"
+    fi
     cand=(${found[@]+"${found[@]}"} ${unreadable[@]+"${unreadable[@]}"})
     for k in ${cand[@]+"${!cand[@]}"}; do
       l="${cand[k]}"
