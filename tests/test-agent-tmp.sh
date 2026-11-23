@@ -168,7 +168,7 @@ teardown
 
 setup; mkdir -p "$GROUP_ROOT/.var-tmp/$(date +%y%m%d-%H%M%S)-2"; run_sandbox
 check "a concurrent launch's new folder is kept" \
-  bash -c 'ls "$1" | grep -q -- "-2$"' _ "$GROUP_ROOT/.var-tmp"
+  bash -c 'l="$(ls "$1")"; grep -q -- "-2$" <<<"$l"' _ "$GROUP_ROOT/.var-tmp"
 teardown
 
 setup; mkdir -p "$GROUP_ROOT/.var-tmp/keepme"; : > "$GROUP_ROOT/.var-tmp/x"
@@ -215,11 +215,11 @@ teardown
 setup; for i in $(seq 1 60); do old_slot "200101-000000-$i"; done
 run_sandbox
 check "60 old folders: one launch removes 50" \
-  bash -c 'ls "$1" | grep -c "^200101-" | grep -qx 10' _ "$GROUP_ROOT/.var-tmp"
+  bash -c 'l="$(ls "$1")"; n="$(grep -c "^200101-" <<<"$l")"; [ "$n" = 10 ]' _ "$GROUP_ROOT/.var-tmp"
 check "the cap NOTE says 10 more" grep -qxF "NOTE: 10 more old temp folder(s) in $GROUP_ROOT/.var-tmp are left for the next launch." "$ERR"
 run_sandbox
 check "the next launch removes the remaining 10" \
-  bash -c '! ls "$1" | grep -q "^200101-"' _ "$GROUP_ROOT/.var-tmp"
+  bash -c 'l="$(ls "$1")"; ! grep -q "^200101-" <<<"$l"' _ "$GROUP_ROOT/.var-tmp"
 check "no cap NOTE once nothing is left" bash -c '! grep -q "more old temp" "$1"' _ "$ERR"
 teardown
 
