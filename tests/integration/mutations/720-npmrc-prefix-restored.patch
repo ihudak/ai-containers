@@ -5,12 +5,13 @@
 #       node=22,20 multi-version workflow breaks the instant ~/.ai-tools is populated.
 #
 diff --git a/Dockerfile b/Dockerfile
+index 575a50b..eb92826 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -956,7 +956,8 @@
- # refuses the name too. `if`, not `&&`, so sourcing the file under dash still
- # returns 0. Case 310 runs both, and tests/test-profile-scripts.sh runs the
- # lines below under dash, bash and posix-mode bash.
+@@ -961,7 +961,8 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
+ # The start-up steps run through runuser, and the database services, do not.
+ # Never for root, whose id is 0. A TMPDIR already set wins, because the
+ # project's container.env reaches the agent's shell before this file runs.
 -RUN install -d /etc/skel/.local/bin && \
 +RUN printf 'prefix=${HOME}/.ai-tools/npm\n' > /etc/skel/.npmrc && \
 +    install -d /etc/skel/.local/bin && \
