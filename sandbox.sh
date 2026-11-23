@@ -8015,24 +8015,38 @@ _group_gh_token() {
 # anything uncertain is kept: a docker that cannot list containers, a name that
 # is not a per-container folder, a link, a file or folder that cannot be read.
 # The folders are the agent's to write, so nothing here follows a link out of one
-# (find -P, du and rm -rf all leave links alone). Always returns 0.
+# (find -P, du and rm -rf all leave links alone), and what it can make a launch
+# cost is bounded: ONE find lists the folders whose own mtime is over 30 days
+# old (a recent one costs nothing more, however many the agent makes), docker is
+# asked only when there is one, and at most 50 are checked and removed per
+# launch (the number SANDBOX_LAUNCHER_MAX defaults to); the rest are named and
+# wait for the next launch. -mmin, not -mtime, so GNU and BSD find agree (BSD
+# rounds days up). Always returns 0, whatever a sibling container does to a
+# folder meanwhile.
 agent_tmp_prune() {
-  local dir="$1" running d name n=0 kb total_kb=0 ps_out
+  local dir="$1" running d name n=0 kb total_kb=0 ps_out cap=50 checked=0 left=0
+  local cands=() recent
   [[ -d "$dir" ]] || return 0
-  ps_out="$(docker ps --filter label=ai-containers.tmpslot \
-    --format '{{.Label "ai-containers.tmpslot"}}' 2>/dev/null)" || return 0
-  running=$'\n'"$ps_out"$'\n'
-  for d in "$dir"/*; do
+  while IFS= read -r -d '' d; do
     name="${d##*/}"
     [[ "$name" =~ ^[0-9]{6}-[0-9]{6}-[0-9]+$ ]] || continue
     [[ -d "$d" && ! -L "$d" ]] || continue
+    cands+=("$d")
+  done < <(find -P "$dir" -mindepth 1 -maxdepth 1 -type d -mmin +43200 -print0 2>/dev/null)
+  (( ${#cands[@]} )) || return 0
+  ps_out="$(docker ps --filter label=ai-containers.tmpslot \
+    --format '{{.Label "ai-containers.tmpslot"}}' 2>/dev/null)" || return 0
+  running=$'\n'"$ps_out"$'\n'
+  for d in "${cands[@]}"; do
+    name="${d##*/}"
     [[ "$running" == *$'\n'"$name"$'\n'* ]] && continue
+    if (( checked >= cap )); then left=$((left + 1)); continue; fi
+    checked=$((checked + 1))
     # A find that errors (an unreadable subfolder) keeps the folder, as does
     # any file inside modified in the last 30 days.
-    local recent
-    recent="$(find -P "$d" -mtime -30 -print -quit 2>/dev/null)" || continue
+    recent="$(find -P "$d" -mmin -43200 -print -quit 2>/dev/null)" || continue
     [[ -z "$recent" ]] || continue
-    kb="$(du -sk "$d" 2>/dev/null | awk '{print $1; exit}')"
+    kb="$(du -sk "$d" 2>/dev/null | awk '{print $1; exit}')" || kb=0
     [[ "$kb" =~ ^[0-9]+$ ]] || kb=0
     if rm -rf -- "$d" 2>/dev/null && [[ ! -e "$d" ]]; then
       n=$((n + 1)); total_kb=$((total_kb + kb))
@@ -8040,13 +8054,17 @@ agent_tmp_prune() {
       printf 'NOTE: could not remove %s; it is left as it is.\n' "$d" >&2
     fi
   done
-  (( n > 0 )) || return 0
-  local size
-  if (( total_kb >= 1048576 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fG", k/1048576}')"
-  elif (( total_kb >= 1024 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fM", k/1024}')"
-  else size="${total_kb}K"; fi
-  printf 'NOTE: removed %d temp folder(s) of stopped containers, untouched for 30 days, from %s (%s freed).\n' \
-    "$n" "$dir" "$size" >&2
+  if (( n > 0 )); then
+    local size
+    if (( total_kb >= 1048576 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fG", k/1048576}')"
+    elif (( total_kb >= 1024 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fM", k/1024}')"
+    else size="${total_kb}K"; fi
+    printf 'NOTE: removed %d temp folder(s) of stopped containers, untouched for 30 days, from %s (%s freed).\n' \
+      "$n" "$dir" "$size" >&2
+  fi
+  if (( left > 0 )); then
+    printf 'NOTE: %d more old temp folder(s) in %s are left for the next launch.\n' "$left" "$dir" >&2
+  fi
   return 0
 }
 

@@ -44,6 +44,7 @@ claude-code=OFF}" > "$SANDBOX_CONF"
 #!/usr/bin/env bash
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
 if [[ "\$1" == "ps" ]]; then
+  printf 'ps\n' >> "$TMP/ps-calls.txt"
   [[ "\${FAKE_PS_FAIL:-}" == 1 ]] && exit 1
   [[ -n "\${FAKE_RUNNING_SLOTS:-}" ]] && printf '%s\n' "\$FAKE_RUNNING_SLOTS"
   exit 0
@@ -156,7 +157,12 @@ setup; old_slot "$OLD"; FAKE_RUNNING_SLOTS="$OLD" run_sandbox
 check "a running container's folder is kept, however old" test -d "$GROUP_ROOT/.var-tmp/$OLD"
 teardown
 
-setup; old_slot "$OLD"; : > "$GROUP_ROOT/.var-tmp/$OLD/new"; run_sandbox
+# Append to an aged file in a subfolder, then age the folders back, so only a
+# file deep inside is recent: a check of the folder's own mtime would miss it.
+setup; old_slot "$OLD"; mkdir "$GROUP_ROOT/.var-tmp/$OLD/sub"; : > "$GROUP_ROOT/.var-tmp/$OLD/sub/h"
+age_tree "$GROUP_ROOT/.var-tmp/$OLD"; printf x >> "$GROUP_ROOT/.var-tmp/$OLD/sub/h"
+touch -h -t 202001010000 "$GROUP_ROOT/.var-tmp/$OLD/sub" "$GROUP_ROOT/.var-tmp/$OLD"
+run_sandbox
 check "a folder touched within 30 days is kept" test -d "$GROUP_ROOT/.var-tmp/$OLD"
 teardown
 
@@ -190,7 +196,36 @@ setup; old_slot "$OLD"; mkdir "$GROUP_ROOT/.var-tmp/$OLD/d"; : > "$GROUP_ROOT/.v
 age_tree "$GROUP_ROOT/.var-tmp/$OLD"; chmod 000 "$GROUP_ROOT/.var-tmp/$OLD/d"
 run_sandbox
 check "an unreadable folder does not stop the launch (rc=$RC)" test "$RC" -eq 0
+if [[ "$(id -u)" -ne 0 ]]; then
+  check "an unreadable folder is kept whole, with no removal NOTE" \
+    bash -c '[[ -e "$1/f" ]] && ! grep -q "could not remove" "$2"' _ "$GROUP_ROOT/.var-tmp/$OLD" "$ERR"
+fi
 chmod 700 "$GROUP_ROOT/.var-tmp/$OLD/d" 2>/dev/null
+teardown
+
+# A du that fails (a sibling removed part of the folder meanwhile) must not end the launch.
+setup; old_slot "$OLD"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/bin/du"; chmod +x "$TMP/bin/du"
+run_sandbox
+check "a failing du does not stop the launch (rc=$RC)" test "$RC" -eq 0
+check "the launch reached docker run" test -s "$CAPTURE"
+teardown
+
+# The cap: 50 per launch, the rest named and taken by the next launch.
+setup; for i in $(seq 1 60); do old_slot "200101-000000-$i"; done
+run_sandbox
+check "60 old folders: one launch removes 50" \
+  bash -c 'ls "$1" | grep -c "^200101-" | grep -qx 10' _ "$GROUP_ROOT/.var-tmp"
+check "the cap NOTE says 10 more" grep -qxF "NOTE: 10 more old temp folder(s) in $GROUP_ROOT/.var-tmp are left for the next launch." "$ERR"
+run_sandbox
+check "the next launch removes the remaining 10" \
+  bash -c '! ls "$1" | grep -q "^200101-"' _ "$GROUP_ROOT/.var-tmp"
+check "no cap NOTE once nothing is left" bash -c '! grep -q "more old temp" "$1"' _ "$ERR"
+teardown
+
+# Only recent folders: docker is never asked.
+setup; mkdir -p "$GROUP_ROOT/.var-tmp/$(date +%y%m%d-%H%M%S)-2"; run_sandbox
+check "no old folder: docker ps is not called" test ! -s "$TMP/ps-calls.txt"
 teardown
 
 if [[ $fails -eq 0 ]]; then printf 'ALL PASS\n'; else printf '%d FAILED\n' "$fails"; exit 1; fi
