@@ -302,6 +302,24 @@ add_file_mount_if_exists() {
   fi
 }
 
+# _group_scratch_mount <physical-src> <dst>: whether a writable bind is one of the
+# three group folders the container keeps across restarts — the group's .var-tmp,
+# .cache or .local/state, by their physical paths under the group directory
+# (_git_skip_root) — mounted outside /workspace. launcher_ro_overlay does not walk
+# those for launchers or for directories you cannot list. One mounted into
+# /workspace (through EXTRA_MOUNTS, say) is the agent's like any mount and is
+# walked (G92), and so is a group folder that is a link out of the group: its
+# source is the directory the link leads to, which this does not match. Fails
+# while the group directory is unknown.
+_group_scratch_mount() {
+  [[ -n "${_git_skip_root:-}" ]] || return 1
+  [[ "$2" != /workspace && "$2" != /workspace/* ]] || return 1
+  case "$1" in
+    "$_git_skip_root/.var-tmp"|"$_git_skip_root/.cache"|"$_git_skip_root/.local/state") return 0 ;;
+  esac
+  return 1
+}
+
 # Launcher directories must not be writable from inside the container.
 # A project's .ai-containers/ holds what the HOST runs or reads at the next
 # launch — sandbox.sh, build.sh, the Dockerfile and entrypoint it builds,
@@ -548,6 +566,16 @@ launcher_ro_overlay() {
   # see into — with where it lands in the container.
   for i in ${bsrc[@]+"${!bsrc[@]}"}; do
     src="${bsrc[i]}"; dst="${bdst[i]}"
+    # Not the group's /var/tmp, ~/.cache or ~/.local/state. The git scan below
+    # rests on the same premise: the host never runs git or a launcher from
+    # inside a group folder. Walked, they cost every launch a pass over pip's
+    # and uv's deep trees, locked read-only any copy of ai-containers an agent
+    # cloned there, and refused the launch past SANDBOX_LAUNCHER_MAX such copies
+    # or for a folder there the agent made unlistable. A launcher another
+    # mount's walk finds in them is still overlaid in their view, by the loop
+    # after this one; and the hard-link check (_fs_linked_in) still lists them,
+    # since a second name of a file git reads can lie there.
+    if _group_scratch_mount "$src" "$dst"; then continue; fi
     found=(); unreadable=()
     if [[ "$self" == "$src" || "$self" == "$src"/* ]]; then found+=("$self"); fi
     launcher_dirs_in found unreadable "$src" "$uid" "$gid" "$you"
@@ -567,14 +595,18 @@ launcher_ro_overlay() {
   # And in every other writable mount that exposes it, where it lands there: an
   # outer mount's scan does not reach what lies past six levels or under a
   # pruned node_modules, and a launcher only the inner mount's scan found stayed
-  # writable in the outer mount's view (GIT-51; T74).
+  # writable in the outer mount's view (GIT-51; T74). Another mount of the very
+  # source it was found in counts too: the group's /var/tmp, ~/.cache and
+  # ~/.local/state are not walked (_group_scratch_mount), and one of them also
+  # mounted into /workspace, where it is walked, left the launcher found there
+  # writable through the group's own mount (T93).
   local -A chave=()
   local nc=${#cl[@]}
   for (( k = 0; k < nc; k++ )); do chave[${cat[k]}]=1; done
   for (( k = 0; k < nc; k++ )); do
     for i in ${bsrc[@]+"${!bsrc[@]}"}; do
       src="${bsrc[i]}"; dst="${bdst[i]}"
-      [[ "$src" != "${csrc[k]}" ]] || continue
+      [[ "$src" != "${csrc[k]}" || "$dst" != "${cdst[k]}" ]] || continue
       if [[ "${cl[k]}" == "$src" ]]; then at="$dst"
       elif [[ "${cl[k]}" == "$src"/* ]]; then at="$dst/${cl[k]#"$src"/}"
       else continue; fi
