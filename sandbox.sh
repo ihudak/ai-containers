@@ -8029,25 +8029,40 @@ _group_gh_token() {
 # Deleting an agent's files is what the persistent /var/tmp exists to stop, so
 # anything uncertain is kept: a docker that cannot list containers, a name that
 # is not a per-container folder, a link, a file or folder that cannot be read.
+# A folder kept for what it holds (a file changed within 30 days, or dated in
+# the future), for an error, or because it could not be removed is touched, so
+# it is checked again 30 days later rather than at every launch: 50 such folders
+# first in find's order would otherwise use up the cap below at every launch,
+# and the folders after them would never be checked.
 # The folders are the agent's to write, so nothing here follows a link out of one
-# (find -P, du and rm -rf all leave links alone), and what it can make a launch
-# cost is bounded: ONE find lists the folders whose own mtime is over 30 days
-# old (a recent one costs nothing more, however many the agent makes), docker is
-# asked only when there is one, and at most 50 are checked and removed per
-# launch (the number SANDBOX_LAUNCHER_MAX defaults to); the rest are named and
-# wait for the next launch. -mmin, not -mtime, so GNU and BSD find agree (BSD
-# rounds days up). Always returns 0, whatever a sibling container does to a
-# folder meanwhile.
+# (find -P, du, touch -h and rm -rf all leave links alone), and what it can make a
+# launch cost is bounded, however many folders the agent makes or ages. ONE find
+# reads the directory once and lists the folders with a per-container name
+# whose own mtime is over 30 days old: the name is matched first, so any other
+# name costs its directory entry and no stat, and the listing is read to 500
+# folders at most, after which find is stopped (by SIGPIPE, which ends nothing
+# here) and the NOTE says "at least". Docker is asked only when one is listed,
+# and at most 50 are checked and removed per launch (the number
+# SANDBOX_LAUNCHER_MAX defaults to); the rest are counted and wait for the next
+# launch. -mmin, not -mtime, so GNU and BSD find agree (BSD rounds days up).
+# Always returns 0, whatever a sibling container does to a folder meanwhile.
 agent_tmp_prune() {
   local dir="$1" running d name n=0 kb total_kb=0 ps_out cap=50 checked=0 left=0
-  local cands=() recent
+  local cands=() listed=() recent readmax=500 listed_cut=0
   [[ -d "$dir" ]] || return 0
-  while IFS= read -r -d '' d; do
+  # The two -name tests are the regex below, in fnmatch: six digits, a dash, six
+  # digits, a dash, then digits only (nothing past the second dash that is not
+  # one). One more than readmax is read, to tell a listing that was cut.
+  mapfile -t -d '' -n "$((readmax + 1))" listed < <(find -P "$dir" -mindepth 1 -maxdepth 1 \
+    -name '[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9]*' \
+    ! -name '??????-??????-*[!0-9]*' -type d -mmin +43200 -print0 2>/dev/null)
+  if (( ${#listed[@]} > readmax )); then listed_cut=1; listed=("${listed[@]:0:readmax}"); fi
+  for d in ${listed[@]+"${listed[@]}"}; do
     name="${d##*/}"
     [[ "$name" =~ ^[0-9]{6}-[0-9]{6}-[0-9]+$ ]] || continue
     [[ -d "$d" && ! -L "$d" ]] || continue
     cands+=("$d")
-  done < <(find -P "$dir" -mindepth 1 -maxdepth 1 -type d -mmin +43200 -print0 2>/dev/null)
+  done
   (( ${#cands[@]} )) || return 0
   ps_out="$(docker ps --filter label=ai-containers.tmpslot \
     --format '{{.Label "ai-containers.tmpslot"}}' 2>/dev/null)" || return 0
@@ -8059,14 +8074,17 @@ agent_tmp_prune() {
     checked=$((checked + 1))
     # A find that errors (an unreadable subfolder) keeps the folder, as does
     # any file inside modified in the last 30 days.
-    recent="$(find -P "$d" -mmin -43200 -print -quit 2>/dev/null)" || continue
-    [[ -z "$recent" ]] || continue
+    if ! recent="$(find -P "$d" -mmin -43200 -print -quit 2>/dev/null)" || [[ -n "$recent" ]]; then
+      touch -c -h -- "$d" 2>/dev/null || true
+      continue
+    fi
     kb="$(du -sk "$d" 2>/dev/null | awk '{print $1; exit}')" || kb=0
     [[ "$kb" =~ ^[0-9]+$ ]] || kb=0
     if rm -rf -- "$d" 2>/dev/null && [[ ! -e "$d" ]]; then
       n=$((n + 1)); total_kb=$((total_kb + kb))
     else
-      printf 'NOTE: could not remove %s; it is left as it is.\n' "$d" >&2
+      printf 'NOTE: could not remove %s; it is kept, and checked again in 30 days.\n' "$d" >&2
+      touch -c -h -- "$d" 2>/dev/null || true
     fi
   done
   if (( n > 0 )); then
@@ -8078,7 +8096,10 @@ agent_tmp_prune() {
       "$n" "$dir" "$size" >&2
   fi
   if (( left > 0 )); then
-    printf 'NOTE: %d more old temp folder(s) in %s are left for the next launch.\n' "$left" "$dir" >&2
+    local least=""
+    (( listed_cut == 0 )) || least="at least "
+    printf 'NOTE: %s%d more old temp folder(s) in %s are left for the next launch.\n' \
+      "$least" "$left" "$dir" >&2
   fi
   return 0
 }

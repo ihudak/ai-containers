@@ -173,6 +173,25 @@ old_slot() {
   age_tree "$GROUP_ROOT/.var-tmp/$1"
 }
 OLD=200101-000000-1
+# touched <dir>: its own mtime is within 30 days, so the next launch does not
+# list it.
+touched() { local o; o="$(find -P "$1" -maxdepth 0 -mmin +43200)"; [[ -e "$1" && -z "$o" ]]; }
+# sorted_find: a find on PATH that hands the launch's listing of .var-tmp back
+# in name order, so which folders a capped listing, or the 50 a launch checks,
+# reach does not depend on the filesystem's directory order. Every other find
+# runs as it is.
+sorted_find() {
+  local real; real="$(type -P find)"
+  cat > "$TMP/bin/find" <<FIND
+#!/usr/bin/env bash
+if [[ "\$*" == *"/.var-tmp -mindepth 1 -maxdepth 1 "* ]]; then
+  "$real" "\$@" | LC_ALL=C sort -z
+else
+  exec "$real" "\$@"
+fi
+FIND
+  chmod +x "$TMP/bin/find"
+}
 
 setup; old_slot "$OLD"; run_sandbox
 check "an old folder of a stopped container is removed" test ! -e "$GROUP_ROOT/.var-tmp/$OLD"
@@ -231,6 +250,7 @@ check "an unreadable folder does not stop the launch (rc=$RC)" launched
 if [[ "$(id -u)" -ne 0 ]]; then
   check "an unreadable folder is kept whole, with no removal NOTE" \
     bash -c '[[ -e "$1/f" ]] && ! grep -q "could not remove" "$2"' _ "$GROUP_ROOT/.var-tmp/$OLD" "$ERR"
+  check "  and touched, so the next launches do not check it again" touched "$GROUP_ROOT/.var-tmp/$OLD"
 fi
 chmod 700 "$GROUP_ROOT/.var-tmp/$OLD/d" 2>/dev/null
 teardown
@@ -258,6 +278,81 @@ teardown
 # Only recent folders: docker is never asked.
 setup; mkdir -p "$GROUP_ROOT/.var-tmp/$(date +%y%m%d-%H%M%S)-2"; run_sandbox
 check "no old folder: docker ps is not called" test ! -s "$TMP/ps-calls.txt"
+check "  and the launch went on (rc=$RC)" launched
+teardown
+
+# The listing is read to 500 folders at most, however many the agent makes old,
+# and find is stopped there: 3000 of them, whose names are far more than a pipe
+# holds, so a find that ran to its end was read to its end. The NOTE can then
+# only say "at least".
+setup; mkdir -p "$GROUP_ROOT/.var-tmp"
+( cd "$GROUP_ROOT/.var-tmp" && mkdir 200101-000000-{1..3000} && touch -h -t 202001010000 200101-000000-{1..3000} )
+real_find="$(type -P find)"
+cat > "$TMP/bin/find" <<FIND
+#!/usr/bin/env bash
+if [[ "\$*" == *"/.var-tmp -mindepth 1 -maxdepth 1 "* ]]; then
+  "$real_find" "\$@" && : > "$TMP/listing-read-whole"
+else
+  exec "$real_find" "\$@"
+fi
+FIND
+chmod +x "$TMP/bin/find"
+run_sandbox
+check "3000 old folders: the launch went on (rc=$RC)" launched
+check "  and removed 50" \
+  bash -c 'l="$(ls "$1")"; n="$(grep -c "^200101-" <<<"$l")"; [ "$n" = 2950 ]' _ "$GROUP_ROOT/.var-tmp"
+check "  the listing was not read to its end" test ! -e "$TMP/listing-read-whole"
+check "  but cut at 500: the NOTE says at least 450 more" \
+  grep -qxF "NOTE: at least 450 more old temp folder(s) in $GROUP_ROOT/.var-tmp are left for the next launch." "$ERR"
+teardown
+
+# Names that are not a per-container folder's are left out by find itself, so
+# however many there are, old, they do not fill the 500 a launch reads. Both
+# kinds sort before the real one: one that the first pattern refuses, and one
+# that passes it with a character the regex refuses after the second dash.
+setup; mkdir -p "$GROUP_ROOT/.var-tmp"
+( cd "$GROUP_ROOT/.var-tmp" && mkdir 0-{1..510} 000000-000000-1x{1..510} \
+  && touch -h -t 202001010000 0-{1..510} 000000-000000-1x{1..510} )
+old_slot "$OLD"; sorted_find
+run_sandbox
+check "1020 old folders of other names, listed first: the per-container one is still removed" \
+  test ! -e "$GROUP_ROOT/.var-tmp/$OLD"
+check "  and the others are kept (rc=$RC)" \
+  bash -c '[[ "$2" -eq 0 && -d "$1/0-510" && -d "$1/000000-000000-1x510" ]]' _ "$GROUP_ROOT/.var-tmp" "$RC"
+teardown
+
+# A folder kept for what it holds is touched, so it leaves the list for 30 days:
+# 50 of them first in the listing used up the cap at every launch, and the old
+# folder after them was never checked.
+setup; mkdir -p "$GROUP_ROOT/.var-tmp"
+( cd "$GROUP_ROOT/.var-tmp" && mkdir 200101-000000-{1..50} \
+  && for k in 200101-000000-{1..50}; do : > "$k/new"; done \
+  && touch -h -t 202001010000 200101-000000-{1..50} )
+old_slot 200102-000000-1; sorted_find
+run_sandbox
+check "50 folders kept for a recent file: each is touched" \
+  bash -c 'for k in "$1"/200101-000000-*; do o="$(find -P "$k" -maxdepth 0 -mmin +43200)"; [[ -z "$o" ]] || exit 1; done' _ "$GROUP_ROOT/.var-tmp"
+run_sandbox
+check "  so the next launch reaches the old folder after them and removes it" \
+  test ! -e "$GROUP_ROOT/.var-tmp/200102-000000-1"
+check "  and keeps the 50 (rc=$RC)" \
+  bash -c 'l="$(ls "$1")"; n="$(grep -c "^200101-" <<<"$l")"; [[ "$n" = 50 && "$2" -eq 0 ]]' _ "$GROUP_ROOT/.var-tmp" "$RC"
+check "  with no cap NOTE" bash -c '! grep -q "more old temp" "$1"' _ "$ERR"
+teardown
+
+# A folder that could not be removed is touched too. The fake rm refuses only
+# what is in .var-tmp, and goes before teardown, which needs a real one.
+setup; old_slot "$OLD"
+cat > "$TMP/bin/rm" <<RM
+#!/usr/bin/env bash
+for a in "\$@"; do [[ "\$a" == */.var-tmp/* ]] && exit 1; done
+exec "$(type -P rm)" "\$@"
+RM
+chmod +x "$TMP/bin/rm"
+run_sandbox
+command rm -f "$TMP/bin/rm"; hash -r
+check "a folder rm cannot remove is named in a NOTE" grep -qF "NOTE: could not remove $GROUP_ROOT/.var-tmp/$OLD" "$ERR"
+check "  and touched" touched "$GROUP_ROOT/.var-tmp/$OLD"
 check "  and the launch went on (rc=$RC)" launched
 teardown
 
