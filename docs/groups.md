@@ -29,7 +29,7 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 │   ├── .yarn/             ← yarn home, when yarn= is ON (mounted, never copied)
 │   ├── .gradle/           ← Gradle user home, when any JVM key is set (mounted, never copied)
 │   ├── .m2/               ← Maven repository, ditto
-│   ├── .cache/            ← mounted at ~/.cache, always (qmd's index, Playwright's browsers, pip's and npm's caches)
+│   ├── .cache/            ← mounted at ~/.cache, always (qmd's index, Playwright's browsers, pip's, uv's and node-gyp's caches)
 │   ├── .local/state/      ← mounted at ~/.local/state, always
 │   ├── .var-tmp/          ← mounted at /var/tmp, always; one folder per container
 │   ├── .config/dtctl/    ← tools.d config dir, seeded once from $HOME if present
@@ -66,22 +66,46 @@ tools that follow `TMPDIR` (Claude Code's scratch folder, Python's `tempfile`,
 `mktemp`) write somewhere that is still there after a restart, at the same
 path. Two containers of a group never share a folder. Root, the start-up steps
 and the in-container database servers do not get `TMPDIR`; a `TMPDIR` set in
-your `container.env` wins. A tool that writes a literal `/tmp/x` loses it: put
-state that must last in `~/.local/state`, or `~/.cache` for what can be
-rebuilt.
+your `container.env` wins. A shell that cannot write or enter its folder does
+not get it either, and keeps the default `/tmp`: with `SANDBOX_UID` overridden
+on native Linux the folder belongs to you, mode 0700. A tool that writes a
+literal `/tmp/x` loses it: put state that must last in `~/.local/state`, or
+`~/.cache` for what can be rebuilt.
 
 At launch, folders in `/var/tmp` of containers that are no longer running and
 that nothing has touched for 30 days are removed, at most 50 per launch, with a
-`NOTE:` saying how many and how much space. Nothing else in `/var/tmp`,
-`~/.cache` or `~/.local/state` is ever removed by the launcher. Two limits:
+`NOTE:` saying how many and how much space. Another `NOTE:` says how many old
+folders are left for the next launch, "at least" so many when there are more
+than the 500 a launch looks at. A folder kept because something in it changed
+within 30 days, or that could not be removed, is looked at again 30 days later.
+Nothing else in `/var/tmp`, `~/.cache` or `~/.local/state` is ever removed by
+the launcher. Two limits:
 
 - If you use several docker daemons or contexts from one home, they share a
   group's `.var-tmp`, but `docker ps` sees only the current one. A container
   running on another daemon whose folder went untouched for 30 days can be
   pruned.
-- "Untouched" means modification time. Archive extraction (`tar x`, `cp -p`,
-  `rsync -a`) preserves it, so an old file restored into a folder keeps that
-  folder looking old.
+- "Untouched" means modification time, of the folder and of everything in it,
+  and it counts from the container's exit or the last change, whichever is
+  later. The launcher touches a container's folder when the container exits,
+  because unpacking an archive or a copy onto the folder itself (`tar x`,
+  `cp -p`, `rsync -a`) gives it the source's old dates.
+
+**Seeing and reclaiming the space.** `./group.sh list --sizes` shows each group
+directory's size. To see what the three folders hold:
+
+```bash
+du -sh ~/.ai-containers/<group>/.cache/* ~/.ai-containers/<group>/.local/state/*
+du -sh ~/.ai-containers/<group>/.var-tmp/*
+```
+
+Remove what you no longer need with `rm -rf` while no container of that group
+runs, since a running one may be using it: a tool's cache
+(`rm -rf ~/.ai-containers/<group>/.cache/pip`), or an old container's folder
+(`rm -rf ~/.ai-containers/<group>/.var-tmp/<YYMMDD-HHMMSS-pid>`). The folders
+running containers use are those `docker ps --format '{{.Label "ai-containers.tmpslot"}}'`
+lists. A cache is downloaded again when a tool next needs it; what a long run
+keeps in `~/.local/state` is not.
 
 **Do not run `git` or `./sandbox.sh` on the host inside a repository an agent
 made in these folders.** The launcher does not scan them for hooks and
@@ -117,7 +141,7 @@ Group 'docs' not found. Initialize from:
 
 Pick `1)` to copy the group-scoped dotfile slice from `default` (or whichever group is listed first). Pick `host` to copy from `$HOME`. Pick `<empty>` to start with an empty group (only `.ssh/` and `.agents/` are scaffolded). Pick `q` to abort.
 
-The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube`. Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, `.cache`, `.local/state`, `.var-tmp`, `.yarn`, `.gradle`, `.m2`): cloning a group should not clone gigabytes that each tool rebuilds by itself.
+The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube` — and, as before, qmd's index (`.cache/qmd`). Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, `.cache` except qmd's index, `.local/state`, `.var-tmp`, `.yarn`, `.gradle`, `.m2`): cloning a group should not clone gigabytes that each tool rebuilds by itself.
 
 **Non-interactive (no TTY or scripted use):**
 
@@ -192,6 +216,11 @@ tar czf docs-group.tgz -C "$HOME/.ai-containers" docs
 # Duplicate a group's directory (credentials, agent config)
 cp -a ~/.ai-containers/default ~/.ai-containers/new-project
 ```
+
+Both take the whole directory, so they now carry every cache in `.cache`, the
+state in `.local/state` and the scratch in `.var-tmp` too, which can be large:
+`./group.sh list --sizes` shows how large, and
+[What survives a restart](#what-survives-a-restart) how to clear them first.
 
 **Deleting is the exception.** Once you have built with a `ruby=` version, the
 group also owns a Docker volume holding its Ruby home (see

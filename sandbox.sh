@@ -8758,12 +8758,13 @@ run_container() {
     done
   done < <(tools_list_names)
   # ~/.cache and ~/.local/state are mounted whole, whatever sandbox.conf says, so what any
-  # tool keeps there survives --rm: qmd's index, pip's and npm's caches, Claude Code's
-  # updater state. One nested mount per tool left every other tool's cache and state to
-  # vanish with the container. Playwright's browser binaries (~500 MB, downloaded at run
-  # time into ~/.cache/ms-playwright because only the OS libraries are baked) are the
-  # costly case: without this every container start re-downloads them. The cost is paid
-  # once per group, not once per project and not once per run.
+  # tool keeps there survives --rm: qmd's index, the caches of pip, uv and node-gyp (npm's
+  # is ~/.npm, not here), Claude Code's updater state. One nested mount per tool left
+  # every other tool's cache and state to vanish with the container. Playwright's browser
+  # binaries (~500 MB, downloaded at run time into ~/.cache/ms-playwright because only the
+  # OS libraries are baked) are the costly case: without this every container start
+  # re-downloads them. The cost is paid once per group, not once per project and not once
+  # per run.
   install -d "$group_root/.cache" "$group_root/.local/state"
   add_mount_if_exists config_mount_flags "$group_root/.cache" "$dev_home/.cache"
   add_mount_if_exists config_mount_flags "$group_root/.local/state" "$dev_home/.local/state"
