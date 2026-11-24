@@ -963,6 +963,9 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
 # runuser, and the database services, do not.
 # Never for root, whose id is 0. A TMPDIR already set wins, because the
 # project's container.env reaches the agent's shell before this file runs.
+# Only for a folder the shell can write and enter: with SANDBOX_UID overridden
+# on native Linux the folder is the host user's, 0700, and the shell keeps the
+# default /tmp rather than a TMPDIR every tool would fail in.
 RUN install -d /etc/skel/.local/bin && \
     printf '%s\n' \
       'export UV_TOOL_DIR="$HOME/.ai-tools/uv"' \
@@ -970,7 +973,7 @@ RUN install -d /etc/skel/.local/bin && \
       'export UV_PYTHON_INSTALL_DIR="$HOME/.ai-tools/uv/python"' \
       'export PATH="$HOME/.local/bin:$PATH"' \
       'if [ -n "${BASH_VERSION:-}" ] && ! shopt -oq posix; then eval '\''npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }'\''; fi' \
-      'if [ -z "${TMPDIR:-}" ] && [ -n "${AI_AGENT_TMPDIR:-}" ] && [ -d "$AI_AGENT_TMPDIR" ] && [ "$(id -u)" != 0 ]; then export TMPDIR="$AI_AGENT_TMPDIR"; fi' \
+      'if [ -z "${TMPDIR:-}" ] && [ -n "${AI_AGENT_TMPDIR:-}" ] && [ -d "$AI_AGENT_TMPDIR" ] && [ -w "$AI_AGENT_TMPDIR" ] && [ -x "$AI_AGENT_TMPDIR" ] && [ "$(id -u)" != 0 ]; then export TMPDIR="$AI_AGENT_TMPDIR"; fi' \
       | tee /etc/profile.d/ai-tools.sh >> /etc/bash.bashrc
 
 # Ship the runtime agent-tool scripts (invoked by entrypoint: reconcile as the sandbox

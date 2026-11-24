@@ -124,6 +124,16 @@ tmpdir_case "from container.env wins" /keep 1000 "$TMP/slot" /keep
 tmpdir_case "stays unset for a missing folder" unset 1000 "$TMP/none" -
 tmpdir_case "stays unset for root" unset 0 "$TMP/slot" -
 tmpdir_case "stays unset without the variable" unset 1000 - -
+# A folder the shell cannot write, or cannot enter: with SANDBOX_UID overridden
+# on native Linux the launcher's folder is the host user's, 0700, and a TMPDIR
+# there fails every tool that uses it. Root may write and enter any folder, so
+# under CI's floor job, which runs as root, these two cannot be told apart.
+if [[ "$(id -u)" -ne 0 ]]; then
+  mkdir -p "$TMP/slot-ro" "$TMP/slot-nox"; chmod 500 "$TMP/slot-ro"; chmod 600 "$TMP/slot-nox"
+  tmpdir_case "stays unset for a folder it cannot write" unset 1000 "$TMP/slot-ro" -
+  tmpdir_case "stays unset for a folder it cannot enter" unset 1000 "$TMP/slot-nox" -
+  chmod 700 "$TMP/slot-ro" "$TMP/slot-nox"
+fi
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"
