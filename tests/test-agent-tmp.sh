@@ -7,7 +7,9 @@
 # Code) left every other tool's cache and state to vanish with the container.
 #
 # A fake `docker` on PATH captures the `docker run` arguments, so nothing is
-# launched. Its `ps` answers only the exact query the launch's pruning makes.
+# launched. Its `ps` answers only the exact query the launch's pruning makes,
+# and its `run` can age the launch's own /var/tmp folder, or kill the launcher,
+# as a container would.
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,11 +41,25 @@ claude-code=OFF}" > "$SANDBOX_CONF"
 
   CAPTURE="$TMP/docker-args.txt"; : > "$CAPTURE"
   mkdir -p "$TMP/bin"
-  # ps: FAKE_RUNNING_SLOTS for the pruning's own query only, nothing for any
-  # other, so a wrong filter or format is a folder not kept.
+  # run: FAKE_AGE_SLOT=<host .var-tmp> puts a file in the launch's own folder and
+  # gives both a 2020 mtime, as an archive unpacked onto $TMPDIR does;
+  # FAKE_KILL_LAUNCHER=1 then sends the launcher a TERM, so it never returns
+  # from docker run. ps: FAKE_RUNNING_SLOTS for the pruning's own query only,
+  # nothing for any other, so a wrong filter or format is a folder not kept.
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
-if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
+if [[ "\$1" == "run" ]]; then
+  shift; printf '%s\n' "\$@" > "$CAPTURE"
+  if [[ -n "\${FAKE_AGE_SLOT:-}" ]]; then
+    for a in "\$@"; do
+      [[ "\$a" == AI_AGENT_TMPDIR=/var/tmp/* ]] || continue
+      s="\$FAKE_AGE_SLOT/\${a#AI_AGENT_TMPDIR=/var/tmp/}"
+      : > "\$s/f"; touch -t 202001010000 "\$s/f" "\$s"
+    done
+  fi
+  [[ "\${FAKE_KILL_LAUNCHER:-}" == 1 ]] && kill -TERM "\$PPID"
+  exit 0
+fi
 if [[ "\$1" == "ps" ]]; then
   printf '%s\n' "\$*" >> "$TMP/ps-calls.txt"
   [[ "\${FAKE_PS_FAIL:-}" == 1 ]] && exit 1
@@ -69,10 +85,12 @@ teardown() {
 
 # Launched from a temp dir: sandbox.sh writes its .agent-* output dirs into $PWD.
 # The capture is emptied first, so a launch that stops before docker run leaves
-# none from an earlier one.
+# none from an earlier one. sandbox.sh is not the subshell's last command, so a
+# launcher killed by a signal is reported in $ERR, not on the test's output.
 run_sandbox() {
   ERR="$TMP/stderr.txt"; : > "$CAPTURE"
-  ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/app" ) >"$TMP/stdout.txt" 2>"$ERR" </dev/null
+  ( cd "$TMP/launch" || exit; bash "$REPO_DIR/sandbox.sh" restricted "$TMP/app"; exit $? ) \
+    >"$TMP/stdout.txt" 2>"$ERR" </dev/null
   RC=$?
 }
 # launched: the last launch went through to docker run and exited 0.
@@ -241,6 +259,44 @@ teardown
 setup; mkdir -p "$GROUP_ROOT/.var-tmp/$(date +%y%m%d-%H%M%S)-2"; run_sandbox
 check "no old folder: docker ps is not called" test ! -s "$TMP/ps-calls.txt"
 check "  and the launch went on (rc=$RC)" launched
+teardown
+
+# ── the launch's own folder: untouched counts from the container's exit ──────
+# An archive unpacked onto $TMPDIR itself gives the folder and all it holds the
+# archive's old dates; without a touch at exit the next launch removed it.
+setup; FAKE_AGE_SLOT="$GROUP_ROOT/.var-tmp" run_sandbox
+slot="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
+check "a container that ages its own folder: the launch completes (rc=$RC)" launched
+run_sandbox
+check "  and the next launch keeps that folder" test -f "$GROUP_ROOT/.var-tmp/$slot/f"
+teardown
+
+# And at once when docker run returns, not only at exit: the check after the
+# session (which runs find over the launch's writable mounts) can take 30 s, in
+# which a concurrent launch would prune. This find notes, the first time it runs
+# after docker run, whether the folder is old at that moment.
+setup
+real_find="$(type -P find)"
+cat > "$TMP/bin/find" <<FIND
+#!/usr/bin/env bash
+if [[ -s "$CAPTURE" && ! -e "$TMP/probed" ]]; then
+  s="\$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
+  "$real_find" -P "$GROUP_ROOT/.var-tmp/\$s" -maxdepth 0 -mmin +43200 > "$TMP/probed" 2>&1
+fi
+exec "$real_find" "\$@"
+FIND
+chmod +x "$TMP/bin/find"
+FAKE_AGE_SLOT="$GROUP_ROOT/.var-tmp" run_sandbox
+check "the folder is touched as soon as docker run returns (rc=$RC)" \
+  bash -c '[[ "$2" -eq 0 && -e "$1" && ! -s "$1" ]]' _ "$TMP/probed" "$RC"
+teardown
+
+# A launcher killed while the container runs touches it from its EXIT trap.
+setup; FAKE_AGE_SLOT="$GROUP_ROOT/.var-tmp" FAKE_KILL_LAUNCHER=1 run_sandbox
+slot="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
+check "a launcher killed by TERM during docker run exits 143 (rc=$RC)" test "$RC" -eq 143
+run_sandbox
+check "  and the next launch keeps the folder its container aged" test -f "$GROUP_ROOT/.var-tmp/$slot/f"
 teardown
 
 if [[ $fails -eq 0 ]]; then printf 'ALL PASS\n'; else printf '%d FAILED\n' "$fails"; exit 1; fi

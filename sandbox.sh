@@ -7731,6 +7731,21 @@ _vm_dev_ino_load() {
 # the EXIT trap below. A global, not a run_container local, so the trap can see
 # it, and guarded with :- so `set -u` is satisfied when no dir was made.
 _launcher_verify_dir=""
+# This launch's own folder in the group's .var-tmp, set by run_container once it
+# has made it, for _agent_tmp_touch.
+_agent_tmp_made=""
+# _agent_tmp_touch: set this launch's folder's mtime to now, when docker run
+# returns and again from the EXIT trap, so a launcher killed meanwhile does it
+# too. An archive or copy unpacked onto the folder itself (`tar -C "$TMPDIR" -x`
+# of a ./ entry, `rsync -a src/ "$TMPDIR"/`) gives it and all it holds the
+# source's old times, and agent_tmp_prune would remove it at the next launch;
+# so "untouched for 30 days" counts from the container's exit at the latest.
+# -h: the agent can swap the folder for a link, which is touched itself, never
+# what it leads to; -c: nothing is made where the folder is gone. Never fails.
+_agent_tmp_touch() {
+  [[ -n "${_agent_tmp_made:-}" ]] || return 0
+  touch -c -h -- "$_agent_tmp_made" 2>/dev/null || true
+}
 # Where _ro_files_snapshot keeps the read-only git files as they were at launch,
 # and which it kept (GIT-41); the directory is removed by the EXIT trap below.
 _ro_snap_dir=""
@@ -7845,7 +7860,7 @@ _git_watch_add() {
   [[ -z "${_git_watch_had[$1]:-}" ]] || return 0
   _git_watch_had[$1]=1; _git_watch+=("$1")
 }
-trap '_seed_wc_drop || true; rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
+trap '_agent_tmp_touch; _seed_wc_drop || true; rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
 
 # _host_way_add <what> <path as set> <what the launch resolved it to>: records a
 # host path the launch mounts, for launcher_ro_overlay to judge the way to it
@@ -9096,6 +9111,7 @@ run_container() {
     printf 'ERROR: cannot create %s\n' "$group_root/.var-tmp/$agent_tmp_slot" >&2
     exit 1
   fi
+  _agent_tmp_made="$group_root/.var-tmp/$agent_tmp_slot"
 
   # --pull=never: IMAGE_NAME may come from a committed sandbox.env, and an image
   # this machine never built must not be fetched from a registry and run with
@@ -9133,6 +9149,9 @@ run_container() {
     ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
     -w "$workdir" \
     "$image_name" || _run_rc=$?
+  # Now, not only from the EXIT trap: the check after the session can take 30 s,
+  # in which a concurrent launch, seeing this container gone, would prune.
+  _agent_tmp_touch
   _ro_files_restore
   _git_after_session
   return "$_run_rc"
