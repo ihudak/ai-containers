@@ -55,11 +55,15 @@ launcher_up open || it_finish
 cid_b="$IT_CID"
 
 home_b="$(agent_exec "$cid_b" 'printf %s "$HOME"' 2>/dev/null)"
-for f in "$t1/a" "$home_b/.cache/it/b" "$home_b/.local/state/it/c"; do
-  if [[ -n "$home_b" && "$(agent_exec "$cid_b" "cat '$f'" 2>/dev/null)" =~ ^[abc]$ ]]; then
+# Each file against the byte written into it, so one place answering for another
+# (the same folder mounted at two paths) does not pass.
+for want_f in "a $t1/a" "b $home_b/.cache/it/b" "c $home_b/.local/state/it/c"; do
+  want="${want_f%% *}" f="${want_f#* }"
+  got="$(agent_exec "$cid_b" "cat '$f'" 2>/dev/null)"
+  if [[ -n "$home_b" && "$got" == "$want" ]]; then
     pass "they survive into the next container: $f"
   else
-    fail "they survive into the next container: $f"
+    fail "they survive into the next container: $f — got '$got', want '$want'"
   fi
 done
 
