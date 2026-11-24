@@ -122,6 +122,33 @@ grep -qE '^docs +- +none' <<<"$out" \
   && pass "list shows a group with no rvm volume as 'none'" \
   || fail "list shows a group with no rvm volume as 'none' (got: $out)"
 
+# list --sizes adds the group directory's own size as a fourth column.
+mkdir -p "$FAKE_HOME/.ai-containers/default/.var-tmp"
+dd if=/dev/zero of="$FAKE_HOME/.ai-containers/default/.var-tmp/x" bs=1048576 count=2 2>/dev/null
+out="$(run_group list --sizes)"
+grep -q 'GROUP DIR' <<<"$out" \
+  && pass "list --sizes header names the GROUP DIR column" \
+  || fail "list --sizes header names the GROUP DIR column (got: $out)"
+row="$(grep -E '^default ' <<<"$out")"
+grep -qE '[[:space:]][0-9][0-9.,]*[KMG]$' <<<"$row" \
+  && pass "list --sizes ends the group's row in its directory size" \
+  || fail "list --sizes ends the group's row in its directory size (got: $out)"
+out="$(run_group list)"
+grep -q 'GROUP DIR' <<<"$out" \
+  && fail "list without --sizes must not show GROUP DIR" \
+  || pass "list without --sizes has no GROUP DIR column"
+row="$(grep -E '^default ' <<<"$out")"
+grep -qE '[[:space:]][0-9][0-9.,]*[KMG]$' <<<"$row" \
+  && fail "list without --sizes must not end a row in a size" \
+  || pass "list without --sizes rows are unchanged"
+FAKE_DU="$TMP/du-bin"; mkdir -p "$FAKE_DU"
+printf '#!/bin/sh\nexit 1\n' > "$FAKE_DU/du"; chmod +x "$FAKE_DU/du"
+out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"
+row="$(grep -E '^default ' <<<"$out")"
+grep -qE '[[:space:]]\?$' <<<"$row" \
+  && pass "list --sizes shows ? for a group dir du cannot read" \
+  || fail "list --sizes shows ? for a group dir du cannot read (got: $out)"
+
 # A repo volume must never appear in group listings.
 : > "$FAKE_VOLUMES_DIR/ai-containers-repo-app"
 out="$(run_group list)"

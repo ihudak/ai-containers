@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **What an agent keeps in `/var/tmp`, `~/.cache` and `~/.local/state` survives a
+  restart.** Containers run with `--rm`, so a folder an agent believed was kept,
+  such as `~/.cache/<run>` or Claude Code's scratch folder under `/tmp`, was gone
+  with the container; a long run lost its background agents' output that way.
+  The group's `.cache`, `.local/state` and `.var-tmp` are now mounted whole at
+  `~/.cache`, `~/.local/state` and `/var/tmp`, whatever `sandbox.conf` says. Each
+  launch works in a folder of its own, `/var/tmp/<YYMMDD-HHMMSS-pid>`, which
+  `TMPDIR` names for the agent's shell and what it starts (Claude Code, Codex,
+  Gemini, Copilot, Python and `mktemp` follow it), so nothing is configured per
+  agent. Root, the start-up steps and the database services never get it, a
+  `TMPDIR` in `container.env` wins, and a shell that cannot write or enter the
+  folder (with `SANDBOX_UID` overridden on native Linux) keeps `/tmp`. At launch,
+  folders of stopped containers untouched for 30 days, counted from the
+  container's exit or the last change, whichever is later, are removed, at
+  most 50 per launch from a listing read to 500; a folder kept for what it
+  holds is checked again 30 days later. Nothing else in those three places is
+  ever pruned. `/tmp` and anything made directly in the `/workspace` umbrella
+  are still lost on restart. See
+  `docs/groups.md`.
+
+- **`group.sh list --sizes` shows each group directory's size** in a `GROUP DIR`
+  column.
+
+### Changed
+
+- **The nested `~/.cache/qmd`, `~/.cache/ms-playwright` and
+  `~/.local/state/claude` mounts are gone**, replaced by the whole
+  `~/.cache` and `~/.local/state` mounts, which hold the same files at the same
+  paths. The launch's walk for planted launchers does not enter the three group
+  folders (the git scan already skipped group mounts). An image rebuild
+  (`./build.sh`) and `./sync-to-projects.sh` are needed for an existing project.
+
 ## v0.11.0 — 2026-11-19
 
 ### Added

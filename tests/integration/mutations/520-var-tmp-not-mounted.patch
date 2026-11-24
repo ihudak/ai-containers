@@ -1,0 +1,10 @@
+# case: 520-agent-files-persist-across-restart
+# what: the group's .var-tmp is never mounted over /var/tmp, so the agent's temp files vanish with the container
+#
+diff --git a/sandbox.sh b/sandbox.sh
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -8737,3 +8737,2 @@
+   install -d "$group_root/.var-tmp"
+-  add_mount_if_exists config_mount_flags "$group_root/.var-tmp" "/var/tmp"
+   # Gradle's and Maven's user homes hold the wrapper distributions (~130 MB per

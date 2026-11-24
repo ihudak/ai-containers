@@ -1,0 +1,11 @@
+# case: 520-agent-files-persist-across-restart
+# what: the profile script exports TMPDIR for root too, so a root login shell works in a folder the agent can write
+#
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -975,3 +975,3 @@
+       'if [ -n "${BASH_VERSION:-}" ] && ! shopt -oq posix; then eval '\''npm-agent-tools() { npm --prefix "$HOME/.ai-tools/npm" "$@"; }'\''; fi' \
+-      'if [ -z "${TMPDIR:-}" ] && [ -n "${AI_AGENT_TMPDIR:-}" ] && [ -d "$AI_AGENT_TMPDIR" ] && [ -w "$AI_AGENT_TMPDIR" ] && [ -x "$AI_AGENT_TMPDIR" ] && [ "$(id -u)" != 0 ]; then export TMPDIR="$AI_AGENT_TMPDIR"; fi' \
++      'if [ -z "${TMPDIR:-}" ] && [ -n "${AI_AGENT_TMPDIR:-}" ] && [ -d "$AI_AGENT_TMPDIR" ] && [ -w "$AI_AGENT_TMPDIR" ] && [ -x "$AI_AGENT_TMPDIR" ]; then export TMPDIR="$AI_AGENT_TMPDIR"; fi' \
+       | tee /etc/profile.d/ai-tools.sh >> /etc/bash.bashrc

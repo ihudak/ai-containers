@@ -302,6 +302,24 @@ add_file_mount_if_exists() {
   fi
 }
 
+# _group_scratch_mount <physical-src> <dst>: whether a writable bind is one of the
+# three group folders the container keeps across restarts — the group's .var-tmp,
+# .cache or .local/state, by their physical paths under the group directory
+# (_git_skip_root) — mounted outside /workspace. launcher_ro_overlay does not walk
+# those for launchers or for directories you cannot list. One mounted into
+# /workspace (through EXTRA_MOUNTS, say) is the agent's like any mount and is
+# walked (G92), and so is a group folder that is a link out of the group: its
+# source is the directory the link leads to, which this does not match. Fails
+# while the group directory is unknown.
+_group_scratch_mount() {
+  [[ -n "${_git_skip_root:-}" ]] || return 1
+  [[ "$2" != /workspace && "$2" != /workspace/* ]] || return 1
+  case "$1" in
+    "$_git_skip_root/.var-tmp"|"$_git_skip_root/.cache"|"$_git_skip_root/.local/state") return 0 ;;
+  esac
+  return 1
+}
+
 # Launcher directories must not be writable from inside the container.
 # A project's .ai-containers/ holds what the HOST runs or reads at the next
 # launch — sandbox.sh, build.sh, the Dockerfile and entrypoint it builds,
@@ -550,7 +568,20 @@ launcher_ro_overlay() {
     src="${bsrc[i]}"; dst="${bdst[i]}"
     found=(); unreadable=()
     if [[ "$self" == "$src" || "$self" == "$src"/* ]]; then found+=("$self"); fi
-    launcher_dirs_in found unreadable "$src" "$uid" "$gid" "$you"
+    # The group's /var/tmp, ~/.cache and ~/.local/state are not walked. The git
+    # scan below rests on the same premise: the host never runs git or a
+    # launcher from inside a group folder. Walked, they cost every launch a pass
+    # over pip's and uv's deep trees, locked read-only any copy of ai-containers
+    # an agent cloned there, and refused the launch past SANDBOX_LAUNCHER_MAX
+    # such copies or for a folder there the agent made unlistable. The launcher
+    # that is running is still overlaid in them, since finding it costs no walk
+    # (security review of the skip); a launcher another mount's walk finds in
+    # them is still overlaid in their view, by the loop after this one; and the
+    # hard-link check (_fs_linked_in) still lists them, since a second name of a
+    # file git reads can lie there.
+    if ! _group_scratch_mount "$src" "$dst"; then
+      launcher_dirs_in found unreadable "$src" "$uid" "$gid" "$you"
+    fi
     cand=(${found[@]+"${found[@]}"} ${unreadable[@]+"${unreadable[@]}"})
     for k in ${cand[@]+"${!cand[@]}"}; do
       l="${cand[k]}"
@@ -567,14 +598,18 @@ launcher_ro_overlay() {
   # And in every other writable mount that exposes it, where it lands there: an
   # outer mount's scan does not reach what lies past six levels or under a
   # pruned node_modules, and a launcher only the inner mount's scan found stayed
-  # writable in the outer mount's view (GIT-51; T74).
+  # writable in the outer mount's view (GIT-51; T74). Another mount of the very
+  # source it was found in counts too: the group's /var/tmp, ~/.cache and
+  # ~/.local/state are not walked (_group_scratch_mount), and one of them also
+  # mounted into /workspace, where it is walked, left the launcher found there
+  # writable through the group's own mount (T93).
   local -A chave=()
   local nc=${#cl[@]}
   for (( k = 0; k < nc; k++ )); do chave[${cat[k]}]=1; done
   for (( k = 0; k < nc; k++ )); do
     for i in ${bsrc[@]+"${!bsrc[@]}"}; do
       src="${bsrc[i]}"; dst="${bdst[i]}"
-      [[ "$src" != "${csrc[k]}" ]] || continue
+      [[ "$src" != "${csrc[k]}" || "$dst" != "${cdst[k]}" ]] || continue
       if [[ "${cl[k]}" == "$src" ]]; then at="$dst"
       elif [[ "${cl[k]}" == "$src"/* ]]; then at="$dst/${cl[k]#"$src"/}"
       else continue; fi
@@ -7696,6 +7731,22 @@ _vm_dev_ino_load() {
 # the EXIT trap below. A global, not a run_container local, so the trap can see
 # it, and guarded with :- so `set -u` is satisfied when no dir was made.
 _launcher_verify_dir=""
+# This launch's own folder in the group's .var-tmp, set by run_container once it
+# has made it, for _agent_tmp_touch.
+_agent_tmp_made=""
+# _agent_tmp_touch: set this launch's folder's mtime to now, when docker run
+# returns and again from the EXIT trap, so a launcher killed meanwhile does it
+# too. An archive or copy unpacked onto the folder itself (`tar -C "$TMPDIR" -x`
+# of a ./ entry, `rsync -a src/ "$TMPDIR"/`) gives it and all it holds the
+# source's old times, and agent_tmp_prune would remove it at the next launch;
+# so "untouched for 30 days" counts from the container's exit or the last
+# change, whichever is later.
+# -h: the agent can swap the folder for a link, which is touched itself, never
+# what it leads to; -c: nothing is made where the folder is gone. Never fails.
+_agent_tmp_touch() {
+  [[ -n "${_agent_tmp_made:-}" ]] || return 0
+  touch -c -h -- "$_agent_tmp_made" 2>/dev/null || true
+}
 # Where _ro_files_snapshot keeps the read-only git files as they were at launch,
 # and which it kept (GIT-41); the directory is removed by the EXIT trap below.
 _ro_snap_dir=""
@@ -7810,7 +7861,7 @@ _git_watch_add() {
   [[ -z "${_git_watch_had[$1]:-}" ]] || return 0
   _git_watch_had[$1]=1; _git_watch+=("$1")
 }
-trap '_seed_wc_drop || true; rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
+trap '_agent_tmp_touch; _seed_wc_drop || true; rm -rf "${_launcher_verify_dir:-}" "${_gir_tmp:-}" "${_rd_dir:-}" "${_fs_ml_dir:-}" "${_ro_snap_dir:-}" 2>/dev/null' EXIT
 
 # _host_way_add <what> <path as set> <what the launch resolved it to>: records a
 # host path the launch mounts, for launcher_ro_overlay to judge the way to it
@@ -7970,6 +8021,87 @@ _group_gh_token() {
     *) printf 'WARNING: %s could not be read within %s s (was a FIFO put there?), so no Copilot token\n' "$(_term "$f")" "$secs" >&2
        printf '         is taken from it.\n' >&2 ;;
   esac
+  return 0
+}
+
+# agent_tmp_prune <var-tmp-dir>: remove the per-container folders of containers
+# that are gone and that nothing has touched for 30 days. Containers run with
+# --rm, so without this every restart would leave a folder behind for good.
+# Deleting an agent's files is what the persistent /var/tmp exists to stop, so
+# anything uncertain is kept: a docker that cannot list containers, a name that
+# is not a per-container folder, a link, a file or folder that cannot be read.
+# A folder kept for what it holds (a file changed within 30 days, or dated in
+# the future), for an error, or because it could not be removed is touched, so
+# it is checked again 30 days later rather than at every launch: 50 such folders
+# first in find's order would otherwise use up the cap below at every launch,
+# and the folders after them would never be checked.
+# The folders are the agent's to write, so nothing here follows a link out of one
+# (find -P, du, touch -h and rm -rf all leave links alone), and what it can make a
+# launch cost is bounded, however many folders the agent makes or ages. ONE find
+# reads the directory once and lists the folders with a per-container name
+# whose own mtime is over 30 days old: the name is matched first, so any other
+# name costs its directory entry and no stat, and the listing is read to 500
+# folders at most, after which find is stopped (by SIGPIPE, which ends nothing
+# here) and the NOTE says "at least". Docker is asked only when one is listed,
+# and at most 50 are checked and removed per launch (the number
+# SANDBOX_LAUNCHER_MAX defaults to); the rest are counted and wait for the next
+# launch. -mmin, not -mtime, so GNU and BSD find agree (BSD rounds days up).
+# Always returns 0, whatever a sibling container does to a folder meanwhile.
+agent_tmp_prune() {
+  local dir="$1" running d name n=0 kb total_kb=0 ps_out cap=50 checked=0 left=0
+  local cands=() listed=() recent readmax=500 listed_cut=0
+  [[ -d "$dir" ]] || return 0
+  # The two -name tests are the regex below, in fnmatch: six digits, a dash, six
+  # digits, a dash, then digits only (nothing past the second dash that is not
+  # one). One more than readmax is read, to tell a listing that was cut.
+  mapfile -t -d '' -n "$((readmax + 1))" listed < <(find -P "$dir" -mindepth 1 -maxdepth 1 \
+    -name '[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9]*' \
+    ! -name '??????-??????-*[!0-9]*' -type d -mmin +43200 -print0 2>/dev/null)
+  if (( ${#listed[@]} > readmax )); then listed_cut=1; listed=("${listed[@]:0:readmax}"); fi
+  for d in ${listed[@]+"${listed[@]}"}; do
+    name="${d##*/}"
+    [[ "$name" =~ ^[0-9]{6}-[0-9]{6}-[0-9]+$ ]] || continue
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    cands+=("$d")
+  done
+  (( ${#cands[@]} )) || return 0
+  ps_out="$(docker ps --filter label=ai-containers.tmpslot \
+    --format '{{.Label "ai-containers.tmpslot"}}' 2>/dev/null)" || return 0
+  running=$'\n'"$ps_out"$'\n'
+  for d in "${cands[@]}"; do
+    name="${d##*/}"
+    [[ "$running" == *$'\n'"$name"$'\n'* ]] && continue
+    if (( checked >= cap )); then left=$((left + 1)); continue; fi
+    checked=$((checked + 1))
+    # A find that errors (an unreadable subfolder) keeps the folder, as does
+    # any file inside modified in the last 30 days.
+    if ! recent="$(find -P "$d" -mmin -43200 -print -quit 2>/dev/null)" || [[ -n "$recent" ]]; then
+      touch -c -h -- "$d" 2>/dev/null || true
+      continue
+    fi
+    kb="$(du -sk "$d" 2>/dev/null | awk '{print $1; exit}')" || kb=0
+    [[ "$kb" =~ ^[0-9]+$ ]] || kb=0
+    if rm -rf -- "$d" 2>/dev/null && [[ ! -e "$d" ]]; then
+      n=$((n + 1)); total_kb=$((total_kb + kb))
+    else
+      printf 'NOTE: could not remove %s; it is kept, and checked again in 30 days.\n' "$d" >&2
+      touch -c -h -- "$d" 2>/dev/null || true
+    fi
+  done
+  if (( n > 0 )); then
+    local size
+    if (( total_kb >= 1048576 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fG", k/1048576}')"
+    elif (( total_kb >= 1024 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fM", k/1024}')"
+    else size="${total_kb}K"; fi
+    printf 'NOTE: removed %d temp folder(s) of stopped containers, untouched for 30 days, from %s (%s freed).\n' \
+      "$n" "$dir" "$size" >&2
+  fi
+  if (( left > 0 )); then
+    local least=""
+    (( listed_cut == 0 )) || least="at least "
+    printf 'NOTE: %s%d more old temp folder(s) in %s are left for the next launch.\n' \
+      "$least" "$left" "$dir" >&2
+  fi
   return 0
 }
 
@@ -8530,18 +8662,17 @@ run_container() {
     add_mount_if_exists config_mount_flags "$group_root/.local/share/kiro-cli"  "$dev_home/.local/share/kiro-cli"
   fi
   if is_enabled claude-code; then
-    install -d "$group_root/.claude" \
-               "$group_root/.local/share/claude" "$group_root/.local/state/claude"
+    install -d "$group_root/.claude" "$group_root/.local/share/claude"
     [[ -e "$group_root/.claude.json" ]] || printf '{}\n' > "$group_root/.claude.json"
     add_mount_if_exists      config_mount_flags "$group_root/.claude"      "$dev_home/.claude"
     add_file_mount_if_exists config_mount_flags "$group_root/.claude.json" "$dev_home/.claude.json"
     # Claude Code installs natively (agent-tools-reconcile.sh): ~/.local/share/claude holds
-    # versions/<v>, ~/.local/state/claude the updater's bookkeeping. Group-scoped exactly
-    # like ~/.local/share/kiro-cli above, and for the same reason — without these the
-    # install is redone on every container start and every self-update dies with the
-    # container, which is the whole capability this is meant to restore.
+    # versions/<v>; the updater's bookkeeping in ~/.local/state/claude rides on the whole
+    # ~/.local/state mount below. Group-scoped exactly like ~/.local/share/kiro-cli above,
+    # and for the same reason — without it the install is redone on every container start
+    # and every self-update dies with the container, which is the whole capability this
+    # is meant to restore.
     add_mount_if_exists config_mount_flags "$group_root/.local/share/claude" "$dev_home/.local/share/claude"
-    add_mount_if_exists config_mount_flags "$group_root/.local/state/claude" "$dev_home/.local/state/claude"
   fi
   if is_enabled codex; then
     install -d "$group_root/.codex"
@@ -8627,23 +8758,22 @@ run_container() {
       add_mount_if_exists config_mount_flags "$group_root/$_cdir" "$dev_home/$_cdir"
     done
   done < <(tools_list_names)
-  if is_enabled qmd; then
-    install -d "$group_root/.cache/qmd"
-    add_mount_if_exists config_mount_flags "$group_root/.cache/qmd" "$dev_home/.cache/qmd"
-  fi
-  # Playwright's browser binaries (~500 MB) are NOT baked into the image — only
-  # the OS libraries they link against are. They are downloaded at run time into
-  # ~/.cache/ms-playwright, and containers run with --rm, so without this mount
-  # every single container start re-downloads all of them. Group-scoped for the
-  # same reason ~/.cache/qmd above is: the cost is paid once per group, not once
-  # per project and not once per run.
-  #
-  # is_active, NOT is_enabled: the key is ON | x.y.z | OFF, and a pinned version
-  # is just as on as ON.
-  if is_active playwright; then
-    install -d "$group_root/.cache/ms-playwright"
-    add_mount_if_exists config_mount_flags "$group_root/.cache/ms-playwright" "$dev_home/.cache/ms-playwright"
-  fi
+  # ~/.cache and ~/.local/state are mounted whole, whatever sandbox.conf says, so what any
+  # tool keeps there survives --rm: qmd's index, the caches of pip, uv and node-gyp (npm's
+  # is ~/.npm, not here), Claude Code's updater state. One nested mount per tool left
+  # every other tool's cache and state to vanish with the container. Playwright's browser
+  # binaries (~500 MB, downloaded at run time into ~/.cache/ms-playwright because only the
+  # OS libraries are baked) are the costly case: without this every container start
+  # re-downloads them. The cost is paid once per group, not once per project and not once
+  # per run.
+  install -d "$group_root/.cache" "$group_root/.local/state"
+  add_mount_if_exists config_mount_flags "$group_root/.cache" "$dev_home/.cache"
+  add_mount_if_exists config_mount_flags "$group_root/.local/state" "$dev_home/.local/state"
+  # /var/tmp is mounted whole too, and each launch works in a folder of its own
+  # inside it (made just before docker run), so two containers of one group never
+  # share scratch files and a container's leftovers can be found by its label.
+  install -d "$group_root/.var-tmp"
+  add_mount_if_exists config_mount_flags "$group_root/.var-tmp" "/var/tmp"
   # Gradle's and Maven's user homes hold the wrapper distributions (~130 MB per
   # Gradle version) and every dependency a build downloads; with --rm, a start
   # without these mounts fetched all of it again. Gated on ANY JVM key, not on
@@ -8750,6 +8880,10 @@ run_container() {
     container_name="${proj}-$$"
   fi
   printf 'Container name: %s\n' "$container_name" >&2
+  # This launch's folder under /var/tmp: date, time and the launcher's pid, so it
+  # is unique per launch and TMPDIR (/var/tmp/<this>) stays short enough for the
+  # 108-byte limit on a unix socket path.
+  local agent_tmp_slot; agent_tmp_slot="$(date +%y%m%d-%H%M%S)-$$"
 
   # Last, once every bind mount is known: see launcher_ro_overlay.
   # shellcheck disable=SC2034  # launcher_ro_dirs/launcher_rw_srcs: set by launcher_ro_overlay, read through _ro_fifo_search's namerefs
@@ -8951,6 +9085,10 @@ run_container() {
     -e SANDBOX_GROUP="${SANDBOX_GROUP:-$(id -gn)}"
     -e AI_AGENTS_ENABLED="$(enabled_agents_csv)"
     -e AI_RUNTIME_TOOLS="$(runtime_tools_csv)"
+    # Not TMPDIR itself: a -e reaches the root entrypoint, where TMPDIR would
+    # redirect root's own temporary files. The image's profile script exports
+    # TMPDIR from this for the sandbox user's shells only.
+    -e AI_AGENT_TMPDIR="/var/tmp/$agent_tmp_slot"
     -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")"
     -e AI_SERVICES="$(services_csv)"
     -e REPOS_PATH="$repos_path_ctr"
@@ -8989,6 +9127,15 @@ run_container() {
     fi
   fi
 
+  agent_tmp_prune "$group_root/.var-tmp"
+  # mkdir without -p: an existing folder is never reused, so two launches can
+  # not end up sharing one.
+  if ! mkdir -m 0700 "$group_root/.var-tmp/$agent_tmp_slot"; then
+    printf 'ERROR: cannot create %s\n' "$group_root/.var-tmp/$agent_tmp_slot" >&2
+    exit 1
+  fi
+  _agent_tmp_made="$group_root/.var-tmp/$agent_tmp_slot"
+
   # --pull=never: IMAGE_NAME may come from a committed sandbox.env, and an image
   # this machine never built must not be fetched from a registry and run with
   # the group's credentials mounted. ./build.sh (or runme.sh) builds it first.
@@ -8999,6 +9146,7 @@ run_container() {
   local _run_rc=0
   docker run -it --rm --pull=never \
     --name "$container_name" \
+    --label "ai-containers.tmpslot=$agent_tmp_slot" \
     ${capabilities[@]+"${capabilities[@]}"} \
     --security-opt=no-new-privileges \
     ${selinux_opt:+"$selinux_opt"} \
@@ -9024,6 +9172,9 @@ run_container() {
     ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
     -w "$workdir" \
     "$image_name" || _run_rc=$?
+  # Now, not only from the EXIT trap: the check after the session can take 30 s,
+  # in which a concurrent launch, seeing this container gone, would prune.
+  _agent_tmp_touch
   _ro_files_restore
   _git_after_session
   return "$_run_rc"
