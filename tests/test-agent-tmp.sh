@@ -7,8 +7,7 @@
 # Code) left every other tool's cache and state to vanish with the container.
 #
 # A fake `docker` on PATH captures the `docker run` arguments, so nothing is
-# launched. Later cases (a /var/tmp folder per container, pruning) extend the
-# fake and add cases below the marker at the end.
+# launched. Its `ps` answers only the exact query the launch's pruning makes.
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,13 +39,18 @@ claude-code=OFF}" > "$SANDBOX_CONF"
 
   CAPTURE="$TMP/docker-args.txt"; : > "$CAPTURE"
   mkdir -p "$TMP/bin"
+  # ps: FAKE_RUNNING_SLOTS for the pruning's own query only, nothing for any
+  # other, so a wrong filter or format is a folder not kept.
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
 if [[ "\$1" == "ps" ]]; then
-  printf 'ps\n' >> "$TMP/ps-calls.txt"
+  printf '%s\n' "\$*" >> "$TMP/ps-calls.txt"
   [[ "\${FAKE_PS_FAIL:-}" == 1 ]] && exit 1
-  [[ -n "\${FAKE_RUNNING_SLOTS:-}" ]] && printf '%s\n' "\$FAKE_RUNNING_SLOTS"
+  if [[ \$# -eq 5 && "\$2" == --filter && "\$3" == label=ai-containers.tmpslot \\
+        && "\$4" == --format && "\$5" == '{{.Label "ai-containers.tmpslot"}}' ]]; then
+    [[ -n "\${FAKE_RUNNING_SLOTS:-}" ]] && printf '%s\n' "\$FAKE_RUNNING_SLOTS"
+  fi
   exit 0
 fi
 exit 1
@@ -64,11 +68,15 @@ teardown() {
 }
 
 # Launched from a temp dir: sandbox.sh writes its .agent-* output dirs into $PWD.
+# The capture is emptied first, so a launch that stops before docker run leaves
+# none from an earlier one.
 run_sandbox() {
-  ERR="$TMP/stderr.txt"
+  ERR="$TMP/stderr.txt"; : > "$CAPTURE"
   ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/app" ) >"$TMP/stdout.txt" 2>"$ERR" </dev/null
   RC=$?
 }
+# launched: the last launch went through to docker run and exited 0.
+launched() { [[ "$RC" -eq 0 && -s "$CAPTURE" ]]; }
 
 # mounted <host-src> <container-dst> — is that exact rw bind flag in the captured args?
 mounted() { grep -qx -- "$1:$2:rw" "$CAPTURE"; }
@@ -155,6 +163,7 @@ teardown
 
 setup; old_slot "$OLD"; FAKE_RUNNING_SLOTS="$OLD" run_sandbox
 check "a running container's folder is kept, however old" test -d "$GROUP_ROOT/.var-tmp/$OLD"
+check "  and the launch went on (rc=$RC)" launched
 teardown
 
 # Append to an aged file in a subfolder, then age the folders back, so only a
@@ -164,11 +173,13 @@ age_tree "$GROUP_ROOT/.var-tmp/$OLD"; printf x >> "$GROUP_ROOT/.var-tmp/$OLD/sub
 touch -h -t 202001010000 "$GROUP_ROOT/.var-tmp/$OLD/sub" "$GROUP_ROOT/.var-tmp/$OLD"
 run_sandbox
 check "a folder touched within 30 days is kept" test -d "$GROUP_ROOT/.var-tmp/$OLD"
+check "  and the launch went on (rc=$RC)" launched
 teardown
 
 setup; mkdir -p "$GROUP_ROOT/.var-tmp/$(date +%y%m%d-%H%M%S)-2"; run_sandbox
 check "a concurrent launch's new folder is kept" \
   bash -c 'l="$(ls "$1")"; grep -q -- "-2$" <<<"$l"' _ "$GROUP_ROOT/.var-tmp"
+check "  and the launch went on (rc=$RC)" launched
 teardown
 
 setup; mkdir -p "$GROUP_ROOT/.var-tmp/keepme"; : > "$GROUP_ROOT/.var-tmp/x"
@@ -176,11 +187,13 @@ age_tree "$GROUP_ROOT/.var-tmp/keepme"; touch -h -t 202001010000 "$GROUP_ROOT/.v
 run_sandbox
 check "only per-container folders are pruned" \
   test -d "$GROUP_ROOT/.var-tmp/keepme" -a -e "$GROUP_ROOT/.var-tmp/x"
+check "  and the launch went on (rc=$RC)" launched
 teardown
 
 setup; old_slot "$OLD"; FAKE_PS_FAIL=1 run_sandbox
 check "docker that cannot list containers removes nothing" \
   bash -c '[[ -d "$1" ]] && ! grep -q "removed" "$2"' _ "$GROUP_ROOT/.var-tmp/$OLD" "$ERR"
+check "  and the launch went on (rc=$RC)" launched
 teardown
 
 setup; mkdir -p "$TMP/outside"; : > "$TMP/outside/f"
@@ -188,6 +201,7 @@ old_slot "$OLD"; ln -s "$TMP/outside/f" "$GROUP_ROOT/.var-tmp/$OLD/l"; age_tree 
 run_sandbox
 check "a link in a pruned folder is not followed" \
   bash -c '[[ ! -e "$1" && -f "$2" ]]' _ "$GROUP_ROOT/.var-tmp/$OLD" "$TMP/outside/f"
+check "  and the launch went on (rc=$RC)" launched
 teardown
 
 # As root (the suite's floor job) chmod 000 stops nothing, so this asserts only
@@ -195,7 +209,7 @@ teardown
 setup; old_slot "$OLD"; mkdir "$GROUP_ROOT/.var-tmp/$OLD/d"; : > "$GROUP_ROOT/.var-tmp/$OLD/d/g"
 age_tree "$GROUP_ROOT/.var-tmp/$OLD"; chmod 000 "$GROUP_ROOT/.var-tmp/$OLD/d"
 run_sandbox
-check "an unreadable folder does not stop the launch (rc=$RC)" test "$RC" -eq 0
+check "an unreadable folder does not stop the launch (rc=$RC)" launched
 if [[ "$(id -u)" -ne 0 ]]; then
   check "an unreadable folder is kept whole, with no removal NOTE" \
     bash -c '[[ -e "$1/f" ]] && ! grep -q "could not remove" "$2"' _ "$GROUP_ROOT/.var-tmp/$OLD" "$ERR"
@@ -226,6 +240,7 @@ teardown
 # Only recent folders: docker is never asked.
 setup; mkdir -p "$GROUP_ROOT/.var-tmp/$(date +%y%m%d-%H%M%S)-2"; run_sandbox
 check "no old folder: docker ps is not called" test ! -s "$TMP/ps-calls.txt"
+check "  and the launch went on (rc=$RC)" launched
 teardown
 
 if [[ $fails -eq 0 ]]; then printf 'ALL PASS\n'; else printf '%d FAILED\n' "$fails"; exit 1; fi
