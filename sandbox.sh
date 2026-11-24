@@ -7739,7 +7739,8 @@ _agent_tmp_made=""
 # too. An archive or copy unpacked onto the folder itself (`tar -C "$TMPDIR" -x`
 # of a ./ entry, `rsync -a src/ "$TMPDIR"/`) gives it and all it holds the
 # source's old times, and agent_tmp_prune would remove it at the next launch;
-# so "untouched for 30 days" counts from the container's exit at the latest.
+# so "untouched for 30 days" counts from the container's exit or the last
+# change, whichever is later.
 # -h: the agent can swap the folder for a link, which is touched itself, never
 # what it leads to; -c: nothing is made where the folder is gone. Never fails.
 _agent_tmp_touch() {

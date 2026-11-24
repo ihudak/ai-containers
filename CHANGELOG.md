@@ -21,10 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `TMPDIR` in `container.env` wins, and a shell that cannot write or enter the
   folder (with `SANDBOX_UID` overridden on native Linux) keeps `/tmp`. At launch,
   folders of stopped containers untouched for 30 days, counted from the
-  container's exit at the latest, are removed, at most 50 per launch from a
-  listing read to 500; a folder kept for what it holds is checked again 30 days
-  later. Nothing else in those three places is ever pruned. `/tmp` and anything
-  made directly in the `/workspace` umbrella are still lost on restart. See
+  container's exit or the last change, whichever is later, are removed, at
+  most 50 per launch from a listing read to 500; a folder kept for what it
+  holds is checked again 30 days later. Nothing else in those three places is
+  ever pruned. `/tmp` and anything made directly in the `/workspace` umbrella
+  are still lost on restart. See
   `docs/groups.md`.
 
 - **`group.sh list --sizes` shows each group directory's size** in a `GROUP DIR`
