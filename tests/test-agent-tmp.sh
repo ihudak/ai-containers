@@ -500,10 +500,11 @@ check "  its content is untouched, and it is not pruned" test -f "$D/$SLOT/f"
 at_clean
 
 for bad in '../x' 'a b' ''; do
-  at_setup; SLOT="$bad"
+  at_setup; at_old 200101-000000-1; SLOT="$bad"
   at_run "" --now "$(at_far)"
   check "slot '$bad': exit 1 with a WARNING, nothing made" bash -c \
-    '[[ "$1" -eq 1 ]] && grep -q "^WARNING:" "$2" && [[ -z "$(ls -A "$3")" && ! -e "$3/../x" ]]' _ "$RC" "$ERR" "$D"
+    '[[ "$1" -eq 1 ]] && grep -q "^WARNING:" "$2" && [[ "$(ls -A "$3")" == 200101-000000-1 && ! -e "$3/../x" ]]' _ "$RC" "$ERR" "$D"
+  check "  and an old folder survives the refused call" test -d "$D/200101-000000-1"
   at_clean
 done
 

@@ -109,12 +109,15 @@ prune() {
   return 0
 }
 
-prune || true
-
+# A malformed call (swapped arguments, say) is refused before anything is
+# removed: the protection of running containers' folders rests on its arguments.
 if [[ ! "$slot" =~ $name_re ]]; then
   printf 'WARNING: %s is not a temp folder name; the shell keeps /tmp as its TMPDIR.\n' "${slot:-(empty)}" >&2
   exit 1
 fi
+
+prune || true
+
 if ! mkdir -m 0700 -- "$dir/$slot" 2>/dev/null; then
   printf 'WARNING: cannot create %s/%s; the shell keeps /tmp as its TMPDIR.\n' "$dir" "$slot" >&2
   exit 1
