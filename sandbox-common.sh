@@ -874,26 +874,33 @@ rvm_group_from_volume() {
 # "$root/.rvm" left by a group created before rvm moved to a volume, so upgrading
 # does not silently discard already-compiled rubies (minutes per version to rebuild).
 #   $1 = group name   $2 = group root dir   $3 = image to run the copy in
-# _rvm_shared_note <volume> <group>: a NOTE when the group's Ruby volume was made
-# by another home. One docker serves several homes (Docker Desktop's, by every
-# WSL distro), and the volume's name has no home in it, so that home's group of
-# this name may mount the same volume, and that home's group.sh can remove it from
-# under this one (rm, or gc once its group directory is gone). A stated limit, the
-# user's choice (bugs review PRJ-16);
-# REPO_VOLUME_PREFIX, which every repo and Ruby volume name starts with, keeps
-# homes apart.
-_rvm_shared_note() {
-  local o own
+# _group_volume_shared_note <volume> <group> <kind>: a NOTE when the group's
+# volume was made by another home; <kind> is "ruby" or "temp". One docker serves
+# several homes (Docker Desktop's, by every WSL distro), and the volume's name has
+# no home in it, so that home's group of this name may mount the same volume, and
+# that home's group.sh can remove it from under this one (rm, or gc once its group
+# directory is gone). A stated limit, the user's choice (bugs review PRJ-16);
+# REPO_VOLUME_PREFIX, which every repo, Ruby and temp volume name starts with,
+# keeps homes apart.
+_group_volume_shared_note() {
+  local o own what tail
   o="$(docker_volume_label "$1" 'ai-containers.owner')"
   [[ -n "$o" ]] || return 0
   own="$(ai_containers_owner_id 2>/dev/null)" || own=""
   [[ -n "$own" && "$o" == "$own" ]] && return 0
-  printf 'NOTE: the Ruby volume %s was made by another home on this docker (another WSL distro or\n' "$1" >&2
+  case "$3" in
+    ruby) what="Ruby"; tail="this group then builds its Rubies again." ;;
+    *)    what="temp"; tail="this group then loses its temp folders." ;;
+  esac
+  printf 'NOTE: the %s volume %s was made by another home on this docker (another WSL distro or\n' "$what" "$1" >&2
   printf '      user), or by this one before ~/.ai-containers/project-id.key was lost. That home'"'"'s group\n' >&2
   printf '      "%s" may use it too, and that home can remove it with group.sh (rm, or gc once its group\n' "$2" >&2
-  printf '      is gone there); this group then builds its Rubies again.\n' >&2
+  printf '      is gone there); %s\n' "$tail" >&2
   printf '      To keep homes apart, give each its own REPO_VOLUME_PREFIX (docs/troubleshooting.md).\n' >&2
 }
+
+# _rvm_shared_note <volume> <group>: the Ruby volume's note.
+_rvm_shared_note() { _group_volume_shared_note "$1" "$2" ruby; }
 
 rvm_volume_ensure() {
   local group="$1" root="$2" image="$3"
@@ -935,6 +942,73 @@ rvm_volume_ensure() {
     printf 'Note: %s holds no working rvm (an earlier failed bootstrap); starting clean.\n' "$legacy" >&2
   fi
 
+  printf '%s\n' "$vol"
+}
+
+# ── Temp (/var/tmp) volume ──────────────────────────────────────────────────────
+#
+# A group's /var/tmp lives on the Docker volume "<prefix>-vartmp-<group>". The
+# "-vartmp-" infix keeps it out of repo.sh's discovery ("-repo-") and of the Ruby
+# volume code ("-rvm-").
+#
+# Label:  ai-containers.vartmp-group   the container group this temp volume serves
+
+vartmp_volume_name() {
+  printf '%s-vartmp-%s' "$repo_volume_prefix" "$(sanitize_volume_token "$1")"
+}
+
+# Echo every volume named "<prefix>-vartmp-*", labelled or not, one per line.
+vartmp_volumes() {
+  volumes_named "${repo_volume_prefix}-vartmp-"
+}
+
+# Echo the group a temp volume serves: its label, or nothing. Deliberately NO
+# fallback to the name (unlike rvm_group_from_volume): under nested
+# REPO_VOLUME_PREFIX values one prefix's volume can carry another's name, which
+# is how a name match alone mistook one repo's volume for another's (REPO-11).
+vartmp_group_from_volume() {
+  docker_volume_label "$1" 'ai-containers.vartmp-group'
+}
+
+# vartmp_volume_ensure <group>: echo the group's temp volume name and return 0,
+# making the volume (with its labels) when it is not there. Returns 1 with an
+# ERROR: on stderr, never mounting anything, when the volume cannot be made, when
+# docker cannot say whether it exists, or when a volume of that exact name is
+# not this group's: `docker run -v <name>:...` would otherwise create it itself,
+# unlabelled, and group.sh would never see it. Labels cannot be added afterwards.
+vartmp_volume_ensure() {
+  local group="$1" vol out err lab errf
+  vol="$(vartmp_volume_name "$group")"
+  errf="$(mktemp)" || { printf 'ERROR: could not make a temporary file\n' >&2; return 1; }
+  if out="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.vartmp-group"}}{{end}}' "$vol" 2>"$errf")"; then
+    rm -f "$errf"
+    lab="${out%$'\n'}"
+    if [[ "$lab" != "$group" ]]; then
+      if [[ -z "$lab" ]]; then
+        printf 'ERROR: the volume %s exists but is not a temp volume of group "%s": it has no label.\n' "$vol" "$group" >&2
+      else
+        printf 'ERROR: the volume %s exists but belongs to group "%s", not "%s".\n' "$vol" "$lab" "$group" >&2
+      fi
+      printf '       It was made outside a launch (by a `docker run -v`, or for another group).\n' >&2
+      printf '       A launch cannot use it: group.sh would never see it. Once nothing in it is\n' >&2
+      printf '       needed, clear the way with:\n         docker volume rm %s\n' "$vol" >&2
+      return 1
+    fi
+    _group_volume_shared_note "$vol" "$group" temp
+    printf '%s\n' "$vol"; return 0
+  fi
+  err="$(tr '[:upper:]' '[:lower:]' < "$errf")"; rm -f "$errf"
+  if [[ "$err" != *"no such volume"* ]]; then
+    printf 'ERROR: docker could not say whether %s exists\n' "$vol" >&2
+    return 1
+  fi
+  # With this HOME's id, as rvm_volume_ensure() does; a launch never fails over it.
+  local own; local -a olab=()
+  if own="$(ai_containers_owner_id 2>/dev/null)"; then olab=(--label "ai-containers.owner=${own}"); fi
+  if ! docker volume create --label "ai-containers.vartmp-group=${group}" ${olab[@]+"${olab[@]}"} "$vol" >/dev/null 2>&1; then
+    printf 'ERROR: could not create the temp volume %s\n' "$vol" >&2
+    return 1
+  fi
   printf '%s\n' "$vol"
 }
 
