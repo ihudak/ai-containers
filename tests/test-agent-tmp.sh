@@ -394,4 +394,122 @@ run_sandbox
 check "  and the next launch keeps the folder its container aged" test -f "$GROUP_ROOT/.var-tmp/$slot/f"
 teardown
 
+# ── agent-tmp.sh, run directly ──
+# Change time cannot be set back, so "old" items are made first, T is recorded,
+# and after a sleep the "recent" ones; --now T+1+30 days then makes everything
+# made before T+1 over 30 days old and everything after recent.
+AT="$REPO_DIR/agent-tmp.sh"
+at_setup() { D="$(mktemp -d)"; ERR="$D.err"; SLOT=260101-120000-99; }
+at_run() {  # <running> [--now N]  -> RC, stderr in $ERR
+  local run="$1"; shift
+  bash "$AT" "$D" "$SLOT" "$run" "$@" 2> "$ERR"; RC=$?
+}
+at_old() { mkdir -p "$D/$1"; : > "$D/$1/f"; }
+at_far() { printf '%s' "$(( $(date +%s) + 2592000 + 60 ))"; }
+at_clean() { rm -rf "$D" "$ERR"; }
+at_fakebin() {  # fake tool on PATH: <name> <body>
+  mkdir -p "$D.bin"; printf '#!/usr/bin/env bash\n%s\n' "$2" > "$D.bin/$1"; chmod +x "$D.bin/$1"
+}
+
+at_setup
+at_old 200101-000000-1; at_old 200101-000000-2
+at_run "200101-000000-2" --now "$(at_far)"
+check "an old folder is removed (rc=$RC)" test ! -e "$D/200101-000000-1"
+check "  with its NOTE" grep -qF "NOTE: removed 1 temp folder(s) of stopped containers, untouched for 30 days, from $D (" "$ERR"
+check "  and freed size" grep -q 'freed)\.$' "$ERR"
+check "a folder named in <running> is kept, however old" test -d "$D/200101-000000-2"
+check "the launch's folder is made, exit 0" test "$RC" -eq 0 -a -d "$D/$SLOT"
+check "  mode 700" test "$(p_stat_mode "$D/$SLOT")" = 700
+at_clean
+
+at_setup; at_old 200101-000000-1
+at_run "?" --now "$(at_far)"
+check "<running> = ? removes nothing" test -d "$D/200101-000000-1"
+check "  and still makes the folder (rc=$RC)" test "$RC" -eq 0 -a -d "$D/$SLOT"
+at_clean
+
+at_setup; at_old 200101-000000-1
+at_run "../200101-000000-1 x y" --now "$(at_far)"
+check "non-names in <running> are ignored: the old folder is removed" test ! -e "$D/200101-000000-1"
+at_clean
+
+at_setup; mkdir -p "$D/200101-000000-4/sub"; : > "$D/200101-000000-4/sub/f"
+T=$(date +%s); sleep 2
+printf x >> "$D/200101-000000-4/sub/f"
+at_run "" --now $((T + 1 + 2592000))
+check "a folder holding a recently changed file is kept" test -d "$D/200101-000000-4"
+check "  and touched (ctime after T+1)" bash -c '[[ "$(find -P "$1" -maxdepth 0 -cnewer "$2")" ]]' _ "$D/200101-000000-4" "$D/200101-000000-4/sub/f"
+at_clean
+
+at_setup; at_old 200101-000000-1
+T=$(date +%s); sleep 2
+for i in $(seq 1 60); do mkdir "$D/200101-000000-9$i"; done
+at_run "" --now $((T + 1 + 2592000))
+check "recent folders are not listed as candidates: no cap note" bash -c '! grep -q "more old temp" "$1"' _ "$ERR"
+check "  the old one is still removed" test ! -e "$D/200101-000000-1"
+at_clean
+
+at_setup
+mkdir -p "$D/elsewhere"; : > "$D/elsewhere/keep"
+mkdir -p "$D/200101-000000-1x" "$D/notes"; : > "$D/200101-000000-2"
+ln -s elsewhere "$D/200101-000000-3"
+at_run "" --now "$(at_far)"
+check "names of another form, a file and a link are kept" bash -c \
+  '[[ -d "$1/200101-000000-1x" && -d "$1/notes" && -f "$1/200101-000000-2" && -L "$1/200101-000000-3" ]]' _ "$D"
+check "  the link's target is untouched" test -f "$D/elsewhere/keep"
+at_clean
+
+at_setup; at_old 200101-000000-1
+at_fakebin id 'if [[ "$1" == -u ]]; then echo 4242; else exec /usr/bin/id "$@"; fi'
+PATH="$D.bin:$PATH" at_run "" --now "$(at_far)"
+check "only folders of the script's own uid are candidates" test -d "$D/200101-000000-1"
+check "  nothing is said of the other uid's folder" test ! -s "$ERR"
+rm -rf "$D.bin"; at_clean
+
+at_setup
+for i in $(seq 1 60); do mkdir "$D/200101-000000-$i"; done
+at_run "" --now "$(at_far)"
+check "60 old folders: one run removes 50" test "$(find "$D" -mindepth 1 -maxdepth 1 -name '2001*' | wc -l)" -eq 10
+check "  and says 10 are left" grep -qF "NOTE: 10 more old temp folder(s) in $D are left for the next launch." "$ERR"
+rm -rf "${D:?}/$SLOT"; SLOT=260101-120000-98
+at_run "" --now "$(at_far)"
+check "  a second run removes the other 10" test "$(find "$D" -mindepth 1 -maxdepth 1 -name '2001*' | wc -l)" -eq 0
+check "  and prints no more-old line" bash -c '! grep -q "more old temp" "$1"' _ "$ERR"
+at_clean
+
+at_setup
+for i in $(seq 1 600); do mkdir "$D/200101-000000-$i"; done
+at_run "" --now "$(at_far)"
+check "600 old folders: 50 removed" test "$(find "$D" -mindepth 1 -maxdepth 1 -name '2001*' | wc -l)" -eq 550
+check "  the note says at least 450 more" grep -qF "NOTE: at least 450 more old temp folder(s) in $D are left" "$ERR"
+at_clean
+
+at_setup; at_old 200101-000000-1
+at_fakebin rm 'for a in "$@"; do [[ "$a" == "'"$D"'/"* ]] && exit 1; done; exec /bin/rm "$@"'
+PATH="$D.bin:$PATH" at_run "" --now "$(at_far)"
+check "a folder rm cannot remove is named" grep -qF "NOTE: could not remove $D/200101-000000-1; it is kept, and checked again in 30 days." "$ERR"
+check "  and kept" test -d "$D/200101-000000-1"
+check "  and touched (ctime after the clock's cut-off)" bash -c '[[ "$(find -P "$1" -maxdepth 0 -cnewer "$2")" ]]' _ "$D/200101-000000-1" "$D/200101-000000-1/f"
+rm -rf "$D.bin"; at_clean
+
+at_setup; at_old "$SLOT"
+at_run "" --now "$(at_far)"
+check "an existing slot: exit 1" test "$RC" -eq 1
+check "  with a WARNING naming it" grep -qF "WARNING: cannot create $D/$SLOT" "$ERR"
+check "  its content is untouched, and it is not pruned" test -f "$D/$SLOT/f"
+at_clean
+
+for bad in '../x' 'a b' ''; do
+  at_setup; SLOT="$bad"
+  at_run "" --now "$(at_far)"
+  check "slot '$bad': exit 1 with a WARNING, nothing made" bash -c \
+    '[[ "$1" -eq 1 ]] && grep -q "^WARNING:" "$2" && [[ -z "$(ls -A "$3")" && ! -e "$3/../x" ]]' _ "$RC" "$ERR" "$D"
+  at_clean
+done
+
+at_setup
+bash "$AT" "$D" "$SLOT" 2>/dev/null; rc=$?
+check "fewer than 3 arguments: exit 2" test "$rc" -eq 2
+at_clean
+
 if [[ $fails -eq 0 ]]; then printf 'ALL PASS\n'; else printf '%d FAILED\n' "$fails"; exit 1; fi

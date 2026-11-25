@@ -1083,8 +1083,9 @@ RUN --mount=type=secret,id=github_token \
     bash /tmp/install-tools.sh
 COPY install-agent-skills.sh /usr/local/bin/install-agent-skills.sh
 COPY start-services.sh /usr/local/bin/start-services.sh
+COPY agent-tmp.sh /usr/local/bin/agent-tmp.sh
 COPY services.d /etc/ai-containers/services.d
-RUN chmod +x /usr/local/bin/install-agent-skills.sh /usr/local/bin/start-services.sh
+RUN chmod +x /usr/local/bin/install-agent-skills.sh /usr/local/bin/start-services.sh /usr/local/bin/agent-tmp.sh
 
 COPY refresh-ipset-allowlist.sh /usr/local/bin/
 COPY capture-agent-destinations.sh /usr/local/bin/
