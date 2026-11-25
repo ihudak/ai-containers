@@ -48,6 +48,7 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$CAPTURE.calls"
+[[ "\$1" == volume ]] && exec bash "$ROOT/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 if [[ "\$1" == "run" ]]; then
   shift; printf '%s\n' "\$@" > "$CAPTURE"
   prev=""

@@ -77,6 +77,7 @@ EOF
   mkdir -p "$TMP/bin"
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+[[ "\$1" == volume ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
 exit 1
 DOCKER
@@ -543,6 +544,7 @@ printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\nruby=3.3.6\n' > "$S
 cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
+[[ "\$1" == volume && "\$*" == *-vartmp-* ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 [[ "\$1 \$2" == "volume inspect" ]] && exit 0
 exit 1
 DOCKER

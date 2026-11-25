@@ -217,7 +217,7 @@ expected_shared_files=(
   build.sh sandbox.sh repo.sh group.sh entrypoint.sh version.sh
   repo-git-reset.sh
   rvm-reconcile.sh link-default-ruby.sh
-  agent-tools-reconcile.sh link-agent-tools.sh start-services.sh
+  agent-tools-reconcile.sh link-agent-tools.sh start-services.sh agent-tmp.sh
   link-node-globals.sh
   refresh-ipset-allowlist.sh
   capture-blocked-traffic.sh capture-agent-destinations.sh

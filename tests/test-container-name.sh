@@ -32,6 +32,7 @@ CAPTURE="$TMP/docker-args.txt"
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+[[ "\$1" == volume ]] && exec bash "$ROOT/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
 exit 0
 DOCKER

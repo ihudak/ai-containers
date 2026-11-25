@@ -10,10 +10,9 @@
 #       project's own writability still PASS; a FAIL there first would mean the
 #       case measures something other than the overlay.
 diff --git a/sandbox.sh b/sandbox.sh
-index 9426966..b963e54 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -9087,7 +9087,6 @@ run_container() {
+@@ -9052,7 +9052,6 @@
      ${specs_env_args[@]+"${specs_env_args[@]}"}
      ${docs_env_args[@]+"${docs_env_args[@]}"}
      ${arch_env_args[@]+"${arch_env_args[@]}"}
@@ -21,7 +20,7 @@ index 9426966..b963e54 100755
    )
  
    # container.env, filtered (container_env_filter), and the names it sets, which the
-@@ -9145,8 +9144,6 @@ run_container() {
+@@ -9101,8 +9100,6 @@
      ${docs_mount_flags[@]+"${docs_mount_flags[@]}"} \
      ${arch_mount_flags[@]+"${arch_mount_flags[@]}"} \
      ${config_mount_flags[@]+"${config_mount_flags[@]}"} \
@@ -29,4 +28,4 @@ index 9426966..b963e54 100755
 -    ${launcher_verify_flags[@]+"${launcher_verify_flags[@]}"} \
      -w "$workdir" \
      "$image_name" || _run_rc=$?
-   # Now, not only from the EXIT trap: the check after the session can take 30 s,
+   _ro_files_restore

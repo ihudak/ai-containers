@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # Tests for the scratch places an agent's work survives a container restart in.
 #
-# Containers run with --rm, so only a group directory outlives one. These cases
-# cover ~/.cache and ~/.local/state, which are mounted WHOLE from the group
-# whatever sandbox.conf says: a nested mount per tool (qmd, Playwright, Claude
-# Code) left every other tool's cache and state to vanish with the container.
+# Containers run with --rm, so only a group directory or a group's Docker
+# volume outlives one. ~/.cache and ~/.local/state are mounted WHOLE from the
+# group whatever sandbox.conf says: a nested mount per tool (qmd, Playwright,
+# Claude Code) left every other tool's cache and state to vanish with the
+# container. /var/tmp is the group's Docker volume, never a host folder (GNU
+# tar's `..` placeholder fails on a macOS virtiofs bind), and each launch names
+# its own folder in it, which the container's start-up makes after pruning old
+# ones: agent-tmp.sh, run directly in the last section.
 #
 # A fake `docker` on PATH captures the `docker run` arguments, so nothing is
-# launched. Its `ps` answers only the exact query the launch's pruning makes,
-# and its `run` can age the launch's own /var/tmp folder, or kill the launcher,
-# as a container would.
+# launched. It hands `volume` calls to tests/lib-fake-docker-volume.sh, and its
+# `ps` answers only the exact query the launch makes for the folders of the
+# running containers, nothing for any other, so a wrong filter or format is a
+# folder left out of the list.
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,23 +46,13 @@ claude-code=OFF}" > "$SANDBOX_CONF"
 
   CAPTURE="$TMP/docker-args.txt"; : > "$CAPTURE"
   mkdir -p "$TMP/bin"
-  # run: FAKE_AGE_SLOT=<host .var-tmp> puts a file in the launch's own folder and
-  # gives both a 2020 mtime, as an archive unpacked onto $TMPDIR does;
-  # FAKE_KILL_LAUNCHER=1 then sends the launcher a TERM, so it never returns
-  # from docker run. ps: FAKE_RUNNING_SLOTS for the pruning's own query only,
-  # nothing for any other, so a wrong filter or format is a folder not kept.
+  # ps: FAKE_RUNNING_SLOTS, one label value per line, for the launch's own
+  # query only; FAKE_PS_FAIL=1 fails every ps.
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+[[ "\$1" == volume ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 if [[ "\$1" == "run" ]]; then
   shift; printf '%s\n' "\$@" > "$CAPTURE"
-  if [[ -n "\${FAKE_AGE_SLOT:-}" ]]; then
-    for a in "\$@"; do
-      [[ "\$a" == AI_AGENT_TMPDIR=/var/tmp/* ]] || continue
-      s="\$FAKE_AGE_SLOT/\${a#AI_AGENT_TMPDIR=/var/tmp/}"
-      : > "\$s/f"; touch -t 202001010000 "\$s/f" "\$s"
-    done
-  fi
-  [[ "\${FAKE_KILL_LAUNCHER:-}" == 1 ]] && kill -TERM "\$PPID"
   exit 0
 fi
 if [[ "\$1" == "ps" ]]; then
@@ -85,8 +80,7 @@ teardown() {
 
 # Launched from a temp dir: sandbox.sh writes its .agent-* output dirs into $PWD.
 # The capture is emptied first, so a launch that stops before docker run leaves
-# none from an earlier one. sandbox.sh is not the subshell's last command, so a
-# launcher killed by a signal is reported in $ERR, not on the test's output.
+# none from an earlier one.
 run_sandbox() {
   ERR="$TMP/stderr.txt"; : > "$CAPTURE"
   ( cd "$TMP/launch" || exit; bash "$REPO_DIR/sandbox.sh" restricted "$TMP/app"; exit $? ) \
@@ -98,6 +92,8 @@ launched() { [[ "$RC" -eq 0 && -s "$CAPTURE" ]]; }
 
 # mounted <host-src> <container-dst> — is that exact rw bind flag in the captured args?
 mounted() { grep -qx -- "$1:$2:rw" "$CAPTURE"; }
+# arg_after <flag> <value>: the captured docker run passes <flag>, then <value>.
+arg_after() { awk -v f="$1" -v v="$2" 'p == f && $0 == v { ok = 1 } { p = $0 } END { exit !ok }' "$CAPTURE"; }
 
 # ── ~/.cache and ~/.local/state, whole ──────────────────────────────────────────
 setup
@@ -135,263 +131,105 @@ check "slice: qmd still copied, other caches and state not" \
   bash -c '[[ -f "$1/.cache/qmd/i" && ! -e "$1/.cache/pip/p" && ! -e "$1/.local/state/s" ]]' _ "$NEW"
 teardown
 
-# ── /var/tmp: one folder per container ──────────────────────────────────────────
+# ── /var/tmp: the group's Docker volume, one folder per container ───────────────
+VOL=ai-containers-vartmp-default
+PSQ='ps --filter label=ai-containers.tmpslot --format {{.Label "ai-containers.tmpslot"}}'
+# ps_asked: how many times the launches of this setup made the launch's query.
+ps_asked() { grep -cxF -- "$PSQ" "$TMP/ps-calls.txt" 2>/dev/null; }
+
 setup
 run_sandbox
-check "/var/tmp mounted from the group" mounted "$GROUP_ROOT/.var-tmp" "/var/tmp"
+check "a launch goes through (rc=$RC)" launched
+check "/var/tmp is mounted from the group's volume" arg_after -v "$VOL:/var/tmp"
+check "the volume was created with the group's label" \
+  grep -qxF ai-containers.vartmp-group=default "$TMP/volumes/$VOL/labels"
+check "no .var-tmp is made in the group" bash -c '[[ ! -e "$1" && ! -L "$1" ]]' _ "$GROUP_ROOT/.var-tmp"
+check "no host folder is bound at /var/tmp" bash -c '! grep -q ":/var/tmp:rw$" "$1"' _ "$CAPTURE"
+check "AI_AGENT_TMP_RUNNING is passed, empty, with no container running" arg_after -e "AI_AGENT_TMP_RUNNING="
+check "no NOTE about an old .var-tmp when there is none" bash -c '! grep -q "is no longer mounted" "$1"' _ "$ERR"
 slot="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
 check "AI_AGENT_TMPDIR names a per-container folder" \
   bash -c '[[ "$1" =~ ^[0-9]{6}-[0-9]{6}-[0-9]+$ ]]' _ "$slot"
 check "TMPDIR stays within 30 bytes" test $(( ${#slot} + 9 )) -le 30
 check "the container carries its folder as a label" grep -qxF "ai-containers.tmpslot=$slot" "$CAPTURE"
-check "folder made on the host, 0700" \
-  bash -c '[[ -d "$1" && "$2" == 700 ]]' _ "$GROUP_ROOT/.var-tmp/$slot" "$(p_stat_mode "$GROUP_ROOT/.var-tmp/$slot")"
 check "TMPDIR itself is never passed to docker" bash -c '! grep -qE "^TMPDIR=" "$1"' _ "$CAPTURE"
+check "docker ps is asked for the running containers' folders" test "$(ps_asked)" = 1
 run_sandbox
 slot2="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
 check "each launch gets its own folder" test -n "$slot2" -a "$slot2" != "$slot"
+check "docker ps is asked again on the next launch, with no old folder anywhere" test "$(ps_asked)" = 2
+check "the next launch uses the same volume, and makes no other (rc=$RC)" \
+  bash -c '[[ "$2" -eq 0 && "$(ls "$1")" == "$3" ]]' _ "$TMP/volumes" "$RC" "$VOL"
 teardown
 
-# container.env cannot choose the folder: the launch's own -e is refused from it.
+# Only label values of the folder-name form are passed: another tool's label, a
+# path, a value with a space never reach the start-up.
 setup
-printf 'AI_AGENT_TMPDIR=/etc\n' > "$TMP/container.env"
+FAKE_RUNNING_SLOTS=$'200101-000000-1\n../x\nx y\n200101-000000-2' run_sandbox
+check "the running containers' folder names are passed, and nothing else" \
+  arg_after -e "AI_AGENT_TMP_RUNNING=200101-000000-1 200101-000000-2"
+teardown
+
+setup
+FAKE_PS_FAIL=1 run_sandbox
+check "a docker ps that fails passes ?, and the launch goes on (rc=$RC)" \
+  bash -c '[[ "$1" -eq 0 ]] && grep -qxF "AI_AGENT_TMP_RUNNING=?" "$2"' _ "$RC" "$CAPTURE"
+teardown
+
+# container.env cannot choose the folder, nor which folders are in use: the
+# launch's own -e is refused from it.
+setup
+printf 'AI_AGENT_TMPDIR=/etc\nAI_AGENT_TMP_RUNNING=x\n' > "$TMP/container.env"
 SANDBOX_ENV_FILE="$TMP/container.env" run_sandbox
 check "container.env AI_AGENT_TMPDIR refused with a WARNING naming it" \
   grep -q 'WARNING:.*AI_AGENT_TMPDIR' "$ERR"
+check "container.env AI_AGENT_TMP_RUNNING refused with a WARNING naming it" \
+  grep -q 'WARNING:.*AI_AGENT_TMP_RUNNING' "$ERR"
 check "captured AI_AGENT_TMPDIR is still the launch's folder" \
   grep -qE '^AI_AGENT_TMPDIR=/var/tmp/[0-9]{6}-[0-9]{6}-[0-9]+$' "$CAPTURE"
+check "captured AI_AGENT_TMP_RUNNING is still the launch's" arg_after -e "AI_AGENT_TMP_RUNNING="
 check "no AI_AGENT_TMPDIR=/etc anywhere" bash -c '! grep -q "=/etc" "$1"' _ "$CAPTURE"
 teardown
 
-# ── pruning: folders of stopped containers untouched for 30 days ────────────────
-# age_tree <dir>: set every mtime to 2020, deepest first so a parent is not
-# bumped back by its children.
-age_tree() { find "$1" -depth -exec touch -h -t 202001010000 {} +; }
-# old_slot <name>: an aged per-container folder holding one file.
-old_slot() {
-  mkdir -p "$GROUP_ROOT/.var-tmp/$1"; : > "$GROUP_ROOT/.var-tmp/$1/f"
-  age_tree "$GROUP_ROOT/.var-tmp/$1"
-}
-OLD=200101-000000-1
-# touched <dir>: its own mtime is within 30 days, so the next launch does not
-# list it.
-touched() { local o; o="$(find -P "$1" -maxdepth 0 -mmin +43200)"; [[ -e "$1" && -z "$o" ]]; }
-# sorted_find: a find on PATH that hands the launch's listing of .var-tmp back
-# in name order, so which folders a capped listing, or the 50 a launch checks,
-# reach does not depend on the filesystem's directory order. Every other find
-# runs as it is.
-sorted_find() {
-  local real; real="$(type -P find)"
-  cat > "$TMP/bin/find" <<FIND
-#!/usr/bin/env bash
-if [[ "\$*" == *"/.var-tmp -mindepth 1 -maxdepth 1 "* ]]; then
-  "$real" "\$@" | LC_ALL=C sort -z
-else
-  exec "$real" "\$@"
-fi
-FIND
-  chmod +x "$TMP/bin/find"
-}
-
-setup; old_slot "$OLD"; run_sandbox
-check "an old folder of a stopped container is removed" test ! -e "$GROUP_ROOT/.var-tmp/$OLD"
-check "the NOTE says 1 folder" grep -q 'NOTE: removed 1 temp folder(s) of stopped containers, untouched for 30 days, from .* freed)\.' "$ERR"
-teardown
-
-setup; old_slot "$OLD"; FAKE_RUNNING_SLOTS="$OLD" run_sandbox
-check "a running container's folder is kept, however old" test -d "$GROUP_ROOT/.var-tmp/$OLD"
-check "  and the launch went on (rc=$RC)" launched
-teardown
-
-# Append to an aged file in a subfolder, then age the folders back, so only a
-# file deep inside is recent: a check of the folder's own mtime would miss it.
-setup; old_slot "$OLD"; mkdir "$GROUP_ROOT/.var-tmp/$OLD/sub"; : > "$GROUP_ROOT/.var-tmp/$OLD/sub/h"
-age_tree "$GROUP_ROOT/.var-tmp/$OLD"; printf x >> "$GROUP_ROOT/.var-tmp/$OLD/sub/h"
-touch -h -t 202001010000 "$GROUP_ROOT/.var-tmp/$OLD/sub" "$GROUP_ROOT/.var-tmp/$OLD"
-run_sandbox
-check "a folder touched within 30 days is kept" test -d "$GROUP_ROOT/.var-tmp/$OLD"
-check "  and the launch went on (rc=$RC)" launched
-teardown
-
-setup; mkdir -p "$GROUP_ROOT/.var-tmp/$(date +%y%m%d-%H%M%S)-2"; run_sandbox
-check "a concurrent launch's new folder is kept" \
-  bash -c 'l="$(ls "$1")"; grep -q -- "-2$" <<<"$l"' _ "$GROUP_ROOT/.var-tmp"
-check "  and the launch went on (rc=$RC)" launched
-teardown
-
-setup; mkdir -p "$GROUP_ROOT/.var-tmp/keepme"; : > "$GROUP_ROOT/.var-tmp/x"
-age_tree "$GROUP_ROOT/.var-tmp/keepme"; touch -h -t 202001010000 "$GROUP_ROOT/.var-tmp/x"
-run_sandbox
-check "only per-container folders are pruned" \
-  test -d "$GROUP_ROOT/.var-tmp/keepme" -a -e "$GROUP_ROOT/.var-tmp/x"
-check "  and the launch went on (rc=$RC)" launched
-teardown
-
-setup; old_slot "$OLD"; FAKE_PS_FAIL=1 run_sandbox
-check "docker that cannot list containers removes nothing" \
-  bash -c '[[ -d "$1" ]] && ! grep -q "removed" "$2"' _ "$GROUP_ROOT/.var-tmp/$OLD" "$ERR"
-check "  and the launch went on (rc=$RC)" launched
-teardown
-
-setup; mkdir -p "$TMP/outside"; : > "$TMP/outside/f"
-old_slot "$OLD"; ln -s "$TMP/outside/f" "$GROUP_ROOT/.var-tmp/$OLD/l"; age_tree "$GROUP_ROOT/.var-tmp/$OLD"
-run_sandbox
-check "a link in a pruned folder is not followed" \
-  bash -c '[[ ! -e "$1" && -f "$2" ]]' _ "$GROUP_ROOT/.var-tmp/$OLD" "$TMP/outside/f"
-check "  and the launch went on (rc=$RC)" launched
-teardown
-
-# As root (the suite's floor job) chmod 000 stops nothing, so this asserts only
-# what holds either way: the launch goes on.
-setup; old_slot "$OLD"; mkdir "$GROUP_ROOT/.var-tmp/$OLD/d"; : > "$GROUP_ROOT/.var-tmp/$OLD/d/g"
-age_tree "$GROUP_ROOT/.var-tmp/$OLD"; chmod 000 "$GROUP_ROOT/.var-tmp/$OLD/d"
-run_sandbox
-check "an unreadable folder does not stop the launch (rc=$RC)" launched
-if [[ "$(id -u)" -ne 0 ]]; then
-  check "an unreadable folder is kept whole, with no removal NOTE" \
-    bash -c '[[ -e "$1/f" ]] && ! grep -q "could not remove" "$2"' _ "$GROUP_ROOT/.var-tmp/$OLD" "$ERR"
-  check "  and touched, so the next launches do not check it again" touched "$GROUP_ROOT/.var-tmp/$OLD"
-fi
-chmod 700 "$GROUP_ROOT/.var-tmp/$OLD/d" 2>/dev/null
-teardown
-
-# A du that fails (a sibling removed part of the folder meanwhile) must not end the launch.
-setup; old_slot "$OLD"
-printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/bin/du"; chmod +x "$TMP/bin/du"
-run_sandbox
-check "a failing du does not stop the launch (rc=$RC)" test "$RC" -eq 0
-check "the launch reached docker run" test -s "$CAPTURE"
-teardown
-
-# The cap: 50 per launch, the rest named and taken by the next launch.
-setup; for i in $(seq 1 60); do old_slot "200101-000000-$i"; done
-run_sandbox
-check "60 old folders: one launch removes 50" \
-  bash -c 'l="$(ls "$1")"; n="$(grep -c "^200101-" <<<"$l")"; [ "$n" = 10 ]' _ "$GROUP_ROOT/.var-tmp"
-check "the cap NOTE says 10 more" grep -qxF "NOTE: 10 more old temp folder(s) in $GROUP_ROOT/.var-tmp are left for the next launch." "$ERR"
-run_sandbox
-check "the next launch removes the remaining 10" \
-  bash -c 'l="$(ls "$1")"; ! grep -q "^200101-" <<<"$l"' _ "$GROUP_ROOT/.var-tmp"
-check "no cap NOTE once nothing is left" bash -c '! grep -q "more old temp" "$1"' _ "$ERR"
-teardown
-
-# Only recent folders: docker is never asked.
-setup; mkdir -p "$GROUP_ROOT/.var-tmp/$(date +%y%m%d-%H%M%S)-2"; run_sandbox
-check "no old folder: docker ps is not called" test ! -s "$TMP/ps-calls.txt"
-check "  and the launch went on (rc=$RC)" launched
-teardown
-
-# The listing is read to 500 folders at most, however many the agent makes old,
-# and find is stopped there: 3000 of them, whose names are far more than a pipe
-# holds, so a find that ran to its end was read to its end. The NOTE can then
-# only say "at least".
-setup; mkdir -p "$GROUP_ROOT/.var-tmp"
-( cd "$GROUP_ROOT/.var-tmp" && mkdir 200101-000000-{1..3000} && touch -h -t 202001010000 200101-000000-{1..3000} )
-real_find="$(type -P find)"
-cat > "$TMP/bin/find" <<FIND
-#!/usr/bin/env bash
-if [[ "\$*" == *"/.var-tmp -mindepth 1 -maxdepth 1 "* ]]; then
-  "$real_find" "\$@" && : > "$TMP/listing-read-whole"
-else
-  exec "$real_find" "\$@"
-fi
-FIND
-chmod +x "$TMP/bin/find"
-run_sandbox
-check "3000 old folders: the launch went on (rc=$RC)" launched
-check "  and removed 50" \
-  bash -c 'l="$(ls "$1")"; n="$(grep -c "^200101-" <<<"$l")"; [ "$n" = 2950 ]' _ "$GROUP_ROOT/.var-tmp"
-check "  the listing was not read to its end" test ! -e "$TMP/listing-read-whole"
-check "  but cut at 500: the NOTE says at least 450 more" \
-  grep -qxF "NOTE: at least 450 more old temp folder(s) in $GROUP_ROOT/.var-tmp are left for the next launch." "$ERR"
-teardown
-
-# Names that are not a per-container folder's are left out by find itself, so
-# however many there are, old, they do not fill the 500 a launch reads. Both
-# kinds sort before the real one: one that the first pattern refuses, and one
-# that passes it with a character the regex refuses after the second dash.
-setup; mkdir -p "$GROUP_ROOT/.var-tmp"
-( cd "$GROUP_ROOT/.var-tmp" && mkdir 0-{1..510} 000000-000000-1x{1..510} \
-  && touch -h -t 202001010000 0-{1..510} 000000-000000-1x{1..510} )
-old_slot "$OLD"; sorted_find
-run_sandbox
-check "1020 old folders of other names, listed first: the per-container one is still removed" \
-  test ! -e "$GROUP_ROOT/.var-tmp/$OLD"
-check "  and the others are kept (rc=$RC)" \
-  bash -c '[[ "$2" -eq 0 && -d "$1/0-510" && -d "$1/000000-000000-1x510" ]]' _ "$GROUP_ROOT/.var-tmp" "$RC"
-teardown
-
-# A folder kept for what it holds is touched, so it leaves the list for 30 days:
-# 50 of them first in the listing used up the cap at every launch, and the old
-# folder after them was never checked.
-setup; mkdir -p "$GROUP_ROOT/.var-tmp"
-( cd "$GROUP_ROOT/.var-tmp" && mkdir 200101-000000-{1..50} \
-  && for k in 200101-000000-{1..50}; do : > "$k/new"; done \
-  && touch -h -t 202001010000 200101-000000-{1..50} )
-old_slot 200102-000000-1; sorted_find
-run_sandbox
-check "50 folders kept for a recent file: each is touched" \
-  bash -c 'for k in "$1"/200101-000000-*; do o="$(find -P "$k" -maxdepth 0 -mmin +43200)"; [[ -z "$o" ]] || exit 1; done' _ "$GROUP_ROOT/.var-tmp"
-run_sandbox
-check "  so the next launch reaches the old folder after them and removes it" \
-  test ! -e "$GROUP_ROOT/.var-tmp/200102-000000-1"
-check "  and keeps the 50 (rc=$RC)" \
-  bash -c 'l="$(ls "$1")"; n="$(grep -c "^200101-" <<<"$l")"; [[ "$n" = 50 && "$2" -eq 0 ]]' _ "$GROUP_ROOT/.var-tmp" "$RC"
-check "  with no cap NOTE" bash -c '! grep -q "more old temp" "$1"' _ "$ERR"
-teardown
-
-# A folder that could not be removed is touched too. The fake rm refuses only
-# what is in .var-tmp, and goes before teardown, which needs a real one.
-setup; old_slot "$OLD"
-cat > "$TMP/bin/rm" <<RM
-#!/usr/bin/env bash
-for a in "\$@"; do [[ "\$a" == */.var-tmp/* ]] && exit 1; done
-exec "$(type -P rm)" "\$@"
-RM
-chmod +x "$TMP/bin/rm"
-run_sandbox
-command rm -f "$TMP/bin/rm"; hash -r
-check "a folder rm cannot remove is named in a NOTE" grep -qF "NOTE: could not remove $GROUP_ROOT/.var-tmp/$OLD" "$ERR"
-check "  and touched" touched "$GROUP_ROOT/.var-tmp/$OLD"
-check "  and the launch went on (rc=$RC)" launched
-teardown
-
-# ── the launch's own folder: untouched counts from the container's exit ──────
-# An archive unpacked onto $TMPDIR itself gives the folder and all it holds the
-# archive's old dates; without a touch at exit the next launch removed it.
-setup; FAKE_AGE_SLOT="$GROUP_ROOT/.var-tmp" run_sandbox
-slot="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
-check "a container that ages its own folder: the launch completes (rc=$RC)" launched
-run_sandbox
-check "  and the next launch keeps that folder" test -f "$GROUP_ROOT/.var-tmp/$slot/f"
-teardown
-
-# And at once when docker run returns, not only at exit: the check after the
-# session (which runs find over the launch's writable mounts) can take 30 s, in
-# which a concurrent launch would prune. This find notes, the first time it runs
-# after docker run, whether the folder is old at that moment.
+# A volume of the name that is not this group's (made by a `docker run -v`
+# before the group's first launch) refuses the launch: mounted, group.sh would
+# never see it.
 setup
-real_find="$(type -P find)"
-cat > "$TMP/bin/find" <<FIND
-#!/usr/bin/env bash
-if [[ -s "$CAPTURE" && ! -e "$TMP/probed" ]]; then
-  s="\$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
-  "$real_find" -P "$GROUP_ROOT/.var-tmp/\$s" -maxdepth 0 -mmin +43200 > "$TMP/probed" 2>&1
-fi
-exec "$real_find" "\$@"
-FIND
-chmod +x "$TMP/bin/find"
-FAKE_AGE_SLOT="$GROUP_ROOT/.var-tmp" run_sandbox
-check "the folder is touched as soon as docker run returns (rc=$RC)" \
-  bash -c '[[ "$2" -eq 0 && -e "$1" && ! -s "$1" ]]' _ "$TMP/probed" "$RC"
+bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" volume create "$VOL" >/dev/null
+run_sandbox
+check "an unlabelled volume of the name refuses the launch (rc=$RC)" test "$RC" -ne 0
+check "  before docker run" test ! -s "$CAPTURE"
+check "  with its ERROR on stderr" \
+  grep -qF "ERROR: the volume $VOL exists but is not a temp volume of group \"default\"" "$ERR"
 teardown
 
-# A launcher killed while the container runs touches it from its EXIT trap.
-setup; FAKE_AGE_SLOT="$GROUP_ROOT/.var-tmp" FAKE_KILL_LAUNCHER=1 run_sandbox
-slot="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
-check "a launcher killed by TERM during docker run exits 143 (rc=$RC)" test "$RC" -eq 143
+# An old .var-tmp from the bind version is named at every launch, with how to
+# copy it into the volume and how to remove it, and is never touched.
+setup
+mkdir -p "$GROUP_ROOT/.var-tmp/200101-000000-1"; : > "$GROUP_ROOT/.var-tmp/200101-000000-1/f"
 run_sandbox
-check "  and the next launch keeps the folder its container aged" test -f "$GROUP_ROOT/.var-tmp/$slot/f"
+check "an old .var-tmp does not stop the launch (rc=$RC)" launched
+check "  a NOTE names it" grep -qF "NOTE: $GROUP_ROOT/.var-tmp is no longer mounted: /var/tmp is now the Docker volume $VOL." "$ERR"
+# Each step to a file, not a pipe: under pipefail `grep | grep -q` can report the
+# opposite of what it saw.
+sed 's/^ *//' "$ERR" > "$TMP/err-trimmed.txt"
+grep -F 'docker run ' "$ERR" > "$TMP/err-run.txt"
+grep -F -- "-v $GROUP_ROOT/.var-tmp:/src:ro" "$TMP/err-run.txt" > "$TMP/err-run-src.txt"
+check "  and gives the line that removes it" grep -qxF -- "rm -rf $GROUP_ROOT/.var-tmp" "$TMP/err-trimmed.txt"
+check "  and the docker run that copies it into the volume" grep -qF -- "-v $VOL:/dst" "$TMP/err-run-src.txt"
+check "  the folder and its file are still there" test -f "$GROUP_ROOT/.var-tmp/200101-000000-1/f"
+check "  and nothing of it is mounted" bash -c '! grep -qF -- "$2" "$1"' _ "$CAPTURE" "$GROUP_ROOT/.var-tmp"
+run_sandbox
+check "  the NOTE comes again at the next launch" grep -qF "NOTE: $GROUP_ROOT/.var-tmp is no longer mounted" "$ERR"
+teardown
+
+# One that is a link, leading nowhere, is named too.
+setup
+mkdir -p "$GROUP_ROOT"; ln -s "$TMP/nowhere" "$GROUP_ROOT/.var-tmp"
+run_sandbox
+check "an old .var-tmp that is a dangling link is named (rc=$RC)" \
+  bash -c '[[ "$1" -eq 0 ]] && grep -qF "NOTE: $3/.var-tmp is no longer mounted" "$2"' _ "$RC" "$ERR" "$GROUP_ROOT"
+check "  and left as it is" test -L "$GROUP_ROOT/.var-tmp"
 teardown
 
 # ── agent-tmp.sh, run directly ──

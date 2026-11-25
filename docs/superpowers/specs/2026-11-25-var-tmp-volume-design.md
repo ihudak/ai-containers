@@ -1,6 +1,6 @@
 # `/var/tmp` on a per-group Docker volume
 
-Status: design, 2026-11-25. Follows
+**Status:** design, 2026-11-25. Follows
 [2026-11-23-persistent-agent-scratch-design.md](2026-11-23-persistent-agent-scratch-design.md),
 which merged `/var/tmp`, `~/.cache` and `~/.local/state` as group bind mounts
 (main 164ea09) and owed a macOS check.

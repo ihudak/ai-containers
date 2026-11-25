@@ -977,11 +977,13 @@ vartmp_group_from_volume() {
 # not this group's: `docker run -v <name>:...` would otherwise create it itself,
 # unlabelled, and group.sh would never see it. Labels cannot be added afterwards.
 vartmp_volume_ensure() {
-  local group="$1" vol out err lab errf
+  local group="$1" vol out err lab
   vol="$(vartmp_volume_name "$group")"
-  errf="$(mktemp)" || { printf 'ERROR: could not make a temporary file\n' >&2; return 1; }
-  if out="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.vartmp-group"}}{{end}}' "$vol" 2>"$errf")"; then
-    rm -f "$errf"
+  # No temporary file for docker's stderr: every launch runs this, and a launch
+  # must not depend on a usable TMPDIR where nothing else needs one (T51, T53 in
+  # tests/test-launcher-dir-ro.sh). Only a failed inspect is asked again, for
+  # what docker says on stderr.
+  if out="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.vartmp-group"}}{{end}}' "$vol" 2>/dev/null)"; then
     lab="${out%$'\n'}"
     if [[ "$lab" != "$group" ]]; then
       if [[ -z "$lab" ]]; then
@@ -989,7 +991,7 @@ vartmp_volume_ensure() {
       else
         printf 'ERROR: the volume %s exists but belongs to group "%s", not "%s".\n' "$vol" "$lab" "$group" >&2
       fi
-      printf '       It was made outside a launch (by a `docker run -v`, or for another group).\n' >&2
+      printf '       It was made outside a launch (by a -v of it on a docker command line, or for another group).\n' >&2
       printf '       A launch cannot use it: group.sh would never see it. Once nothing in it is\n' >&2
       printf '       needed, clear the way with:\n         docker volume rm %s\n' "$vol" >&2
       return 1
@@ -997,8 +999,8 @@ vartmp_volume_ensure() {
     _group_volume_shared_note "$vol" "$group" temp
     printf '%s\n' "$vol"; return 0
   fi
-  err="$(tr '[:upper:]' '[:lower:]' < "$errf")"; rm -f "$errf"
-  if [[ "$err" != *"no such volume"* ]]; then
+  err="$(docker volume inspect "$vol" 2>&1 >/dev/null)" || true
+  if [[ "${err,,}" != *"no such volume"* ]]; then
     printf 'ERROR: docker could not say whether %s exists\n' "$vol" >&2
     return 1
   fi

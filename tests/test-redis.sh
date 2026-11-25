@@ -116,6 +116,7 @@ sb_run() {  # $1 = sandbox.conf body → prints the path of the captured argv fi
   printf '# schema-version: 4\n%s\n' "$1" > "$d/sandbox.conf"
   cat > "$d/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+[[ "\$1" == volume ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$d/volumes" "\$@"
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$d/argv"; exit 0; fi
 exit 1
 DOCKER

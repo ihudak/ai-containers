@@ -47,6 +47,7 @@ setup() {
   mkdir -p "$TMP/bin"
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+[[ "\$1" == volume && "\$*" == *-vartmp-* ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
 # Volume queries succeed with no output: a registered repo's volume counts as
 # PRESENT, so a volume-backed repo can be exercised without a daemon.

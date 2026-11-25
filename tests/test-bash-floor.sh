@@ -81,7 +81,7 @@ done <<< "$tracked_sh"
 in_container="entrypoint.sh rvm-reconcile.sh agent-tools-reconcile.sh
   link-agent-tools.sh link-default-ruby.sh link-node-globals.sh install-tools.sh install-node-lts.sh
   refresh-ipset-allowlist.sh capture-blocked-traffic.sh
-  install-agent-skills.sh capture-agent-destinations.sh bash-floor.sh start-services.sh
+  install-agent-skills.sh capture-agent-destinations.sh bash-floor.sh start-services.sh agent-tmp.sh
   repo-git-reset.sh
   sandbox-common.sh tools-lib.sh shared-files.sh version.sh host-preflight.sh project-files.sh"
 # The multi-line string above embeds literal newlines; normalize them to spaces

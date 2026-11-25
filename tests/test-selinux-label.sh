@@ -55,12 +55,15 @@ APPARMOR_DAEMON='["name=apparmor","name=seccomp,profile=builtin","name=cgroupns"
 # ── Fake docker ─────────────────────────────────────────────────────────────────
 # info answers from FAKE_SECURITY_OPTIONS (or fails with FAKE_INFO_RC); run
 # appends its argv as one line to FAKE_RUN_LOG; volumes are files in
-# FAKE_VOLUMES_DIR, so a repo added in one call exists for the next.
+# FAKE_VOLUMES_DIR, so a repo added in one call exists for the next; the group's
+# temp volume is tests/lib-fake-docker-volume.sh's, kept in FAKE_VARTMP_DIR.
 export FAKE_RUN_LOG="$TMP/run.log" FAKE_VOLUMES_DIR="$TMP/volumes"
+export FAKE_VOLUME_LIB="$REPO_DIR/tests/lib-fake-docker-volume.sh" FAKE_VARTMP_DIR="$TMP/vartmp-volumes"
 export FAKE_SECURITY_OPTIONS="$APPARMOR_DAEMON" FAKE_INFO_RC=0
 : > "$FAKE_RUN_LOG"; mkdir -p "$FAKE_VOLUMES_DIR" "$TMP/bin"
 cat > "$TMP/bin/docker" <<'FAKE'
 #!/usr/bin/env bash
+[[ "$1" == volume && "$*" == *-vartmp-* ]] && exec bash "$FAKE_VOLUME_LIB" "$FAKE_VARTMP_DIR" "$@"
 case "$1" in
   info)
     (( FAKE_INFO_RC == 0 )) || exit "$FAKE_INFO_RC"

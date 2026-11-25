@@ -50,6 +50,7 @@ CAPTURE="$TMP/docker-args.txt"
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+[[ "\$1" == volume ]] && exec bash "$ROOT/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 # The endpoint sandbox.sh asks for to tell Colima's socket (T66); none otherwise.
 if [[ "\$1" == context ]]; then [[ -z "\${FAKE_DOCKER_ENDPOINT:-}" ]] || printf '%s\n' "\$FAKE_DOCKER_ENDPOINT"; exit 0; fi
 # A mode changed while the launch runs, as a concurrent container can change
@@ -2626,27 +2627,28 @@ EXTRA_MOUNTS="$W92/data" launch "$L92" "$TMP/app"
   || fail "T92 the control overlay (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 rm -rf "$W92" "$TMP/l92"
 
-# ── T93: the group's /var/tmp, ~/.cache and ~/.local/state are not walked for launchers ─
-# The container keeps these three group folders across restarts, mounted
-# outside /workspace. The host never runs a launcher or git from inside a group
-# folder (the git scan already skips the group's mounts), and walking them cost
-# every launch a pass over pip's and uv's trees, locked read-only any copy of
-# ai-containers an agent cloned into its temp folder, and refused the launch
-# past SANDBOX_LAUNCHER_MAX such copies or for a folder there the agent made
+# ── T93: the group's ~/.cache and ~/.local/state are not walked for launchers ─
+# The container keeps these two group folders across restarts, mounted outside
+# /workspace (/var/tmp, the third, is the group's Docker volume, no host
+# folder). The host never runs a launcher or git from inside a group folder
+# (the git scan already skips the group's mounts), and walking them cost every
+# launch a pass over pip's and uv's trees, locked read-only any copy of
+# ai-containers an agent cloned there, and refused the launch past
+# SANDBOX_LAUNCHER_MAX such copies or for a folder there the agent made
 # unlistable. Mounted into /workspace (G92) the group's folder is the agent's
 # like any mount and is walked; one that is a link out of the group is another
 # directory, and is walked too.
 G93="$HOME/.ai-containers/default"
-mk_launcher "$G93/.var-tmp/p"; mk_launcher "$G93/.cache/pip/p"; mk_launcher "$G93/.local/state/p"
+mk_launcher "$G93/.cache/pip/p"; mk_launcher "$G93/.local/state/p"
 launch "$LAUNCHER" "$TMP/app"
 m93="$(mounts)"
 if [[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] \
-   && ! grep -aqF -e "$G93/.var-tmp/p/" -e "$G93/.var-tmp/p:" -e "$G93/.cache/pip" -e "$G93/.local/state/p" <<<"$m93"; then
-  pass "T93 a launcher in the group's /var/tmp, ~/.cache or ~/.local/state is not overlaid"
+   && ! grep -aqF -e "$G93/.cache/pip" -e "$G93/.local/state/p" <<<"$m93"; then
+  pass "T93 a launcher in the group's ~/.cache or ~/.local/state is not overlaid"
 else
-  fail "T93 launchers in the group's scratch folders (rc=$LAUNCH_RC; mounts: $(grep -aF -e '/.var-tmp/' -e '/.cache/' -e '/.local/state/' <<<"$m93" | tr '\n' ' '))"
+  fail "T93 launchers in the group's scratch folders (rc=$LAUNCH_RC; mounts: $(grep -aF -e '/.cache/' -e '/.local/state/' <<<"$m93" | tr '\n' ' '))"
 fi
-rm -rf "$G93/.var-tmp/p" "$G93/.cache/pip" "$G93/.local/state/p"
+rm -rf "$G93/.cache/pip" "$G93/.local/state/p"
 # Unlistable two ways: 000 (you cannot search it either) and 100 (you can
 # search it, so a launch that walked it refused: what is inside can be opened
 # by name and cannot be checked).
@@ -2666,20 +2668,20 @@ printf 'claude-code=ON\n' > "$TMP/conf93"
 mk_launcher "$G93/.claude/p"
 SANDBOX_CONF="$TMP/conf93" launch "$LAUNCHER" "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.claude/p/.ai-containers:/home/tester/.claude/p/.ai-containers:ro" <<<"$(mounts)" \
-  && pass "T93 the skip covers only the three, not the rest of the group" \
+  && pass "T93 the skip covers only ~/.cache and ~/.local/state, not the rest of the group" \
   || fail "T93 a launcher in the group's ~/.claude (rc=$LAUNCH_RC; mounts: $(mounts | grep -aF '/.claude' | tr '\n' ' '))"
 rm -rf "$G93/.claude/p" "$TMP/conf93"
-# The control, G92: the group's /var/tmp mounted into /workspace is the agent's
-# like any mount. Overlaid there, and in /var/tmp too, which exposes the same
-# launcher.
-mk_launcher "$G93/.var-tmp/p"
-EXTRA_MOUNTS="$G93/.var-tmp" launch "$LAUNCHER" "$TMP/app"
+# The control, G92: the group's ~/.local/state mounted into /workspace is the
+# agent's like any mount. Overlaid there, and in ~/.local/state too, which
+# exposes the same launcher.
+mk_launcher "$G93/.local/state/p"
+EXTRA_MOUNTS="$G93/.local/state" launch "$LAUNCHER" "$TMP/app"
 m93="$(mounts)"
-[[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.var-tmp/p/.ai-containers:/workspace/.var-tmp/p/.ai-containers:ro" <<<"$m93" \
-  && grep -aqxF "$G93/.var-tmp/p/.ai-containers:/var/tmp/p/.ai-containers:ro" <<<"$m93" \
-  && pass "T93 the group's /var/tmp mounted into /workspace is walked like any mount" \
-  || fail "T93 G92 control (rc=$LAUNCH_RC; $(grep -aF ERROR "$ERR" | head -1); mounts: $(grep -aF '/.var-tmp/p' <<<"$m93" | tr '\n' ' '))"
-rm -rf "$G93/.var-tmp/p"
+[[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.local/state/p/.ai-containers:/workspace/state/p/.ai-containers:ro" <<<"$m93" \
+  && grep -aqxF "$G93/.local/state/p/.ai-containers:/home/tester/.local/state/p/.ai-containers:ro" <<<"$m93" \
+  && pass "T93 the group's ~/.local/state mounted into /workspace is walked like any mount" \
+  || fail "T93 G92 control (rc=$LAUNCH_RC; $(grep -aF ERROR "$ERR" | head -1); mounts: $(grep -aF '/.local/state/p' <<<"$m93" | tr '\n' ' '))"
+rm -rf "$G93/.local/state/p"
 # A group cache that is a link out of the group mounts another directory: the
 # skip, which matches the group's own folder by its physical path, does not
 # reach it.
@@ -2692,14 +2694,14 @@ launch "$LAUNCHER" "$TMP/app"
   || fail "T93 a group cache linked out (rc=$LAUNCH_RC; $(grep -aF -e ERROR -e 'link out' "$ERR" | head -2 | tr '\n' ' '); mounts: $(mounts | grep -aF elsewhere93 | tr '\n' ' '))"
 rm -f "$G93/.cache" && mkdir "$G93/.cache"; rm -rf "$TMP/elsewhere93"
 # The launcher that is running is overlaid wherever it lies, the group's
-# /var/tmp included: finding it costs no walk (security review of the skip).
-mkdir -p "$G93/.var-tmp/run93" && cp -R "$LAUNCHER" "$G93/.var-tmp/run93/.ai-containers" \
+# ~/.local/state included: finding it costs no walk (security review of the skip).
+mkdir -p "$G93/.local/state/run93" && cp -R "$LAUNCHER" "$G93/.local/state/run93/.ai-containers" \
   || { printf 'SCAFFOLD-FAILED: T93 launcher copy\n'; exit 1; }
-launch "$G93/.var-tmp/run93/.ai-containers" "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.var-tmp/run93/.ai-containers:/var/tmp/run93/.ai-containers:ro" <<<"$(mounts)" \
-  && pass "T93 a launcher run from inside the group's /var/tmp is still overlaid there" \
-  || fail "T93 the running launcher in the group's /var/tmp (rc=$LAUNCH_RC; $(grep -aF ERROR "$ERR" | head -1); mounts: $(mounts | grep -aF run93 | tr '\n' ' '))"
-rm -rf "$G93/.var-tmp/run93"
+launch "$G93/.local/state/run93/.ai-containers" "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.local/state/run93/.ai-containers:/home/tester/.local/state/run93/.ai-containers:ro" <<<"$(mounts)" \
+  && pass "T93 a launcher run from inside the group's ~/.local/state is still overlaid there" \
+  || fail "T93 the running launcher in the group's ~/.local/state (rc=$LAUNCH_RC; $(grep -aF ERROR "$ERR" | head -1); mounts: $(mounts | grep -aF run93 | tr '\n' ' '))"
+rm -rf "$G93/.local/state/run93"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

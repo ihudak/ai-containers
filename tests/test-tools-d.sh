@@ -944,6 +944,7 @@ mkdir -p "$RTMP/bin" "$RTMP/app"; CAP="$RTMP/args.txt"
 scaffold_dir "mkdir the launcher dirs" "$RTMP/bin" "$RTMP/app"
 cat > "$RTMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+[[ "\$1" == volume ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$RTMP/volumes" "\$@"
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAP"; exit 0; fi
 exit 1
 DOCKER

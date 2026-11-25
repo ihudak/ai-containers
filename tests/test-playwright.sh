@@ -224,6 +224,7 @@ pw_setup() {  # $1 = sandbox.conf body
   mkdir -p "$TMP/bin"
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
+[[ "\$1" == volume ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
 exit 1
 DOCKER

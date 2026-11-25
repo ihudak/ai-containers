@@ -36,6 +36,7 @@ setup() {
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$TMP/docker-calls.txt"
+[[ "\$1" == volume && "\$*" == *-vartmp-* ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 # A working copy's seeding run (--entrypoint bash): FAKE_SEED_FAIL makes it fail,
 # FAKE_SEED_TERM kills the launcher while it runs (LNCH-31).
 if [[ "\$1" == "run" && "\$*" == *"--entrypoint bash"* ]]; then
