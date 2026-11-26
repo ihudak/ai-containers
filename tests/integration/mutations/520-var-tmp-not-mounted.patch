@@ -1,5 +1,5 @@
 # case: 520-agent-files-persist-across-restart
-# what: the group's temp volume is never mounted over /var/tmp, so the agent's temp files vanish with the container
+# what: the group's temp volume is never mounted over /var/tmp: the docker-inspect assertion 'is the group's Docker volume' goes red (and the files no longer survive into the next container)
 #
 diff --git a/sandbox.sh b/sandbox.sh
 --- a/sandbox.sh

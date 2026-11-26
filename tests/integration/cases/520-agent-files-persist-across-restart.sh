@@ -5,9 +5,18 @@
 #
 # 510 proves the credential directories persist. This is the same contract for
 # the three folders tools use as scratch and cache: a build's downloads, a
-# tool's state, a half-finished temp file. Each is a group directory on the
-# host, mounted over the container path, so a container run with --rm leaves
-# its files for the next one.
+# tool's state, a half-finished temp file. ~/.cache and ~/.local/state are group
+# directories on the host, mounted over the container path. /var/tmp is the
+# group's Docker NAMED VOLUME (<prefix>-vartmp-<group>), not a host bind: GNU tar
+# holds back a link whose target holds `..` behind a mode-000 placeholder,
+# which macOS virtiofs cannot open, so an archive unpacked into $TMPDIR failed
+# on a Mac with a bind (the bug that put ~/.rvm on a volume too). Either way a
+# container run with --rm leaves its files for the next one.
+#
+# The tar check below is that Mac failure, run for real. It can go red only on
+# a Mac: on Linux a bind holds the same links, so mutation 520-var-tmp-bind
+# leaves it green and is caught by the mount-type assertion (case 460 is the
+# precedent for a check whose bite depends on the host).
 #
 # Each container also gets a folder of its own inside /var/tmp, named by launch
 # time and launcher pid, and the agent's login shell points TMPDIR at it. Two
@@ -24,6 +33,13 @@ export AI_CONTAINER_GROUP=scratch
 launcher_up open || it_finish
 cid_a="$IT_CID"
 
+vol_a="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/var/tmp"}}{{.Type}} {{.Name}}{{end}}{{end}}' "$cid_a" 2>/dev/null)"
+if [[ "$vol_a" == "volume it-$IT_RUN_ID-vartmp-scratch" ]]; then
+  pass "/var/tmp is the group's Docker volume"
+else
+  fail "/var/tmp is the group's Docker volume — got '$vol_a'"
+fi
+
 group_dir="$IT_LAUNCH_HOME/.ai-containers/scratch"
 
 t1="$(agent_exec_login "$cid_a" 'printf %s "$TMPDIR"' 2>/dev/null)"
@@ -33,12 +49,24 @@ else
   fail "the agent's login shell has TMPDIR in its own /var/tmp folder — got '$t1'"
   it_finish
 fi
-slot="${t1#/var/tmp/}"
+
+mode_a="$(agent_exec "$cid_a" "stat -c '%a %u' '$t1'" 2>/dev/null)"
+if [[ "$mode_a" == "700 $IT_LAUNCH_UID" ]]; then
+  pass "the agent's folder is 0700 and its own"
+else
+  fail "the agent's folder is 0700 and its own — got '$mode_a', want '700 $IT_LAUNCH_UID'"
+fi
+
+# The Mac failure: an archive holding a link whose target has `..`, unpacked.
+if agent_exec_login "$cid_a" 'cd "$TMPDIR" && mkdir -p s/a/b s/x && ln -s ../../x s/a/b/l && tar -C s -cf t.tar a x && mkdir u && tar -C u -xf t.tar && test -L u/a/b/l' >/dev/null 2>&1; then
+  pass "tar unpacks a link whose target holds .. into \$TMPDIR"
+else
+  fail "tar unpacks a link whose target holds .. into \$TMPDIR"
+fi
 
 agent_exec "$cid_a" "printf a > '$t1/a' && mkdir -p \"\$HOME/.cache/it\" \"\$HOME/.local/state/it\" \
   && printf b > \"\$HOME/.cache/it/b\" && printf c > \"\$HOME/.local/state/it/c\"" >/dev/null 2>&1 || true
 
-assert_host_file_exists "$group_dir/.var-tmp/$slot/a"
 assert_host_file_exists "$group_dir/.cache/it/b"
 assert_host_file_exists "$group_dir/.local/state/it/c"
 

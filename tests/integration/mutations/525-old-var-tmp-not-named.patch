@@ -1,0 +1,16 @@
+# case: 525-old-var-tmp-named-and-copyable
+# what: a launch no longer names the old .var-tmp folder or prints the copy command: 'the launch names the old folder' goes red
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index c0f8c3a..aad5f1c 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -8691,7 +8691,7 @@ run_container() {
+   # with how to copy it into the volume and how to remove it, at every launch
+   # while it is there.
+   local _old_vt="$group_root/.var-tmp"
+-  if [[ -e "$_old_vt" || -L "$_old_vt" ]]; then
++  if false; then # MUTATION: the old folder is never named
+     printf 'NOTE: %s is no longer mounted: /var/tmp is now the Docker volume %s.\n' "$(_q "$_old_vt")" "$vartmp_vol" >&2
+     printf '      To copy what it holds into the volume:\n' >&2
+     printf '        docker run --rm --pull=never %s--entrypoint cp -v %s:/src:ro -v %s:/dst %s -a /src/. /dst/\n' \

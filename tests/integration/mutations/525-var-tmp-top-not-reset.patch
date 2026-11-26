@@ -1,0 +1,17 @@
+# case: 525-old-var-tmp-named-and-copyable
+# what: the start-up no longer resets /var/tmp to root-owned 1777: 'the start-up reset /var/tmp to 1777, root's' goes red, and so does the agent's own TMPDIR folder, once the volume's top folder is root's 0755
+#
+diff --git a/entrypoint.sh b/entrypoint.sh
+index 69f2dbc..e4d5aa5 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -93,8 +93,7 @@ setup_agent_tmp() {
+   [[ -n "${AI_AGENT_TMP_RUNNING+x}" ]] || return 0
+   local slot=""
+   [[ "${AI_AGENT_TMPDIR:-}" == /var/tmp/* ]] && slot="${AI_AGENT_TMPDIR#/var/tmp/}"
+-  chown root:root /var/tmp 2>/dev/null || true
+-  chmod 1777 /var/tmp 2>/dev/null || true
++  : # MUTATION: /var/tmp keeps the mode and owner the volume has
+   "${_user_step[@]}" runuser -u "$sandbox_user" -- \
+     env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+     bash /usr/local/bin/agent-tmp.sh /var/tmp "$slot" "$AI_AGENT_TMP_RUNNING" || unset AI_AGENT_TMPDIR

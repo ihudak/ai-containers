@@ -5,7 +5,10 @@
 #
 # group.sh exists because a group stopped being just a directory. Once it has a
 # Ruby home, `rm -rf ~/.ai-containers/<g>` leaves a multi-GB volume with nothing
-# pointing at it — invisible until a disk fills months later.
+# pointing at it — invisible until a disk fills months later. The group's temp
+# volume (/var/tmp, <prefix>-vartmp-<g>) is the same kind of thing and goes the
+# same way: with the directory and the Ruby volume, never alone, and not while a
+# container mounts it.
 #
 # tests/test-group-lifecycle.sh already covers this against a FAKE docker, and
 # that test is the right shape for "did group.sh issue the right commands". It
@@ -30,10 +33,20 @@ fixture_scope_init || it_finish
 
 groups_root="$IT_LAUNCH_HOME/.ai-containers"
 rvm_vol() { printf 'it-%s-rvm-%s' "$IT_RUN_ID" "$1"; }
+tmp_vol() { printf 'it-%s-vartmp-%s' "$IT_RUN_ID" "$1"; }
 
-make_group() {  # $1=name — directory + rvm volume, as a real group with Ruby has
+# This HOME's id, from the launcher's own function, as it labels a volume.
+own="$( export HOME="$IT_LAUNCH_HOME"
+        # shellcheck source=sandbox-common.sh
+        source "$IT_REPO_DIR/sandbox-common.sh" >/dev/null 2>&1
+        ai_containers_owner_id )"
+if [[ "$own" != sha256:* ]]; then fail "this home's owner id resolves ([$own])"; it_finish; fi
+
+make_group() {  # $1=name — directory + rvm volume + temp volume, as a launched group has
   mkdir -p "$groups_root/$1/.claude"
   docker volume create --label "$IT_LABEL" "$(rvm_vol "$1")" >/dev/null 2>&1
+  docker volume create --label "$IT_LABEL" --label "ai-containers.vartmp-group=$1" \
+    --label "ai-containers.owner=$own" "$(tmp_vol "$1")" >/dev/null 2>&1
 }
 
 # A repo volume that must be untouched: group.sh owns groups, repo.sh owns
@@ -44,6 +57,7 @@ keep="$(repo_fixture_volume_name keepme)"
 # ── The happy path ─────────────────────────────────────────────────────────────
 make_group gone
 assert_volume_exists "$(rvm_vol gone)"
+assert_volume_exists "$(tmp_vol gone)"
 
 launcher_script group.sh rm gone --yes
 if [[ "$IT_SCRIPT_RC" -eq 0 ]]; then
@@ -54,6 +68,7 @@ else
 fi
 assert_host_file_absent "$groups_root/gone"
 assert_volume_absent "$(rvm_vol gone)"
+assert_volume_absent "$(tmp_vol gone)"
 assert_volume_exists "$keep"
 
 # ── The refusal ────────────────────────────────────────────────────────────────
@@ -83,5 +98,32 @@ else
   fail "the refused group's directory survives — it was deleted before the refusal"
 fi
 assert_volume_exists "$(rvm_vol busy)"
+assert_volume_exists "$(tmp_vol busy)"
+
+# ── The refusal, when only the temp volume is held ─────────────────────────────
+# The Ruby volume is idle, so a busy check that looked at it alone would let rm
+# go on and take the directory and the Ruby volume out from under a running
+# container.
+make_group busytmp
+holder2="it-vol-holder2-$$-$RANDOM"
+docker run -d --name "$holder2" --label "$IT_LABEL" \
+  -v "$(tmp_vol busytmp):/mnt" --entrypoint sleep "$IT_IMAGE" 600 >/dev/null 2>&1 \
+  || { fail "could not start a container to hold the temp volume"; it_finish; }
+it_track "container:$holder2"
+
+launcher_script group.sh rm busytmp --yes
+if [[ "$IT_SCRIPT_RC" -ne 0 ]] && grep -q 'still using' "$IT_SCRIPT_OUT" 2>/dev/null; then
+  pass "group.sh rm refuses while a running container holds the temp volume"
+else
+  fail "group.sh rm refuses while a running container holds the temp volume — rc $IT_SCRIPT_RC"
+  sed 's/^/     /' "$IT_SCRIPT_OUT"
+fi
+if [[ -d "$groups_root/busytmp" ]]; then
+  pass "the group's directory survives that refusal"
+else
+  fail "the group's directory survives that refusal — it was deleted"
+fi
+assert_volume_exists "$(rvm_vol busytmp)"
+assert_volume_exists "$(tmp_vol busytmp)"
 
 it_finish

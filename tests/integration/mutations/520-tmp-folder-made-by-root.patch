@@ -1,0 +1,16 @@
+# case: 520-agent-files-persist-across-restart
+# what: the start-up makes the launch's /var/tmp folder as root, not as the agent: 'the agent's login shell has TMPDIR in its own /var/tmp folder' goes red (a root-made 0700 folder is not writable to the agent, so its profile leaves TMPDIR unset)
+#
+diff --git a/entrypoint.sh b/entrypoint.sh
+index 69f2dbc..3950187 100755
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -95,7 +95,7 @@ setup_agent_tmp() {
+   [[ "${AI_AGENT_TMPDIR:-}" == /var/tmp/* ]] && slot="${AI_AGENT_TMPDIR#/var/tmp/}"
+   chown root:root /var/tmp 2>/dev/null || true
+   chmod 1777 /var/tmp 2>/dev/null || true
+-  "${_user_step[@]}" runuser -u "$sandbox_user" -- \
++  "${_user_step[@]}" runuser -u root -- \
+     env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+     bash /usr/local/bin/agent-tmp.sh /var/tmp "$slot" "$AI_AGENT_TMP_RUNNING" || unset AI_AGENT_TMPDIR
+   unset AI_AGENT_TMP_RUNNING

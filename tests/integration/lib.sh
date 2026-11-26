@@ -437,6 +437,12 @@ IT_LAUNCH_HOME_IN="/home/${SANDBOX_USER:-$(id -un)}"
 # in. Idempotent — a case that needs to seed the group tree calls it first, then
 # writes under $IT_LAUNCH_HOME, then calls launcher_up.
 launcher_prepare() {
+  # Before the early return, so every launch of every case makes its volumes as
+  # `it-<run>-vartmp-<group>` (and `-rvm-`), never a developer's real
+  # `ai-containers-vartmp-default`, which a case would otherwise mount and
+  # prune. The shim labels what the launcher creates; the runner's sweep
+  # removes it.
+  export REPO_VOLUME_PREFIX="it-$IT_RUN_ID"
   [[ -n "$IT_SHIM_DIR" ]] && return 0
   if [[ -z "$IT_REAL_DOCKER" || ! -x "$IT_REAL_DOCKER" ]]; then
     fail "launcher_prepare: cannot resolve the real docker binary [${IT_REAL_DOCKER:-<empty>}]"
@@ -635,9 +641,10 @@ agent_exec_login() {  # $1=cid $2=command
 # sandbox.sh cannot tell the difference — repo.sh's own seeding path is covered
 # by tests/test-repo-registry.sh.
 #
-# REPO_VOLUME_PREFIX is scoped to the run, and that is a SAFETY property, not
-# tidiness: without it a fixture named "app" would be `ai-containers-repo-app`
-# — the same volume as the "app" a developer has been working in all week, which
+# REPO_VOLUME_PREFIX is scoped to the run (launcher_prepare exports it, so a
+# launch's own volumes are scoped too, not only the fixtures'), and that is a
+# SAFETY property, not tidiness: without it a fixture named "app" would be
+# `ai-containers-repo-app` — the same volume as the "app" a developer has been working in all week, which
 # the runner's sweep would then delete. With it, the fixture is
 # `it-<run-id>-repo-app` and cannot collide with anything real.
 fixture_scope_init() {

@@ -376,6 +376,14 @@ IT_REAL_DOCKER_OUTER="${IT_REAL_DOCKER:-}"
 IT_REAL_DOCKER="${IT_REAL_DOCKER:-$TRUE_STUB}"  # launcher_prepare checks this
 launcher_prepare >/dev/null 2>&1
 launcher_conf >/dev/null 2>&1
+# launcher_prepare scopes the volume prefix to the run whatever the caller's
+# shell had, so a launch's /var/tmp volume is never a developer's real one.
+# shellcheck disable=SC1090  # $LIB is this suite's own lib.sh
+rvp="$(export REPO_VOLUME_PREFIX=ai-containers IT_RUN_ID=r123; IT_REAL_DOCKER="$TRUE_STUB"; . "$LIB" >/dev/null 2>&1; IT_REAL_DOCKER="$TRUE_STUB"; launcher_prepare >/dev/null 2>&1; printf '%s' "$REPO_VOLUME_PREFIX")"
+t_check "launcher_prepare exports REPO_VOLUME_PREFIX=it-<run> over the caller's" "it-r123" "$rvp"
+# shellcheck disable=SC1090
+rvp2="$(export REPO_VOLUME_PREFIX=ai-containers IT_RUN_ID=r123; . "$LIB" >/dev/null 2>&1; IT_REAL_DOCKER="$TRUE_STUB"; launcher_prepare >/dev/null 2>&1; launcher_prepare >/dev/null 2>&1; REPO_VOLUME_PREFIX=other; launcher_prepare >/dev/null 2>&1; printf '%s' "$REPO_VOLUME_PREFIX")"
+t_check "launcher_prepare scopes the prefix on its early-return call too" "it-r123" "$rvp2"
 conf="$IT_LAUNCH_HOME/sandbox.conf"
 grep -qx 'ruby=3.3.6,3.4.5' "$conf" \
   && t_pass "launcher_conf applies the variant's overrides with no case arguments" \
