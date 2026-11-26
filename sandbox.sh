@@ -8682,8 +8682,8 @@ run_container() {
   # archive unpacked into $TMPDIR failed on a Mac — the bug that put ~/.rvm on a
   # volume (sandbox-common.sh: `# ~/.rvm is backed by a Docker NAMED VOLUME`).
   # One that cannot be made, or of the name but not this group's, refuses the
-  # launch: `docker run -v` would make it itself, unlabelled, and group.sh would
-  # never see it.
+  # launch: `docker run -v` would make it itself, unlabelled, and group.sh, which
+  # knows a temp volume by its label, would never take it for the group's.
   local vartmp_vol
   vartmp_vol="$(vartmp_volume_ensure "$group")" || exit 1
   config_mount_flags+=(-v "$vartmp_vol:/var/tmp")

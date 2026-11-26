@@ -78,17 +78,26 @@ run_agent_skill_install() {
 #  1. As root, only when the launcher passed AI_AGENT_TMP_RUNNING (so /var/tmp
 #     is the volume): make the mount's top folder root:root 1777. Only that
 #     folder, a mount point nothing in the container can swap, never anything in
-#     it. A fresh volume is root-owned and a copied-into one has the copy's mode;
-#     both must be open to the agent. Without the variable (an older launcher,
-#     /var/tmp a host bind) nothing runs: chowning a host folder to root would
-#     lock the user out of it.
+#     it. A fresh volume first mounted here is so already, by Docker's copy of the
+#     image's own /var/tmp (measured). The reset is for the rest: Docker copies
+#     nothing into a volume something else wrote into first, whose top folder
+#     stays root's 0755, and the copy of an old .var-tmp the launcher prints
+#     (`cp -a /src/. /dst/`) gives the top folder that folder's mode and owner,
+#     whatever they are (case 525). Either can close it to the agent. Without
+#     the variable (an older launcher, /var/tmp a host bind) nothing runs:
+#     chowning a host folder to root would lock the user out of it.
 #  2. As the sandbox user, with `env -i` and a fixed PATH, not container.env
 #     (hence runuser here and not as_sandbox_user, which gives it back):
 #     agent-tmp.sh prunes old folders and makes this launch's own.
 #  3. If that failed, unset AI_AGENT_TMPDIR so the shell keeps /tmp rather than
-#     use a folder nothing made. The start is never refused over this.
-# AI_AGENT_TMP_RUNNING is the launcher's list of running containers' folders;
-# it is unset afterwards so no later process, the agent's shell included, has it.
+#     use a folder this start-up did not make. The start is never refused over
+#     this.
+# AI_AGENT_TMP_RUNNING is the launcher's list of running containers' folders,
+# unset afterwards too. Both are unset in this process's tree only, which the
+# agent's shell is part of. A `docker exec` session gets the container's
+# configured environment, both included even after a failure, and its login
+# shell takes the folder if it exists and that session's user can write and
+# enter it (the profile script's rule, in the Dockerfile).
 setup_agent_tmp() {
   [[ -n "${AI_AGENT_TMP_RUNNING+x}" ]] || return 0
   local slot=""

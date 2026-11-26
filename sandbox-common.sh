@@ -974,8 +974,12 @@ vartmp_group_from_volume() {
 # making the volume (with its labels) when it is not there. Returns 1 with an
 # ERROR: on stderr, never mounting anything, when the volume cannot be made, when
 # docker cannot say whether it exists, or when a volume of that exact name is
-# not this group's: `docker run -v <name>:...` would otherwise create it itself,
-# unlabelled, and group.sh would never see it. Labels cannot be added afterwards.
+# not this group's. Mounted, such a volume would serve as the group's /var/tmp
+# while group.sh, which knows a group's temp volume by its label alone, never
+# takes it for the group's: `list` shows it as not the group's, `rm` names it
+# with its `docker volume rm` and leaves it, and `gc` passes it over. A
+# `docker run -v <name>:...` before the group's first launch makes exactly that,
+# unlabelled, and labels cannot be added afterwards.
 vartmp_volume_ensure() {
   local group="$1" vol out err lab
   vol="$(vartmp_volume_name "$group")"
@@ -988,12 +992,17 @@ vartmp_volume_ensure() {
     if [[ "$lab" != "$group" ]]; then
       if [[ -z "$lab" ]]; then
         printf 'ERROR: the volume %s exists but is not a temp volume of group "%s": it has no label.\n' "$vol" "$group" >&2
+        printf '       A launch labels the volume it makes, so this one was made some other way: by a\n' >&2
+        printf '       container started with -v %s:<path> before the group'"'"'s first launch, say.\n' "$vol" >&2
       else
-        printf 'ERROR: the volume %s exists but belongs to group "%s", not "%s".\n' "$vol" "$lab" "$group" >&2
+        # The label is anyone's to set, and is printed: made safe for the terminal.
+        printf 'ERROR: the volume %s exists but belongs to group "%s", not "%s".\n' "$vol" "$(_ac_term "$lab")" "$group" >&2
+        printf '       It was made for that group, under another REPO_VOLUME_PREFIX or by hand.\n' >&2
       fi
-      printf '       It was made outside a launch (by a -v of it on a docker command line, or for another group).\n' >&2
-      printf '       A launch cannot use it: group.sh would never see it. Once nothing in it is\n' >&2
-      printf '       needed, clear the way with:\n         docker volume rm %s\n' "$vol" >&2
+      printf '       A launch cannot use it: a volume'"'"'s labels cannot be changed, and group.sh, which\n' >&2
+      printf '       knows a group'"'"'s temp volume by its label, would never take it for this group'"'"'s\n' >&2
+      printf '       (list shows it as not the group'"'"'s; rm names it and leaves it). Once nothing in\n' >&2
+      printf '       it is needed, clear the way with:\n         docker volume rm %s\n' "$vol" >&2
       return 1
     fi
     _group_volume_shared_note "$vol" "$group" temp

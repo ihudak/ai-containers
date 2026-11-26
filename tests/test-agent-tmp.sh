@@ -192,8 +192,8 @@ check "no AI_AGENT_TMPDIR=/etc anywhere" bash -c '! grep -q "=/etc" "$1"' _ "$CA
 teardown
 
 # A volume of the name that is not this group's (made by a `docker run -v`
-# before the group's first launch) refuses the launch: mounted, group.sh would
-# never see it.
+# before the group's first launch) refuses the launch: mounted, it would serve as
+# the group's /var/tmp while group.sh never takes it for the group's.
 setup
 bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" volume create "$VOL" >/dev/null
 run_sandbox

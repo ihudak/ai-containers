@@ -224,7 +224,7 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 | `<group>/.config/acli/` ² | `~/.config/acli` | read-write | `acli` (its profiles and credentials) |
 | `<group>/.cache/` ⁵ | `~/.cache` | read-write | always (`qmd`'s index, `playwright`'s browsers, every other tool's cache) |
 | `<group>/.local/state/` ⁵ | `~/.local/state` | read-write | always (`claude-code`'s updater state, anything else kept there) |
-| `<group>/.var-tmp/` ⁵ | `/var/tmp` | read-write | always |
+| Docker volume `ai-containers-vartmp-<group>` ⁵ | `/var/tmp` | read-write | always |
 | `<group>/.aws/` | `~/.aws` | read-write | `aws-cli` |
 | `<group>/.azure/` | `~/.azure` | read-write | `azure-cli` |
 | `<group>/.kube/` | `~/.kube` | read-write | `kubectl` |
@@ -240,7 +240,7 @@ Agent dotfile directories are sourced from the active container group (`~/.ai-co
 
 ⁴ Containers run with `--rm`, so before these two were mounted every start downloaded the Gradle wrapper's distribution and every dependency again. Any JVM key turns them on, because `./gradlew` and `./mvnw` need only a JDK, not the `gradle`/`maven` keys. They are caches, so a bootstrapped group does not copy them; a `gradle.properties` or `settings.xml` holding repository credentials goes in the group's copy (`~/.ai-containers/<group>/.gradle/`, `.m2/`). Two containers of one group building at the same moment share Gradle's file locks, but Gradle asks a lock's holder to release it over loopback, which does not reach another container, so the second build can fail after Gradle's 60-second lock timeout. Restarts are unaffected.
 
-⁵ Mounted whole, whatever `sandbox.conf` says, so that what an agent or a tool leaves there survives the container. Each launch works in a folder of its own, `/var/tmp/<YYMMDD-HHMMSS-pid>`, which `TMPDIR` names for the agent's shell, and folders of stopped containers untouched for 30 days are removed at launch. A bootstrapped group does not copy them, except qmd's index (`.cache/qmd`), as before. See [What survives a restart](groups.md#what-survives-a-restart).
+⁵ Mounted whole, whatever `sandbox.conf` says, so that what an agent or a tool leaves there survives the container. `/var/tmp` is the group's Docker volume (`$REPO_VOLUME_PREFIX-vartmp-<group>` with that variable set), not a folder of the group directory, on every platform: on a macOS file share GNU tar cannot unpack a link whose target holds `..`, and `~/.cache` and `~/.local/state`, which stay folders, keep that limit on a Mac. The group's first launch makes the volume, with a label; a volume of that name without it refuses the launch. Each launch works in a folder of its own, `/var/tmp/<YYMMDD-HHMMSS-pid>`, which the container's start-up makes and `TMPDIR` names for the agent's shell, and at each start folders of stopped containers that nothing has changed for 30 days are removed. A bootstrapped group copies none of the three, except qmd's index (`.cache/qmd`), as before. See [What survives a restart](groups.md#what-survives-a-restart).
 
 Nothing above is mounted from `$HOME` itself: the `host` group that did is gone, and a group bootstrapped `from:host` starts as a copy instead.
 

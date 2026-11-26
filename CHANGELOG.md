@@ -12,21 +12,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   restart.** Containers run with `--rm`, so a folder an agent believed was kept,
   such as `~/.cache/<run>` or Claude Code's scratch folder under `/tmp`, was gone
   with the container; a long run lost its background agents' output that way.
-  The group's `.cache`, `.local/state` and `.var-tmp` are now mounted whole at
-  `~/.cache`, `~/.local/state` and `/var/tmp`, whatever `sandbox.conf` says. Each
-  launch works in a folder of its own, `/var/tmp/<YYMMDD-HHMMSS-pid>`, which
+  The group's `.cache` and `.local/state` are now mounted whole at `~/.cache` and
+  `~/.local/state`, and `/var/tmp` is the group's Docker volume
+  `ai-containers-vartmp-<group>` (`$REPO_VOLUME_PREFIX-vartmp-<group>` with that
+  variable set), whatever `sandbox.conf` says. `/var/tmp` is a volume on every
+  platform, as `~/.rvm` is and for the same reason: GNU tar holds back a link
+  whose target contains `..` behind a mode-000 placeholder that macOS file
+  sharing cannot open, so on a folder shared from a Mac an archive such as a
+  Node.js release tarball failed to unpack (measured on Colima, 2026-11-25).
+  `~/.cache` and `~/.local/state` stay folders of the group directory and keep
+  that limit on a Mac. Each launch works in a folder of its own,
+  `/var/tmp/<YYMMDD-HHMMSS-pid>`, which the container's start-up makes and
   `TMPDIR` names for the agent's shell and what it starts (Claude Code, Codex,
   Gemini, Copilot, Python and `mktemp` follow it), so nothing is configured per
   agent. Root, the start-up steps and the database services never get it, a
-  `TMPDIR` in `container.env` wins, and a shell that cannot write or enter the
-  folder (with `SANDBOX_UID` overridden on native Linux) keeps `/tmp`. At launch,
-  folders of stopped containers untouched for 30 days, counted from the
-  container's exit or the last change, whichever is later, are removed, at
-  most 50 per launch from a listing read to 500; a folder kept for what it
-  holds is checked again 30 days later. Nothing else in those three places is
-  ever pruned. `/tmp` and anything made directly in the `/workspace` umbrella
-  are still lost on restart. See
+  `TMPDIR` in `container.env` wins, and a shell whose folder the start-up could
+  not make keeps `/tmp`. At each start, folders of stopped containers that
+  nothing has changed for 30 days are removed, as the agent's user and only that
+  user's, at most 50 per start from a listing read to 500; a folder kept for
+  what it holds is checked again 30 days later. "Changed" is the change time
+  (ctime), which unpacking or copying with old dates does not set back; it
+  counts from the last change, not from the container's exit, so a container
+  that ran for over 30 days without changing its folder can lose it at the first
+  start after it exits. Nothing else in those three places is ever pruned.
+  `/tmp` and anything made directly in the `/workspace` umbrella are still lost
+  on restart. An existing project needs `./sync-to-projects.sh` and an image
+  rebuild (`./build.sh`); until the rebuild, `TMPDIR` stays `/tmp` and nothing
+  is pruned. A volume of the temp volume's name without the label a launch puts
+  on it (one a `docker run -v` of the name made before the group's first
+  launch, say) refuses the launch, naming the `docker volume rm` that clears the
+  way. For a while before this release, main mounted the group directory's
+  `.var-tmp` folder at `/var/tmp` instead: a launch that finds one names it in a
+  `NOTE:`, at every launch, with the command that copies it into the volume and
+  the `rm -rf` that removes it, and never removes it itself. See
   `docs/groups.md`.
+
+- **`group.sh` manages a group's temp volume beside its Ruby volume.** `list`
+  shows both (`TEMP VOLUME` beside `RVM VOLUME`), `rm` removes the group's
+  directory and both volumes, and `gc` collects this home's orphaned volumes of
+  both kinds, each judged as the Ruby volume always was: `rm` keeps another
+  home's, `gc` takes it only with `--all`, and neither removes one a running
+  container uses. A temp volume is the group's only by its label: `list` shows
+  one of the name without it as `not the group's`, and `rm` names it with its
+  `docker volume rm` and leaves it.
 
 - **`group.sh list --sizes` shows each group directory's size** in a `GROUP DIR`
   column.
@@ -36,7 +64,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The nested `~/.cache/qmd`, `~/.cache/ms-playwright` and
   `~/.local/state/claude` mounts are gone**, replaced by the whole
   `~/.cache` and `~/.local/state` mounts, which hold the same files at the same
-  paths. The launch's walk for planted launchers does not enter the three group
+  paths. The launch's walk for planted launchers does not enter those two group
   folders (the git scan already skipped group mounts). An image rebuild
   (`./build.sh`) and `./sync-to-projects.sh` are needed for an existing project.
 

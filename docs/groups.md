@@ -31,90 +31,134 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 │   ├── .m2/               ← Maven repository, ditto
 │   ├── .cache/            ← mounted at ~/.cache, always (qmd's index, Playwright's browsers, pip's, uv's and node-gyp's caches)
 │   ├── .local/state/      ← mounted at ~/.local/state, always
-│   ├── .var-tmp/          ← mounted at /var/tmp, always; one folder per container
 │   ├── .config/dtctl/    ← tools.d config dir, seeded once from $HOME if present
 │   └── .config/dtmgd/    ← ditto
 ├── docs/               ← custom group, same shape
 └── java-backend/       ← another custom group
 ```
 
-A group's Ruby home (`~/.rvm` in the container: rvm, every Ruby version and its
-gems, only when `ruby=` is set) is **not** in this directory. It is the Docker
-volume `ai-containers-rvm-<group>`, on every platform. Removing or backing up the group directory does
-not touch it: `./group.sh rm <group>` removes both, and `./group.sh gc` collects a
-volume whose directory was deleted by hand. A docker that several homes share
-(every WSL distro's, under Docker Desktop) has one Ruby volume for a group name
-in all of them. Each home's `rm` and `gc` keep a volume another home made, and a
-launch that mounts one says so, but that is all: the home that made the volume
-can still remove it from under the others, with its `rm`, or its plain `gc` once
-its own group directory is gone, and any home can with `gc --all`. The other
-homes' groups then build their Rubies again. See
+Two things a group owns are **not** in this directory: they are Docker volumes,
+on every platform. Its containers' `/var/tmp` is the volume
+`ai-containers-vartmp-<group>`, which the group's first launch makes (see
+[What survives a restart](#what-survives-a-restart)), and its Ruby home
+(`~/.rvm` in the container: rvm, every Ruby version and its gems, only when
+`ruby=` is set) is the volume `ai-containers-rvm-<group>`. With
+`REPO_VOLUME_PREFIX` set, both names start with it instead of `ai-containers`.
+Removing or backing up the group directory does not touch them:
+`./group.sh rm <group>` removes all three, and `./group.sh gc` collects a volume
+whose directory was deleted by hand. Volumes belong to a docker daemon, so each
+daemon you use (through another docker context, say) has its own volumes for a
+group. A docker that
+several homes share (every WSL distro's, under Docker Desktop) has one Ruby
+volume and one temp volume for a group name in all of them. Each home's `rm` and
+`gc` keep a volume another home made, and a launch that mounts one says so, but
+that is all: the home that made the volume can still remove it from under the
+others, with its `rm`, or its plain `gc` once its own group directory is gone,
+and any home can with `gc --all`. The other homes' groups then build their
+Rubies again, or lose their old `/var/tmp` folders. See
 [Several homes on one docker](troubleshooting.md#several-homes-on-one-docker-wsl-distros-or-users).
 
 ## What survives a restart
 
 Containers run with `--rm`, so what survives is what is mounted. From a group:
-the agent dotfile directories, `~/.ai-tools`, and three folders mounted whole,
-whatever `sandbox.conf` says: `~/.cache`, `~/.local/state` and `/var/tmp`. The
-rest of the container, `/tmp` among it, is gone when the container exits, and so
-is anything made directly in the `/workspace` umbrella: only the repositories
-and directories mounted inside it persist, in the places they come from.
+the agent dotfile directories, `~/.ai-tools`, and three places mounted whole,
+whatever `sandbox.conf` says: the group directory's `.cache` and `.local/state`
+at `~/.cache` and `~/.local/state`, and the group's Docker volume at `/var/tmp`.
+The rest of the container, `/tmp` among it, is gone when the container exits,
+and so is anything made directly in the `/workspace` umbrella: only the
+repositories and directories mounted inside it persist, in the places they come
+from.
+
+`/var/tmp` is a Docker volume rather than a folder of the group directory so
+that archives unpack there on a Mac. GNU tar holds back a link whose target
+contains `..` behind a placeholder file that macOS file sharing (virtiofs)
+cannot open, so on a folder shared from the Mac it fails with
+`Cannot open: Permission denied`, and a Node.js release tarball, for one, holds
+such a link. **On a Mac, `~/.cache` and `~/.local/state` keep that limit**: they
+stay folders of the group directory, so that you can look into and clear them
+from the Mac. Unpack such an archive into `$TMPDIR` or `/tmp` instead. (Measured
+on Colima; Docker Desktop was not measured.)
 
 Each launch gets its own folder in `/var/tmp`, named
-`<YYMMDD-HHMMSS-pid>`, and the agent's shell has `TMPDIR` pointing at it, so
-tools that follow `TMPDIR` (Claude Code's scratch folder, Python's `tempfile`,
-`mktemp`) write somewhere that is still there after a restart, at the same
-path. Two containers of a group never share a folder. Root, the start-up steps
-and the in-container database servers do not get `TMPDIR`; a `TMPDIR` set in
-your `container.env` wins. A shell that cannot write or enter its folder does
-not get it either, and keeps the default `/tmp`: with `SANDBOX_UID` overridden
-on native Linux the folder belongs to you, mode 0700. A tool that writes a
+`<YYMMDD-HHMMSS-pid>`, which the container's start-up makes, and the agent's
+shell has `TMPDIR` pointing at it, so tools that follow `TMPDIR` (Claude Code's
+scratch folder, Python's `tempfile`, `mktemp`) write somewhere that is still
+there after a restart, at the same path. Two containers of a group never share
+a folder. Root, the start-up steps and the in-container database servers do not
+get `TMPDIR`; a `TMPDIR` set in your `container.env` wins. A shell that cannot
+write or enter its folder does not get it either, and keeps the default `/tmp`.
+If the start-up cannot make the folder, a `WARNING:` says why, the container
+starts all the same, and the agent's shell keeps `/tmp`. A `docker exec` session
+gets the container's environment as it was at launch, so a login shell there
+(`docker exec -u "$(id -u)" … bash -l`) takes the folder if it exists and that
+user can write and enter it, even after such a warning. A tool that writes a
 literal `/tmp/x` loses it: put state that must last in `~/.local/state`, or
 `~/.cache` for what can be rebuilt.
 
-At launch, folders in `/var/tmp` of containers that are no longer running and
-that nothing has touched for 30 days are removed, at most 50 per launch, with a
-`NOTE:` saying how many and how much space. Another `NOTE:` says how many old
+At each start, folders in `/var/tmp` of containers that are no longer running
+and that nothing has changed for 30 days are removed, at most 50 per start, with
+a `NOTE:` saying how many and how much space. Another `NOTE:` says how many old
 folders are left for the next launch, "at least" so many when there are more
-than the 500 a launch looks at. A folder kept because something in it changed
+than the 500 a start looks at. A folder kept because something in it changed
 within 30 days, or that could not be removed, is looked at again 30 days later.
-Nothing else in `/var/tmp`, `~/.cache` or `~/.local/state` is ever removed by
-the launcher. Two limits:
+Only the folders of the user the container runs as are removed: a project of
+the group with another `SANDBOX_UID` removes its own. Nothing else in
+`/var/tmp`, `~/.cache` or `~/.local/state` is ever removed. One limit:
 
-- If you use several docker daemons or contexts from one home, they share a
-  group's `.var-tmp`, but `docker ps` sees only the current one. A container
-  running on another daemon whose folder went untouched for 30 days can be
-  pruned.
-- "Untouched" means modification time, of the folder and of everything in it,
-  and it counts from the container's exit or the last change, whichever is
-  later. The launcher touches a container's folder when the container exits,
-  because unpacking an archive or a copy onto the folder itself (`tar x`,
-  `cp -p`, `rsync -a`) gives it the source's old dates.
+- "Changed" means the change time (ctime), of the folder and of everything in
+  it, which nothing sets back: unpacking an archive or copying onto the folder
+  (`tar x`, `cp -p`, `rsync -a`) gives files old modification dates, but not
+  old change times. It counts from the last change, not from the container's
+  exit, so the folder of a container that ran for over 30 days without changing
+  anything in it can be removed at the first start after that container exits.
 
-**Seeing and reclaiming the space.** `./group.sh list --sizes` shows each group
-directory's size. To see what the three folders hold:
+**Seeing and reclaiming the space.** `./group.sh list --sizes` shows the size
+of each group directory and of each of its volumes. To see what `~/.cache` and
+`~/.local/state` hold:
 
 ```bash
 du -sh ~/.ai-containers/<group>/.cache/* ~/.ai-containers/<group>/.local/state/*
-du -sh ~/.ai-containers/<group>/.var-tmp/*
 ```
 
 Remove what you no longer need with `rm -rf` while no container of that group
-runs, since a running one may be using it: a tool's cache
-(`rm -rf ~/.ai-containers/<group>/.cache/pip`), or an old container's folder
-(`rm -rf ~/.ai-containers/<group>/.var-tmp/<YYMMDD-HHMMSS-pid>`). The folders
-running containers use are those `docker ps --format '{{.Label "ai-containers.tmpslot"}}'`
-lists. A cache is downloaded again when a tool next needs it; what a long run
-keeps in `~/.local/state` is not.
+runs, since a running one may be using it: a tool's cache, say
+(`rm -rf ~/.ai-containers/<group>/.cache/pip`). A cache is downloaded again when
+a tool next needs it; what a long run keeps in `~/.local/state` is not.
+
+`/var/tmp` is not on the host. From a running container of the group,
+`du -sh /var/tmp/*` shows its folders, and `rm -rf /var/tmp/<YYMMDD-HHMMSS-pid>`
+removes an old one of yours. Without a running container, once the group has
+launched at least once:
+
+```bash
+docker run --rm --pull=never --entrypoint sh -v ai-containers-vartmp-<group>:/v <image> -c 'du -sh /v/*'
+```
+
+with your project's image (its `IMAGE_NAME`) and the volume's name as
+`./group.sh list` prints it; `-c 'rm -rf /v/<YYMMDD-HHMMSS-pid>'` removes a
+folder. **Never before the group's first launch**: that `docker run` would make
+the volume itself, without the label a launch puts on the volume it makes, and
+the group's next launch would refuse it, naming the `docker volume rm` that
+clears the way. The folders running containers use are those
+`docker ps --format '{{.Label "ai-containers.tmpslot"}}'` lists; leave them
+alone.
+
+**An old `.var-tmp`.** Before `/var/tmp` was a volume, a build of this
+repository that was never released mounted the group directory's `.var-tmp`
+there. If a group has one, every launch says so in a `NOTE:`, with the
+`docker run` that copies it into the group's volume and the `rm -rf` that
+removes it once nothing in it is needed and no container of the group runs.
+The launcher never removes it.
 
 **Do not run `git` or `./sandbox.sh` on the host inside a repository an agent
-made in these folders.** The launcher does not scan them for hooks and
-launchers, as it does not scan a group's other folders, because the host is not
-meant to run anything from there: a repository's hooks and config are the
-agent's. Read and copy its files freely.
+made in a group's `.cache` or `.local/state`.** The launcher does not scan them
+for hooks and launchers, as it does not scan a group's other folders, because
+the host is not meant to run anything from there: a repository's hooks and
+config are the agent's. Read and copy its files freely.
 
 After upgrading, rebuild the image (`./build.sh`) and run
-`./sync-to-projects.sh` so an existing project gets the change.
+`./sync-to-projects.sh` so an existing project gets the change. Until the image
+is rebuilt, `TMPDIR` stays `/tmp` and nothing in `/var/tmp` is removed.
 
 ## Group-name rules
 
@@ -141,7 +185,7 @@ Group 'docs' not found. Initialize from:
 
 Pick `1)` to copy the group-scoped dotfile slice from `default` (or whichever group is listed first). Pick `host` to copy from `$HOME`. Pick `<empty>` to start with an empty group (only `.ssh/` and `.agents/` are scaffolded). Pick `q` to abort.
 
-The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube` — and, as before, qmd's index (`.cache/qmd`). Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, `.cache` except qmd's index, `.local/state`, `.var-tmp`, `.yarn`, `.gradle`, `.m2`): cloning a group should not clone gigabytes that each tool rebuilds by itself.
+The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube` — and, as before, qmd's index (`.cache/qmd`). Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, `.cache` except qmd's index, `.local/state`, `.yarn`, `.gradle`, `.m2`, and the `/var/tmp` volume): cloning a group should not clone gigabytes that each tool rebuilds by itself.
 
 **Non-interactive (no TTY or scripted use):**
 
@@ -206,9 +250,9 @@ A group is mostly a plain directory, so standard shell tools still work for
 inspecting, backing up, and duplicating one:
 
 ```bash
-# List groups (and their rvm volumes)
+# List groups (and their Ruby and temp volumes)
 ./group.sh list
-./group.sh list --sizes   # adds a GROUP DIR column: du -sh of the group directory
+./group.sh list --sizes   # each volume's size, and a GROUP DIR column: du -sh of the group directory
 
 # Back up a group's directory
 tar czf docs-group.tgz -C "$HOME/.ai-containers" docs
@@ -217,19 +261,21 @@ tar czf docs-group.tgz -C "$HOME/.ai-containers" docs
 cp -a ~/.ai-containers/default ~/.ai-containers/new-project
 ```
 
-Both take the whole directory, so they now carry every cache in `.cache`, the
-state in `.local/state` and the scratch in `.var-tmp` too, which can be large:
+Both take the whole directory, so they now carry every cache in `.cache` and the
+state in `.local/state` too, which can be large (not `/var/tmp`, a volume):
 `./group.sh list --sizes` shows how large, and
 [What survives a restart](#what-survives-a-restart) how to clear them first.
 
-**Deleting is the exception.** Once you have built with a `ruby=` version, the
-group also owns a Docker volume holding its Ruby home (see
-[Ruby (via rvm)](components/ruby.md) for why it can't be a directory), and a bare
-`rm -rf` would orphan it — potentially several GB with nothing left pointing at
-it. Use `group.sh`, which removes both together:
+**Deleting is the exception.** From its first launch the group also owns a
+Docker volume holding its `/var/tmp`, and once you have built with a `ruby=`
+version another holding its Ruby home (see
+[What survives a restart](#what-survives-a-restart) and
+[Ruby (via rvm)](components/ruby.md) for why neither can be a directory), and a
+bare `rm -rf` would orphan them — potentially several GB with nothing left
+pointing at them. Use `group.sh`, which removes all three together:
 
 ```bash
-# Remove a group: its directory and its rvm volume (irreversible)
+# Remove a group: its directory, its Ruby volume and its temp volume (irreversible)
 ./group.sh rm docs
 
 # Already deleted directories by hand? Collect the orphaned volumes:
@@ -243,13 +289,21 @@ volumes carried their owner, is kept and named; `./group.sh gc --all` takes it
 too. `~/.ai-containers/.restored/` is not a group: it holds files a launch kept
 from a protected git file's place, and `group.sh` neither lists nor removes it.
 
+`group.sh` knows a group's temp volume by the label a launch puts on it. A
+volume of that name without the label (one a `docker run -v` made before the
+group's first launch, say) is shown by `list` as `not the group's`, named by
+`rm` with the `docker volume rm` that removes it, and removed by neither `rm`
+nor `gc`.
+
 `group.sh rm` keeps a volume another home made, and removes this home's group
 directory. It refuses while a running container still mounts a volume it would
-remove, and refuses `host`, which is not a group. It never touches repo volumes — those are global and shared across
+remove, checking every such volume before it removes anything, and refuses
+`host`, which is not a group. It never touches repo volumes — those are global and shared across
 every group; manage them with [`repo.sh`](repos-and-mounts.md#shared-repo-volumes-native-speed--reposh-and-repos).
 
-`cp -a` duplicates the *directory* only. The copy starts with an empty Ruby
-home and recompiles its configured versions on first use.
+`cp -a` duplicates the *directory* only. The copy starts with an empty
+`/var/tmp` and an empty Ruby home, and recompiles its configured versions on
+first use.
 
 ## Migration notes for upgrading users
 

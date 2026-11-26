@@ -6,7 +6,7 @@ index c0f8c3a..72b2d3c 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
 @@ -8686,7 +8686,8 @@ run_container() {
-   # never see it.
+   # knows a temp volume by its label, would never take it for the group's.
    local vartmp_vol
    vartmp_vol="$(vartmp_volume_ensure "$group")" || exit 1
 -  config_mount_flags+=(-v "$vartmp_vol:/var/tmp")

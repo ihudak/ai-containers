@@ -139,6 +139,16 @@ err="$(cat "$TMP/err")"
   && pass "the other-group refusal names group other and the docker volume rm" \
   || fail "the other-group refusal is wrong (got: $err)"
 
+# The label is anyone's to set (docker volume create --label), and the refusal
+# prints it: a control character in it reaches the terminal as ?, never as itself.
+printf 'ai-containers.vartmp-group=ot\033]0;x\aher\n' > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-docs.labels"
+out="$(vartmp_volume_ensure docs 2>"$TMP/err")"; rc=$?
+check "a label holding control characters is refused too" "1" "$rc"
+err="$(cat "$TMP/err")"
+[[ "$err" == *'"ot?]0;x?her"'* && "$err" != *$'\033'* && "$err" != *$'\a'* ]] \
+  && pass "the refusal prints the label with its control characters as ?" \
+  || fail "the refusal prints the label as it is (got: $(printf '%q' "$err"))"
+
 reset_volumes
 out="$(FAKE_INSPECT_DOWN=1 vartmp_volume_ensure docs 2>"$TMP/err")"; rc=$?
 check "an inspect that fails for another reason returns 1" "1" "$rc"
