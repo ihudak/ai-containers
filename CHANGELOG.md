@@ -86,6 +86,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `not the group's`. For such a volume, and one of the temp name labelled for
   another group, `rm` no longer prints a `docker volume rm`: it is most likely
   that group's, in use under its own prefix.
+- **A launch no longer mounts another prefix's volume as a group's `~/.rvm`.**
+  Under nested `REPO_VOLUME_PREFIX` values a group's Ruby volume name can be
+  another prefix's temp or Ruby volume; one carrying a temp volume's label or
+  another group's Ruby label, or whose labels docker cannot read, is refused,
+  and the launch goes on without Ruby. One with no label is still used.
+- **`group.sh gc` skips a volume whose labels docker cannot read**, naming it,
+  and exits 1; `list` leaves it out of the orphans and exits 1. Read as a
+  volume with no labels, `gc --all` removed an orphaned Ruby volume of this
+  home, or another prefix's temp volume named like one.
 - **`group.sh list --sizes` asks `docker system df -v` once per run**, not once
   per volume, and not at all with no group to size: that call walks every
   volume on the daemon.

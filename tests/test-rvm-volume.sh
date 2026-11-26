@@ -51,6 +51,11 @@ case "$1" in
         [[ -f "$FAKE_VOLUMES_DIR/$name" ]] || exit 1
         fmt=""; prev=""
         for a in "${@:3}"; do [[ "$prev" == "--format" ]] && fmt="$a"; prev="$a"; done
+        # FAKE_LABEL_FAIL=<volume>: docker says it exists, then cannot be
+        # reached when its labels are read.
+        if [[ "$fmt" == *Labels* && "$name" == "${FAKE_LABEL_FAIL:-}" ]]; then
+          echo "Cannot connect to the Docker daemon" >&2; exit 1
+        fi
         if [[ "$fmt" == *Labels* ]]; then
           key="$(printf '%s' "$fmt" | sed -n 's/.*index \.Labels "\([^"]*\)".*/\1/p')"
           val=""
@@ -153,6 +158,44 @@ err="$(rvm_volume_ensure "docs" "$TMP/nonexistent-group-root" "ai-sandbox" 2>&1 
 : > "$FAKE_VOLUMES_DIR/ai-containers-rvm-legacy.labels"
 check "rvm_group_from_volume falls back to the name when unlabeled" \
   "legacy" "$(rvm_group_from_volume ai-containers-rvm-legacy)"
+
+# ── A volume of the name that is not the group's is refused ─────────────────────
+# Under nested REPO_VOLUME_PREFIX values the Ruby volume name of a group here is
+# another prefix's volume: prefix ai-containers-rvm-x's temp volume of group tn,
+# ai-containers-rvm-x-vartmp-tn, is group x-vartmp-tn's Ruby volume name, and
+# its Ruby volume of group g, ai-containers-rvm-x-rvm-g, group x-rvm-g's. A launch
+# mounted either as ~/.rvm. One that carries a temp volume's label, or another
+# group's Ruby label, is refused, and the launch goes on without Ruby; so is one
+# whose labels docker cannot read. One with no label, made before labels, is
+# still used.
+rm -f "$FAKE_VOLUMES_DIR"/*
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-x-vartmp-tn"
+printf 'ai-containers.vartmp-group=tn\n' > "$FAKE_VOLUMES_DIR/ai-containers-rvm-x-vartmp-tn.labels"
+vol_out="$(rvm_volume_ensure "x-vartmp-tn" "$TMP/nonexistent-group-root" "ai-sandbox" 2>"$TMP/err")"; rc=$?
+[[ "$rc" -ne 0 && -z "$vol_out" ]] \
+  && grep -qF 'ERROR: the volume ai-containers-rvm-x-vartmp-tn is a temp volume of group "tn", not the Ruby volume of group "x-vartmp-tn".' "$TMP/err" \
+  && pass "a temp volume with the group's Ruby volume name is refused, not mounted as ~/.rvm" \
+  || fail "a temp volume with the group's Ruby volume name (rc=$rc; out=$vol_out; err: $(cat "$TMP/err"))"
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-x-rvm-g"
+printf 'ai-containers.rvm-group=g\n' > "$FAKE_VOLUMES_DIR/ai-containers-rvm-x-rvm-g.labels"
+vol_out="$(rvm_volume_ensure "x-rvm-g" "$TMP/nonexistent-group-root" "ai-sandbox" 2>"$TMP/err")"; rc=$?
+[[ "$rc" -ne 0 && -z "$vol_out" ]] \
+  && grep -qF 'ERROR: the volume ai-containers-rvm-x-rvm-g belongs to group "g", not "x-rvm-g".' "$TMP/err" \
+  && pass "a Ruby volume of the name labelled for another group is refused" \
+  || fail "a Ruby volume of the name labelled for another group (rc=$rc; out=$vol_out; err: $(cat "$TMP/err"))"
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-lf"
+printf 'ai-containers.rvm-group=lf\n' > "$FAKE_VOLUMES_DIR/ai-containers-rvm-lf.labels"
+vol_out="$(FAKE_LABEL_FAIL=ai-containers-rvm-lf rvm_volume_ensure "lf" "$TMP/nonexistent-group-root" "ai-sandbox" 2>"$TMP/err")"; rc=$?
+[[ "$rc" -ne 0 && -z "$vol_out" ]] && grep -qF 'ERROR: docker could not say whose the volume ai-containers-rvm-lf is' "$TMP/err" \
+  && pass "a Ruby volume whose labels docker cannot read is refused" \
+  || fail "a Ruby volume whose labels docker cannot read (rc=$rc; out=$vol_out; err: $(cat "$TMP/err"))"
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-old"
+vol_out="$(rvm_volume_ensure "old" "$TMP/nonexistent-group-root" "ai-sandbox" 2>"$TMP/err")"; rc=$?
+[[ "$rc" -eq 0 && "$vol_out" == ai-containers-rvm-old && ! -s "$TMP/err" ]] \
+  && pass "a Ruby volume with no label at all, made before labels, is still used" \
+  || fail "a Ruby volume with no label (rc=$rc; out=$vol_out; err: $(cat "$TMP/err"))"
+rm -f "$FAKE_VOLUMES_DIR"/*
+vol_out="$(rvm_volume_ensure "docs" "$TMP/nonexistent-group-root" "ai-sandbox" 2>/dev/null)"
 
 # ── Idempotence: an existing volume is never re-created or re-seeded ────────────
 : > "$FAKE_RUN_LOG"

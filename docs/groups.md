@@ -286,7 +286,8 @@ pointing at them. Use `group.sh`, which removes all three together:
 (Docker Desktop's, by every WSL distro), and a group directory missing here may
 be another home's group, so a volume another home made, or one made before
 volumes carried their owner, is kept and named; `./group.sh gc --all` takes it
-too. `~/.ai-containers/.restored/` is not a group: it holds files a launch kept
+too. A volume whose labels docker cannot read is skipped and named, and `gc`
+exits 1. `~/.ai-containers/.restored/` is not a group: it holds files a launch kept
 from a protected git file's place, and `group.sh` neither lists nor removes it.
 
 `group.sh` knows a group's temp volume by the label a launch puts on it. A

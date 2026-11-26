@@ -168,8 +168,11 @@ _group_volumes() {
 }
 
 # _vol_group <kind> <volume>: the group the volume serves, rc 0; rc 1 when it
-# serves none. A Ruby volume's by its label, or by its name before labels
-# (sandbox-common.sh: `rvm_group_from_volume()`). A temp volume's by its label
+# serves none; rc 2 when docker cannot read its labels (_vol_label), which is
+# not a volume with none: read so, gc --all removed an orphaned Ruby volume as
+# one with no owner label, and a temp volume was passed over in silence. A Ruby
+# volume's by its label, or by its name before labels, as
+# sandbox-common.sh: `rvm_group_from_volume()` reads it. A temp volume's by its label
 # only, and only when the volume carries that group's temp volume name: under
 # nested REPO_VOLUME_PREFIX values another prefix's volume carries a name of this
 # one's, which is how a name match took one repo's volume for another's
@@ -179,13 +182,15 @@ _group_volumes() {
 # and with no Ruby label its name made it group x-vartmp-g's, an orphan that gc
 # removed.
 _vol_group() {
-  local g
+  local g tl
+  tl="$(_vol_label "$2" 'ai-containers.vartmp-group')" || return 2
   case "$1" in
-    ruby) [[ -z "$(vartmp_group_from_volume "$2")" ]] || return 1
-          rvm_group_from_volume "$2" ;;
-    temp) g="$(vartmp_group_from_volume "$2")"
-          [[ -n "$g" && "$(vartmp_volume_name "$g")" == "$2" ]] || return 1
+    ruby) [[ -z "$tl" ]] || return 1
+          g="$(_vol_label "$2" 'ai-containers.rvm-group')" || return 2
+          [[ -n "$g" ]] || g="${2#"${repo_volume_prefix}"-rvm-}"
           printf '%s\n' "$g" ;;
+    temp) [[ -n "$tl" && "$(vartmp_volume_name "$tl")" == "$2" ]] || return 1
+          printf '%s\n' "$tl" ;;
   esac
 }
 
@@ -332,8 +337,11 @@ cmd_list() {
   local orphans=""
   local kind v og own why nolab=0
   own="$(ai_containers_owner_known 2>/dev/null)" || own=""
+  local ogrc
   while read -r kind v; do
-    og="$(_vol_group "$kind" "$v")" || continue
+    ogrc=0; og="$(_vol_group "$kind" "$v")" || ogrc=$?
+    if (( ogrc == 2 )); then cell_unknown=1; continue; fi
+    (( ogrc == 0 )) || continue
     [[ -d "$groups_root/$og" ]] || orphans="${orphans:+$orphans }$v"
   done < <(_group_volumes)
   if [[ -n "$orphans" ]]; then
@@ -354,7 +362,8 @@ cmd_list() {
   # A volume docker could not say exists, or whose it is, is not one it says is
   # absent or another group's: its state is unknown, and the run says so, rc 1.
   if (( cell_unknown )); then
-    printf 'ERROR: docker could not say whether some volumes exist or whose they are (state "unknown" above).\n' >&2
+    printf 'ERROR: docker could not say whether some volumes exist or whose they are (shown as "unknown",\n' >&2
+    printf '       or left out of the orphans).\n' >&2
     exit 1
   fi
 }
@@ -512,15 +521,22 @@ cmd_gc() {
   done
 
   _docker_answers || exit 1
-  local targets="" kept="" kind v g own why brc skipped=0 unknown=0
+  local targets="" kept="" kind v g own why brc grc ol skipped=0 unknown=0
   local -A whose=()
   own="$(ai_containers_owner_known 2>/dev/null)" || own=""
   while read -r kind v; do
-    g="$(_vol_group "$kind" "$v")" || continue      # no group's temp volume — never touched
-    [[ -d "$groups_root/$g" ]] && continue          # group still exists — keep
+    grc=0; g="$(_vol_group "$kind" "$v")" || grc=$?
+    (( grc != 1 )) || continue                      # no group's volume — never touched
+    # Its labels, read so that a docker that cannot say is not one that says
+    # there are none (_vol_label): skipped, named, and gc exits 1.
+    if (( grc == 0 )) && [[ -d "$groups_root/$g" ]]; then continue; fi   # group still exists — keep
+    if (( grc == 2 )) || ! ol="$(_vol_label "$v" 'ai-containers.owner')"; then
+      printf 'Skipping %s — docker could not say whose it is.\n' "$v" >&2
+      skipped=$(( skipped + 1 )); unknown=1; continue
+    fi
     # Another home's, or one made before owner labels: its group may live in
     # that home (PRJ-16). Kept, and named, unless --all.
-    if why="$(_vol_owner_why "$v" "$own")"; then
+    if why="$(_owner_why "$ol" "$own")"; then
       if (( ! all )); then kept+="  $v: $why"$'\n'; continue; fi
       whose[$v]="$why"
     fi

@@ -907,6 +907,33 @@ rvm_volume_ensure() {
   local vol; vol="$(rvm_volume_name "$group")"
 
   if docker volume inspect "$vol" >/dev/null 2>&1; then
+    # Whose it is. Under nested REPO_VOLUME_PREFIX values the name is another
+    # prefix's volume too: prefix p-rvm-x's temp volume of group g,
+    # p-rvm-x-vartmp-g, is group x-vartmp-g's Ruby volume name under prefix p, and
+    # its Ruby volume of group g, p-rvm-x-rvm-g, group x-rvm-g's. Mounted as
+    # ~/.rvm, the agent would write into that group's volume. One carrying a temp
+    # volume's label, or another group's Ruby label, is refused, and so is one
+    # whose labels docker cannot read; the launch goes on without Ruby. One with
+    # no label, made before labels, is still the group's, as group.sh takes it.
+    local tl rl
+    if ! tl="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.vartmp-group"}}{{end}}' "$vol" 2>/dev/null)" \
+       || ! rl="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.rvm-group"}}{{end}}' "$vol" 2>/dev/null)"; then
+      printf 'ERROR: docker could not say whose the volume %s is (is docker running?).\n' "$vol" >&2
+      return 1
+    fi
+    # Labels are anyone's to set, and are printed: made safe for the terminal.
+    if [[ -n "$tl" ]]; then
+      printf 'ERROR: the volume %s is a temp volume of group "%s", not the Ruby volume of group "%s".\n' "$vol" "$(_ac_term "$tl")" "$group" >&2
+      printf '       It is most likely that group'"'"'s, under another REPO_VOLUME_PREFIX. Give this group\n' >&2
+      printf '       another name, or this home its own REPO_VOLUME_PREFIX.\n' >&2
+      return 1
+    fi
+    if [[ -n "$rl" && "$rl" != "$group" ]]; then
+      printf 'ERROR: the volume %s belongs to group "%s", not "%s".\n' "$vol" "$(_ac_term "$rl")" "$group" >&2
+      printf '       It is most likely that group'"'"'s, under another REPO_VOLUME_PREFIX. Give this group\n' >&2
+      printf '       another name, or this home its own REPO_VOLUME_PREFIX.\n' >&2
+      return 1
+    fi
     _rvm_shared_note "$vol" "$group"
     printf '%s\n' "$vol"; return 0
   fi

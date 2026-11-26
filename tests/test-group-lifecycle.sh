@@ -904,6 +904,39 @@ out="$(run_group rm x-rvm-g --yes)"; rc=$?
   && pass "rm leaves a volume of the Ruby name labelled for another group, removing the directory" \
   || fail "rm took another group's Ruby volume by its name (rc=$rc; got: $out)"
 rm -rf "$GR/x-rvm-g"; tclean ai-containers-rvm-x-rvm-g
+# gc and list's orphans read a label docker failed to return as no label too.
+# With --all, an orphaned Ruby volume of this home whose labels could not be read
+# was removed all the same, and so was a nested prefix's temp volume named like
+# a Ruby volume (ai-containers-rvm-x-vartmp-tn): no temp label read, its name
+# made it group x-vartmp-tn's orphan, with no owner label. A temp volume whose
+# label could not be read was passed over in silence. A volume gc cannot judge is
+# skipped and named, and gc exits 1; list leaves it out of the orphans and exits 1.
+mktmpvol ai-containers-rvm-x-vartmp-tn tn
+out="$(FAKE_LABEL_FAIL=ai-containers-rvm-x-vartmp-tn run_group gc --all --yes)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"Skipping ai-containers-rvm-x-vartmp-tn — docker could not say whose it is."* ]] \
+  && tvol ai-containers-rvm-x-vartmp-tn \
+  && pass "gc --all skips a nested prefix's temp volume whose labels docker cannot read, naming it, and exits 1" \
+  || fail "gc --all with a nested prefix's temp volume's labels unreadable (rc=$rc; got: $out)"
+tclean ai-containers-rvm-x-vartmp-tn
+mkvol ai-containers-rvm-tgo tgo
+for key in ai-containers.vartmp-group ai-containers.rvm-group ai-containers.owner; do
+  out="$(FAKE_LABEL_FAIL=ai-containers-rvm-tgo FAKE_LABEL_FAIL_KEY="$key" run_group gc --all --yes)"; rc=$?
+  [[ "$rc" -ne 0 && "$out" == *"Skipping ai-containers-rvm-tgo — docker could not say whose it is."* ]] && tvol ai-containers-rvm-tgo \
+    && pass "gc --all skips an orphaned Ruby volume whose $key label docker cannot read, and exits 1" \
+    || fail "gc --all with an orphaned Ruby volume's $key label unreadable (rc=$rc; got: $out)"
+  mkvol ai-containers-rvm-tgo tgo
+done
+out="$(FAKE_LABEL_FAIL=ai-containers-rvm-tgo run_group list)"; rc=$?
+[[ "$rc" -ne 0 && "$out" != *"  ai-containers-rvm-tgo"* && "$out" == *"ERROR: docker could not say whether some volumes exist or whose they are"* ]] \
+  && pass "list does not name an orphan it cannot judge, and exits 1" \
+  || fail "list with an orphan's labels unreadable (rc=$rc; got: $out)"
+tclean ai-containers-rvm-tgo
+mktmpvol ai-containers-vartmp-tgt tgt
+out="$(FAKE_LABEL_FAIL=ai-containers-vartmp-tgt run_group gc --yes)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"Skipping ai-containers-vartmp-tgt — docker could not say whose it is."* ]] && tvol ai-containers-vartmp-tgt \
+  && pass "gc names a temp volume whose label docker cannot read, rather than pass it over, and exits 1" \
+  || fail "gc with an orphaned temp volume's label unreadable (rc=$rc; got: $out)"
+tclean ai-containers-vartmp-tgt
 mkdir -p "$GR/tleg"; : > "$FAKE_VOLUMES_DIR/ai-containers-rvm-tleg"
 out="$(run_group rm tleg --yes)"; rc=$?
 [[ "$rc" -eq 0 && ! -d "$GR/tleg" ]] && ! tvol ai-containers-rvm-tleg \
