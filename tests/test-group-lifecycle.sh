@@ -61,7 +61,7 @@ case "$1" in
         for a in "$@"; do case "$a" in name=*) substr="${a#name=}" ;; esac; done
         for f in "$FAKE_VOLUMES_DIR"/*; do
           [[ -f "$f" ]] || continue
-          case "$f" in *.labels|*.rmfail) continue ;; esac
+          case "$f" in *.labels|*.rmfail|*.size) continue ;; esac
           bn="$(basename "$f")"
           case "$bn" in *"$substr"*) printf '%s\n' "$bn" ;; esac
         done
@@ -69,7 +69,7 @@ case "$1" in
       # A <name>.rmfail marker makes the removal fail, as a volume docker will
       # not let go of does.
       rm) [[ -f "$FAKE_VOLUMES_DIR/${3}.rmfail" ]] && exit 1
-          rm -f "$FAKE_VOLUMES_DIR/${3}" "$FAKE_VOLUMES_DIR/${3}.labels"; exit 0 ;;
+          rm -f "$FAKE_VOLUMES_DIR/${3}" "$FAKE_VOLUMES_DIR/${3}.labels" "$FAKE_VOLUMES_DIR/${3}.size"; exit 0 ;;
       *) exit 0 ;;
     esac ;;
   ps)
@@ -84,7 +84,15 @@ case "$1" in
       esac
     done
     exit 0 ;;
-  system) exit 0 ;;
+  # `system df -v`: a <name>.size file gives that volume's size, as the
+  # --format group.sh asks for prints it ("<name> <size>" a line).
+  system)
+    if [[ "$2" == df ]]; then
+      for f in "$FAKE_VOLUMES_DIR"/*.size; do
+        [[ -f "$f" ]] && printf '%s %s\n' "$(basename "$f" .size)" "$(cat "$f")"
+      done
+    fi
+    exit 0 ;;
   *) exit 0 ;;
 esac
 FAKE
@@ -100,6 +108,14 @@ OWN="$(HOME="$FAKE_HOME" bash -c 'source "$1/sandbox-common.sh" && ai_containers
 mkvol() {
   : > "$FAKE_VOLUMES_DIR/$1"
   { printf 'ai-containers.rvm-group=%s\n' "$2"; [[ -z "${VOL_OWNER-$OWN}" ]] || printf 'ai-containers.owner=%s\n' "${VOL_OWNER-$OWN}"; } > "$FAKE_VOLUMES_DIR/$1.labels"
+}
+# mktmpvol <volume> <group>: a temp (/var/tmp) volume this home's launch made,
+# labelled as sandbox-common.sh: `vartmp_volume_ensure()` labels one; VOL_OWNER
+# as for mkvol. One with no labels file is a volume of the name made outside a
+# launch (a `docker run -v` of it).
+mktmpvol() {
+  : > "$FAKE_VOLUMES_DIR/$1"
+  { printf 'ai-containers.vartmp-group=%s\n' "$2"; [[ -z "${VOL_OWNER-$OWN}" ]] || printf 'ai-containers.owner=%s\n' "${VOL_OWNER-$OWN}"; } > "$FAKE_VOLUMES_DIR/$1.labels"
 }
 
 run_group() {  # run group.sh with the fake env; echoes output, sets RC
@@ -118,17 +134,20 @@ out="$(run_group list)"
 grep -q 'default .*ai-containers-rvm-default .*present' <<<"$out" \
   && pass "list shows a group with its rvm volume" \
   || fail "list shows a group with its rvm volume (got: $out)"
+grep -qE '^GROUP +RVM VOLUME +STATE +TEMP VOLUME +STATE$' <<<"$out" \
+  && pass "list's header names both volumes and their states" \
+  || fail "list's header names both volumes and their states (got: $out)"
 grep -qE '^docs +- +none' <<<"$out" \
   && pass "list shows a group with no rvm volume as 'none'" \
   || fail "list shows a group with no rvm volume as 'none' (got: $out)"
 
-# list --sizes adds the group directory's own size as a fourth column.
-mkdir -p "$FAKE_HOME/.ai-containers/default/.var-tmp"
-dd if=/dev/zero of="$FAKE_HOME/.ai-containers/default/.var-tmp/x" bs=1048576 count=2 2>/dev/null
+# list --sizes adds the group directory's own size as its last column.
+mkdir -p "$FAKE_HOME/.ai-containers/default/.cache"
+dd if=/dev/zero of="$FAKE_HOME/.ai-containers/default/.cache/x" bs=1048576 count=2 2>/dev/null
 out="$(run_group list --sizes)"
-grep -q 'GROUP DIR' <<<"$out" \
-  && pass "list --sizes header names the GROUP DIR column" \
-  || fail "list --sizes header names the GROUP DIR column (got: $out)"
+grep -qE '^GROUP +RVM VOLUME +SIZE +TEMP VOLUME +SIZE +GROUP DIR$' <<<"$out" \
+  && pass "list --sizes header names a SIZE column for each volume, then the GROUP DIR column" \
+  || fail "list --sizes header names a SIZE column for each volume, then the GROUP DIR column (got: $out)"
 row="$(grep -E '^default ' <<<"$out")"
 grep -qE '[[:space:]][0-9][0-9.,]*[KMG]$' <<<"$row" \
   && pass "list --sizes ends the group's row in its directory size" \
@@ -159,7 +178,7 @@ grep -q 'ai-containers-repo-app' <<<"$out" \
 # Orphan detection: a volume whose group directory is gone.
 mkvol "ai-containers-rvm-ghost" "ghost"
 out="$(run_group list)"
-grep -q 'Orphaned rvm volume' <<<"$out" && grep -q 'ai-containers-rvm-ghost' <<<"$out" \
+grep -q 'Orphaned Ruby and temp volume' <<<"$out" && grep -q 'ai-containers-rvm-ghost' <<<"$out" \
   && pass "list flags an orphaned rvm volume" \
   || fail "list flags an orphaned rvm volume (got: $out)"
 
@@ -439,12 +458,12 @@ out="$(run_group rm busy2 --yes)"; rc=$?
 
 # list marks exactly the volume a running container uses as "(in use)".
 out="$(run_group list)"
-grep -qE '^busy2 +ai-containers-rvm-busy2 +present \(in use\)$' <<<"$out" \
+grep -qE '^busy2 +ai-containers-rvm-busy2 +present \(in use\) +- +none$' <<<"$out" \
   && pass "list marks an in-use rvm volume '(in use)'" \
   || fail "list marks an in-use rvm volume '(in use)' (got: $out)"
 : > "$FAKE_RUNNING_VOL"
 out="$(run_group list)"
-grep -qE '^busy2 +ai-containers-rvm-busy2 +present$' <<<"$out" \
+grep -qE '^busy2 +ai-containers-rvm-busy2 +present +- +none$' <<<"$out" \
   && pass "  … and does not mark one nothing uses" \
   || fail "  … and does not mark one nothing uses (got: $out)"
 
@@ -530,6 +549,218 @@ out="$(HOME="$TMP/empty-home" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOL
 [[ "$rc" -ne 0 && "$out" == *"No container groups yet"* && "$out" == *"docker could not list its volumes"* ]] \
   && pass "PRJ-16 list with no group directory and docker unreachable says the orphans cannot be told, rc 1" \
   || fail "PRJ-16 list with no group directory and docker unreachable (rc=$rc; out: $out)"
+
+# ── The temp volume ─────────────────────────────────────────────────────────────
+# A group's /var/tmp is a second volume, <prefix>-vartmp-<group>, beside its
+# Ruby one. It is known by its ai-containers.vartmp-group label, never by its
+# name alone: a name match is what let a nested REPO_VOLUME_PREFIX mistake one
+# repo's volume for another's (REPO-11). list, rm and gc treat it as they treat
+# the Ruby volume, each volume on its own.
+GR="$FAKE_HOME/.ai-containers"
+THEIRS="sha256:$(printf '%064d' 7)"
+tvol() { [[ -f "$FAKE_VOLUMES_DIR/$1" ]]; }
+tclean() { local v; for v in "$@"; do rm -f "${FAKE_VOLUMES_DIR:?}/$v" "${FAKE_VOLUMES_DIR:?}/$v".*; done; }
+
+out="$(run_group --help)"
+[[ "$(grep -cE '^  \./group\.sh (list|rm|gc) .*temp volume' <<<"$out")" == 3 ]] \
+  && grep -qF 'Docker volume holding its containers'"'"' /var/tmp' <<<"$out" \
+  && pass "usage names the temp volume for list, rm and gc, and says what it holds" \
+  || fail "usage names the temp volume (got: $out)"
+
+# list: both volumes of a group, their states, and the in-use mark on the
+# temp volume alone.
+mkdir -p "$GR/tboth"; mkvol ai-containers-rvm-tboth tboth; mktmpvol ai-containers-vartmp-tboth tboth
+mkdir -p "$GR/tonly"; mktmpvol ai-containers-vartmp-tonly tonly
+out="$(run_group list)"
+grep -qE '^tboth +ai-containers-rvm-tboth +present +ai-containers-vartmp-tboth +present$' <<<"$out" \
+  && pass "list shows a group's Ruby and temp volumes, each present" \
+  || fail "list shows a group's Ruby and temp volumes (got: $out)"
+grep -qE '^tonly +- +none +ai-containers-vartmp-tonly +present$' <<<"$out" \
+  && pass "list shows a group with a temp volume and no Ruby one" \
+  || fail "list shows a group with a temp volume and no Ruby one (got: $out)"
+printf 'ai-containers-vartmp-tboth' > "$FAKE_RUNNING_VOL"
+out="$(run_group list)"
+: > "$FAKE_RUNNING_VOL"
+grep -qE '^tboth +ai-containers-rvm-tboth +present +ai-containers-vartmp-tboth +present \(in use\)$' <<<"$out" \
+  && pass "list marks the temp volume a running container uses '(in use)', and only it" \
+  || fail "list marks an in-use temp volume (got: $out)"
+printf '1.5GB' > "$FAKE_VOLUMES_DIR/ai-containers-rvm-tboth.size"
+printf '20MB' > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-tboth.size"
+out="$(run_group list --sizes)"
+grep -qE '^tboth +ai-containers-rvm-tboth +1\.5GB +ai-containers-vartmp-tboth +20MB +[0-9?][^ ]*$' <<<"$out" \
+  && pass "list --sizes shows each volume's size, then the group directory's" \
+  || fail "list --sizes shows each volume's size (got: $out)"
+out="$(FAKE_DOCKER_DOWN=1 run_group list)"
+grep -qE '^tboth +ai-containers-rvm-tboth +unknown +ai-containers-vartmp-tboth +unknown$' <<<"$out" \
+  && pass "list with docker unreachable says both volumes are unknown" \
+  || fail "list with docker unreachable, both volumes (got: $out)"
+# A volume of the temp name that is not the group's (no label, or another
+# group's) is named in its row as not the group's, never as its temp volume.
+mkdir -p "$GR/tunl"; : > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-tunl"
+mkdir -p "$GR/tmix"; mktmpvol ai-containers-vartmp-tmix tother
+out="$(run_group list)"
+grep -qE "^tunl +- +none +ai-containers-vartmp-tunl +not the group's$" <<<"$out" \
+  && grep -qE "^tmix +- +none +ai-containers-vartmp-tmix +not the group's$" <<<"$out" \
+  && pass "list names a volume of the temp name without the group's label as not the group's" \
+  || fail "list, a temp-name volume not the group's (got: $out)"
+rmdir "$GR/tunl" "$GR/tmix"; tclean ai-containers-vartmp-tunl ai-containers-vartmp-tmix
+
+# list's orphans: a temp volume whose group directory is gone, with whose it is;
+# one with no label, or whose name is not its label's group's temp volume (a
+# nested prefix's, REPO-11), is no group's and is not named at all.
+mktmpvol ai-containers-vartmp-tghost tghost
+VOL_OWNER="$THEIRS" mktmpvol ai-containers-vartmp-ttheirs ttheirs
+VOL_OWNER="" mktmpvol ai-containers-vartmp-told told
+: > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-x"
+mktmpvol ai-containers-vartmp-a-vartmp-tnest tnest
+out="$(run_group list)"
+grep -q '^Orphaned Ruby and temp volume(s) with no group directory' <<<"$out" \
+  && grep -qxF '  ai-containers-vartmp-tghost' <<<"$out" \
+  && grep -qxF "  ai-containers-vartmp-ttheirs  (another home's: gc keeps it unless --all)" <<<"$out" \
+  && grep -qxF '  ai-containers-vartmp-told  (no owner label: gc keeps it unless --all)' <<<"$out" \
+  && pass "list names an orphaned temp volume under the orphans, with whose each is" \
+  || fail "list, orphaned temp volumes (got: $out)"
+[[ "$out" != *ai-containers-vartmp-x* ]] \
+  && pass "list does not name an unlabelled volume of the temp name anywhere" \
+  || fail "list names an unlabelled ai-containers-vartmp-x (got: $out)"
+[[ "$out" != *ai-containers-vartmp-a-vartmp-tnest* ]] \
+  && pass "list does not take a volume whose name is not its label's group's temp volume for an orphan" \
+  || fail "list names a nested prefix's temp volume (got: $out)"
+
+# gc: this home's orphaned temp volume goes; another home's and an unlabelled
+# owner's stay unless --all; one with no group label, or another prefix's, is
+# never touched, --all or not.
+out="$(run_group gc --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"Removed ai-containers-vartmp-tghost"* ]] && ! tvol ai-containers-vartmp-tghost \
+  && grep -qxF '  ai-containers-vartmp-tghost' <<<"$out" \
+  && pass "gc collects this home's orphaned temp volume" \
+  || fail "gc collects an orphaned temp volume (rc=$rc; got: $out)"
+tvol ai-containers-vartmp-ttheirs && tvol ai-containers-vartmp-told \
+  && grep -qF "  ai-containers-vartmp-ttheirs: another home's" <<<"$out" \
+  && grep -qF '  ai-containers-vartmp-told: no owner label' <<<"$out" \
+  && pass "gc keeps another home's temp volume and one with no owner label, naming them" \
+  || fail "gc keeps another home's temp volume (got: $out)"
+tvol ai-containers-vartmp-tboth && tvol ai-containers-vartmp-tonly \
+  && pass "gc keeps a temp volume whose group still exists" \
+  || fail "gc keeps a temp volume whose group still exists (got: $out)"
+out="$(run_group gc --all --yes)"; rc=$?
+[[ "$rc" -eq 0 ]] && ! tvol ai-containers-vartmp-ttheirs && ! tvol ai-containers-vartmp-told \
+  && grep -qF "  ai-containers-vartmp-ttheirs  (another home's: its group of that name may use it)" <<<"$out" \
+  && pass "gc --all takes another home's temp volume too, naming whose it is" \
+  || fail "gc --all, temp volumes (rc=$rc; got: $out)"
+tvol ai-containers-vartmp-x && tvol ai-containers-vartmp-a-vartmp-tnest \
+  && [[ "$out" != *ai-containers-vartmp-x* && "$out" != *a-vartmp-tnest* ]] \
+  && pass "gc --all passes over a volume with no group label, and another prefix's" \
+  || fail "gc --all touched a volume that is no group's temp volume (got: $out)"
+mktmpvol ai-containers-vartmp-tbusy tbusy
+printf 'ai-containers-vartmp-tbusy' > "$FAKE_RUNNING_VOL"
+out="$(run_group gc --yes)"
+: > "$FAKE_RUNNING_VOL"
+[[ "$out" == *"Skipping ai-containers-vartmp-tbusy — a running container is using it."* ]] && tvol ai-containers-vartmp-tbusy \
+  && pass "gc skips a temp volume a running container uses" \
+  || fail "gc skips an in-use temp volume (got: $out)"
+tclean ai-containers-vartmp-tbusy
+out="$(run_group gc --yes)"; rc=$?
+[[ "$rc" -eq 0 ]] && grep -qxF 'Nothing to collect: every Ruby and temp volume of this home has a group directory.' <<<"$out" \
+  && pass "gc has nothing to collect when every Ruby and temp volume has its group directory" \
+  || fail "gc with nothing to collect, temp volumes present (rc=$rc; got: $out)"
+tclean ai-containers-vartmp-x ai-containers-vartmp-a-vartmp-tnest
+
+# With ~/.ai-containers itself gone, every labelled temp volume is an orphan,
+# and a volume of the temp name with no label is still no group's: list does not
+# name it, and gc --all, which takes every orphan whoever made it, leaves it.
+EH="$TMP/empty-home-tmp"; mkdir -p "$EH"
+mktmpvol ai-containers-vartmp-tgone tgone; : > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-x"
+out="$(HOME="$EH" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" list 2>&1)"
+[[ "$out" == *"ai-containers-vartmp-tgone  (another home's"* && "$out" != *ai-containers-vartmp-x* ]] \
+  && pass "list with no groups root names an orphaned temp volume, and not an unlabelled one" \
+  || fail "list with no groups root, temp volumes (got: $out)"
+out="$(HOME="$EH" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" gc --all --yes 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && ! tvol ai-containers-vartmp-tgone && tvol ai-containers-vartmp-x && [[ "$out" != *ai-containers-vartmp-x* ]] \
+  && pass "gc --all with no groups root takes the orphaned temp volume and leaves an unlabelled one" \
+  || fail "gc --all with no groups root, temp volumes (rc=$rc; got: $out)"
+rmdir "$EH"; tclean ai-containers-vartmp-tgone ai-containers-vartmp-x
+
+# rm: the directory and both volumes; every volume checked before anything goes.
+mkdir -p "$GR/tb2"; mkvol ai-containers-rvm-tb2 tb2; mktmpvol ai-containers-vartmp-tb2 tb2
+printf 'ai-containers-vartmp-tb2' > "$FAKE_RUNNING_VOL"
+out="$(run_group rm tb2 --yes)"; rc=$?
+: > "$FAKE_RUNNING_VOL"
+[[ "$rc" -ne 0 && -d "$GR/tb2" && "$out" == *"a running container is still using ai-containers-vartmp-tb2. Stop it first."* ]] \
+  && tvol ai-containers-rvm-tb2 && tvol ai-containers-vartmp-tb2 \
+  && pass "rm refuses while only the temp volume is in use, and removes neither volume nor the directory" \
+  || fail "rm with the temp volume in use (rc=$rc; got: $out)"
+out="$(FAKE_PS_FAIL_VOL=ai-containers-vartmp-tb2 run_group rm tb2 --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$GR/tb2" && "$out" == *"whether one uses ai-containers-vartmp-tb2 cannot be told"* ]] \
+  && tvol ai-containers-rvm-tb2 && tvol ai-containers-vartmp-tb2 \
+  && pass "rm refuses when docker cannot say whether a container uses the temp volume, removing nothing" \
+  || fail "rm with the temp volume's use unknown (rc=$rc; got: $out)"
+printf 'ai-containers-rvm-tb2' > "$FAKE_RUNNING_VOL"
+out="$(run_group rm tb2 --yes)"; rc=$?
+: > "$FAKE_RUNNING_VOL"
+[[ "$rc" -ne 0 && -d "$GR/tb2" ]] && tvol ai-containers-rvm-tb2 && tvol ai-containers-vartmp-tb2 \
+  && pass "rm refuses while only the Ruby volume is in use, and removes neither volume nor the directory" \
+  || fail "rm with the Ruby volume in use, temp volume present (rc=$rc; got: $out)"
+: > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-tb2.rmfail"
+out="$(run_group rm tb2 --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$GR/tb2" && "$out" == *"could not remove volume ai-containers-vartmp-tb2"* ]] \
+  && pass "rm whose temp volume removal fails exits non-zero and leaves the directory" \
+  || fail "rm whose temp volume removal fails (rc=$rc; got: $out)"
+tclean ai-containers-vartmp-tb2.rmfail
+mkvol ai-containers-rvm-tb2 tb2
+out="$(run_group rm tb2 --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$GR/tb2" ]] && ! tvol ai-containers-rvm-tb2 && ! tvol ai-containers-vartmp-tb2 \
+  && grep -qxF '  rvm volume ai-containers-rvm-tb2 (installed rubies and gems)' <<<"$out" \
+  && grep -qxF "  temp volume ai-containers-vartmp-tb2 (its containers' /var/tmp)" <<<"$out" \
+  && [[ "$out" == *"Removed volume ai-containers-vartmp-tb2"* ]] \
+  && pass "rm removes the directory and both volumes, listing each" \
+  || fail "rm of a group with both volumes (rc=$rc; got: $out)"
+# A temp volume another home made is kept and named; this home's Ruby volume
+# and the directory go.
+mkdir -p "$GR/tsh"; mkvol ai-containers-rvm-tsh tsh; VOL_OWNER="$THEIRS" mktmpvol ai-containers-vartmp-tsh tsh
+out="$(run_group rm tsh --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$GR/tsh" ]] && ! tvol ai-containers-rvm-tsh && tvol ai-containers-vartmp-tsh \
+  && [[ "$out" == *"temp volume ai-containers-vartmp-tsh is kept: another home on this docker made it"* ]] \
+  && pass "rm keeps and names a temp volume another home made, removing the Ruby volume and the directory" \
+  || fail "rm with another home's temp volume (rc=$rc; got: $out)"
+# With nothing else of the group left here, that volume alone is no group of
+# this home's to remove.
+out="$(run_group rm tsh --yes)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"ai-containers-vartmp-tsh was made by another home"* && "$out" == *"docker volume rm ai-containers-vartmp-tsh"* ]] \
+  && tvol ai-containers-vartmp-tsh \
+  && pass "rm of only another home's temp volume is refused, with the command that removes it anyway" \
+  || fail "rm of only another home's temp volume (rc=$rc; got: $out)"
+tclean ai-containers-vartmp-tsh
+# A volume of the temp name without the group's label is named, with its
+# docker volume rm, and never removed; the rest of the group goes.
+mkdir -p "$GR/tun"; mkvol ai-containers-rvm-tun tun; : > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-tun"
+out="$(run_group rm tun --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$GR/tun" && "$out" == *"docker volume rm ai-containers-vartmp-tun"* ]] \
+  && ! tvol ai-containers-rvm-tun && tvol ai-containers-vartmp-tun && [[ "$out" != *"Removed volume ai-containers-vartmp-tun"* ]] \
+  && pass "rm names an unlabelled volume of the temp name with its docker volume rm, and leaves it" \
+  || fail "rm with an unlabelled temp-name volume (rc=$rc; got: $out)"
+# That volume alone is no group: refused, still named.
+out="$(run_group rm tun --yes)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *'no such group "tun"'* && "$out" == *"docker volume rm ai-containers-vartmp-tun"* ]] && tvol ai-containers-vartmp-tun \
+  && pass "rm of a group with only an unlabelled temp-name volume is no such group, the volume named and left" \
+  || fail "rm of only an unlabelled temp-name volume (rc=$rc; got: $out)"
+tclean ai-containers-vartmp-tun
+mkdir -p "$GR/tlab"; mktmpvol ai-containers-vartmp-tlab tother
+out="$(run_group rm tlab --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$GR/tlab" && "$out" == *'group "tother"'* && "$out" == *"docker volume rm ai-containers-vartmp-tlab"* ]] && tvol ai-containers-vartmp-tlab \
+  && pass "rm names a temp-name volume labelled for another group, and leaves it" \
+  || fail "rm with a temp-name volume of another group (rc=$rc; got: $out)"
+tclean ai-containers-vartmp-tlab
+# A group that is only a temp volume, no directory and no Ruby volume, is found
+# and removed.
+mktmpvol ai-containers-vartmp-tlone tlone
+out="$(run_group rm tlone --yes)"; rc=$?
+[[ "$rc" -eq 0 ]] && ! tvol ai-containers-vartmp-tlone \
+  && grep -qxF "  temp volume ai-containers-vartmp-tlone (its containers' /var/tmp)" <<<"$out" && [[ "$out" != *"  directory  "* ]] \
+  && pass "rm finds and removes a group that is only a temp volume" \
+  || fail "rm of a group that is only a temp volume (rc=$rc; got: $out)"
+rmdir "$GR/tboth" "$GR/tonly"
+tclean ai-containers-rvm-tboth ai-containers-vartmp-tboth ai-containers-vartmp-tonly
 
 # ── THE CONFIRMATION, ON A REAL TTY ─────────────────────────────────────────────
 # Everything above runs without a terminal, so confirm()'s interactive branch —
