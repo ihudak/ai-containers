@@ -160,10 +160,15 @@ _group_volumes() {
 # nested REPO_VOLUME_PREFIX values another prefix's volume carries a name of this
 # one's, which is how a name match took one repo's volume for another's
 # (REPO-11). One with no label was made outside a launch, and is no group's.
+# A volume that carries a temp volume's label is never a Ruby one: prefix
+# p-rvm-x's temp volume p-rvm-x-vartmp-g is listed with prefix p's Ruby volumes,
+# and with no Ruby label its name made it group x-vartmp-g's, an orphan that gc
+# removed.
 _vol_group() {
   local g
   case "$1" in
-    ruby) rvm_group_from_volume "$2" ;;
+    ruby) [[ -z "$(vartmp_group_from_volume "$2")" ]] || return 1
+          rvm_group_from_volume "$2" ;;
     temp) g="$(vartmp_group_from_volume "$2")"
           [[ -n "$g" && "$(vartmp_volume_name "$g")" == "$2" ]] || return 1
           printf '%s\n' "$g" ;;

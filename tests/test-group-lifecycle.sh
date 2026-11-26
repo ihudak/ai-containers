@@ -666,6 +666,33 @@ out="$(run_group gc --yes)"; rc=$?
   || fail "gc with nothing to collect, temp volumes present (rc=$rc; got: $out)"
 tclean ai-containers-vartmp-x ai-containers-vartmp-a-vartmp-tnest
 
+# Under nested prefixes the temp volume of prefix ai-containers-rvm-x,
+# ai-containers-rvm-x-vartmp-tn, is listed with this prefix's Ruby volumes. It
+# carries no Ruby label, and by its name it was group x-vartmp-tn's, which has
+# no directory: an orphan of this home's, which plain gc removed. A volume that
+# carries a temp volume's label is never a Ruby volume.
+mktmpvol ai-containers-rvm-x-vartmp-tn tn
+out="$(run_group list)"
+[[ "$out" != *ai-containers-rvm-x-vartmp-tn* ]] \
+  && pass "list does not take a nested prefix's temp volume for an orphaned Ruby volume" \
+  || fail "list names a nested prefix's temp volume as a Ruby orphan (got: $out)"
+out="$(run_group gc --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" != *ai-containers-rvm-x-vartmp-tn* ]] && tvol ai-containers-rvm-x-vartmp-tn \
+  && pass "gc leaves a nested prefix's temp volume that is named like a Ruby volume" \
+  || fail "gc took a nested prefix's temp volume for a Ruby orphan (rc=$rc; got: $out)"
+out="$(run_group gc --all --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" != *ai-containers-rvm-x-vartmp-tn* ]] && tvol ai-containers-rvm-x-vartmp-tn \
+  && pass "gc --all leaves it too" \
+  || fail "gc --all took a nested prefix's temp volume for a Ruby orphan (rc=$rc; got: $out)"
+# And where ~/.ai-containers is gone, which makes every volume a group's is an orphan.
+EH="$TMP/empty-home-nest"; mkdir -p "$EH"
+out="$(HOME="$EH" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" gc --all --yes 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$out" != *ai-containers-rvm-x-vartmp-tn* ]] && tvol ai-containers-rvm-x-vartmp-tn \
+  && pass "gc --all with no groups root leaves it too" \
+  || fail "gc --all with no groups root took a nested prefix's temp volume (rc=$rc; got: $out)"
+rmdir "$EH"
+tclean ai-containers-rvm-x-vartmp-tn
+
 # With ~/.ai-containers itself gone, every labelled temp volume is an orphan,
 # and a volume of the temp name with no label is still no group's: list does not
 # name it, and gc --all, which takes every orphan whoever made it, leaves it.
