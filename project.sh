@@ -13,7 +13,7 @@ unset CDPATH  # a relative cd follows it and prints the directory (bugs review G
 # the tools that already existed, reached from here.
 #
 # Scope: a project's own setup ONLY. Groups (~/.ai-containers/<group>/, their
-# rvm volumes) are group.sh's, and repo volumes are repo.sh's; neither is
+# Ruby and temp volumes) are group.sh's, and repo volumes are repo.sh's; neither is
 # touched here. A base-repo tool: it is not copied into projects.
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

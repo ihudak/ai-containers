@@ -87,7 +87,7 @@ there after a restart, at the same path. Two containers of a group never share
 a folder. Root, the start-up steps and the in-container database servers do not
 get `TMPDIR`; a `TMPDIR` set in your `container.env` wins. A shell that cannot
 write or enter its folder does not get it either, and keeps the default `/tmp`.
-If the start-up cannot make the folder, a `WARNING:` says why, the container
+If the start-up cannot make the folder, a `WARNING:` names it, the container
 starts all the same, and the agent's shell keeps `/tmp`. A `docker exec` session
 gets the container's environment as it was at launch, so a login shell there
 (`docker exec -u "$(id -u)" … bash -l`) takes the folder if it exists and that
@@ -298,7 +298,11 @@ nor `gc`.
 `group.sh rm` keeps a volume another home made, and removes this home's group
 directory. It refuses while a running container still mounts a volume it would
 remove, checking every such volume before it removes anything, and refuses
-`host`, which is not a group. It never touches repo volumes — those are global and shared across
+`host`, which is not a group. A launch of the group that starts while `rm` runs
+can still find the temp volume just before `rm` removes it; docker then makes
+the volume again as the container starts, without the group's label, and every
+later launch of the group is refused, printing the `docker volume rm` that
+clears the way. It never touches repo volumes — those are global and shared across
 every group; manage them with [`repo.sh`](repos-and-mounts.md#shared-repo-volumes-native-speed--reposh-and-repos).
 
 `cp -a` duplicates the *directory* only. The copy starts with an empty
