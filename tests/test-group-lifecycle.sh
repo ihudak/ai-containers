@@ -177,8 +177,8 @@ printf '#!/bin/sh\nexit 1\n' > "$FAKE_DU/du"; chmod +x "$FAKE_DU/du"
 out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"
 row="$(grep -E '^default ' <<<"$out")"
 grep -qE '[[:space:]]\?$' <<<"$row" \
-  && pass "list --sizes shows ? for a group dir du cannot read" \
-  || fail "list --sizes shows ? for a group dir du cannot read (got: $out)"
+  && pass "list --sizes shows ? for a du that prints nothing" \
+  || fail "list --sizes shows ? for a du that prints nothing (got: $out)"
 
 # du exits 1 when it cannot read part of the directory (a folder the agent made
 # unreadable), after printing the total of what it could read: list shows that
@@ -190,6 +190,16 @@ row="$(grep -E '^default ' <<<"$out")"
 grep -qE '[[:space:]]at least 12M$' <<<"$row" \
   && pass "list --sizes shows a partial total, as at least that, where du could not read all of a group dir" \
   || fail "list --sizes with a partial du total (got: $out)"
+
+# A du that pads the size with blanks, as BSD's prints a human size in four
+# columns (" 12K"; FreeBSD's du.c, source-read): the cell drops them, and a
+# partial total reads "at least 12M" with one blank.
+printf '#!/bin/sh\nfor a; do p="$a"; done\nprintf " 12M\\t%%s\\n" "$p"\nexit 1\n' > "$FAKE_DU/du"
+out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"
+row="$(grep -E '^default ' <<<"$out")"
+grep -qE '[[:space:]]at least 12M$' <<<"$row" \
+  && pass "list --sizes drops the blanks du pads a size with" \
+  || fail "list --sizes with a blank-padded du size (got: $out)"
 
 # Only what reads as a size is shown: a du that prints something else (no tab
 # before the path, another line before the size, words before the tab) is "?".

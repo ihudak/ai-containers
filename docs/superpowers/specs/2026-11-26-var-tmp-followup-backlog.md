@@ -67,7 +67,7 @@ Wording and docs:
    rather than showing the partial total. Show the partial total marked as
    partial, or at least say so in the comment above it.
    **Done:** the cell shows the total du printed, as `at least <size>`; a du
-   that prints nothing is still `?`.
+   that prints nothing, or anything that does not read as a size, is `?`.
 7. **`docs/groups.md` has a ragged source wrap** in the paragraph on several
    homes sharing one docker (a line ending "them. Each home's `rm` and").
    **Done:** rewrapped.
@@ -76,7 +76,7 @@ Wording and docs:
    an agent needs, pointing to `docs/groups.md` for the rest.
    **Done:** the six paragraphs link to `docs/groups.md` for what a user sees
    and keep the rules a change must not break (10,010 characters become
-   8,046).
+   8,181).
 
 ## Other platforms
 

@@ -376,7 +376,7 @@ rm -rf "$D.bin"; at_clean
 # rounded up, one decimal below 10, a whole number from 10, carried to the next
 # unit at 1024, through T. Measured with du (GNU coreutils) 9.12 --apparent-size
 # on files of each size. The fake du gives each removed folder the size.
-for pair in 1:1.0K 4:4.0K 10:10K 1023:1023K 1024:1.0M 1025:1.1M 1537:1.6M 10239:10M 10241:11M \
+for pair in 0:0 1:1.0K 4:4.0K 10:10K 1023:1023K 1024:1.0M 1025:1.1M 1537:1.6M 10239:10M 10241:11M \
             1047552:1023M 1048064:1.0G 1048577:1.1G 1073741824:1.0T 1073741825:1.1T; do
   at_setup; at_old 200101-000000-1
   at_fakebin du 'printf "%s\t%s\n" '"${pair%%:*}"' "${@: -1}"'

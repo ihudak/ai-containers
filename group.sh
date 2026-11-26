@@ -320,13 +320,15 @@ cmd_list() {
     if (( show_sizes )); then
       # The group directory holds the persistent cache and state folders, so
       # it grows on its own; the field before the tab is du -sh's size, GNU's
-      # and BSD's alike, and only one that reads as a size is shown, else "?".
+      # and BSD's alike (BSD's padded with blanks, which are dropped), and only
+      # one that reads as a size is shown, else "?".
       # du exits 1 when it cannot read part of the directory (a folder the
       # agent made unreadable), having printed the total of what it could read:
       # that total is shown as the least it holds.
       drc=0; dout="$(du -sh "$groups_root/$g" 2>/dev/null)" || drc=$?
       dsize="${dout%%$'\t'*}"
-      [[ "$dsize" =~ ^[[:space:]]*[0-9][0-9.,]*[A-Za-z]*$ ]] || dsize=""
+      dsize="${dsize#"${dsize%%[![:space:]]*}"}"
+      [[ "$dsize" =~ ^[0-9][0-9.,]*[A-Za-z]*$ ]] || dsize=""
       if [[ -n "$dsize" ]] && (( drc )); then dsize="at least $dsize"; fi
       printf '%-24s  %-40s  %-16s  %-40s  %-16s  %s\n' "$g" "${rc[0]-}" "${rc[1]-}" "${tc[0]-}" "${tc[1]-}" "${dsize:-?}"
     else
