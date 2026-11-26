@@ -214,16 +214,23 @@ _vol_not_ours() {
 }
 
 # _foreign_say <kind> <volume> <group> <why>: a volume of the group's Ruby or
-# temp volume name that is not the group's (_vol_not_ours says why), named with
-# the command that removes it. It was made outside a launch (a `docker run -v`
-# of it), for another group, or under another REPO_VOLUME_PREFIX, and a launch
-# refuses a temp one (sandbox-common.sh: `vartmp_volume_ensure()`); whose it is
-# cannot be told here, so it is never removed here.
+# temp volume name that is not the group's (_vol_not_ours says why), named, and
+# never removed here. One with no label was made outside a launch (a `docker
+# run -v` of it), and a launch refuses it
+# (sandbox-common.sh: `vartmp_volume_ensure()`): whose it is cannot be told, so
+# it is named with the command that removes it. One whose label names another
+# group is most likely that group's under another REPO_VOLUME_PREFIX, in use
+# there: no such command.
 _foreign_say() {
   local word="temp"
   [[ "$1" == temp ]] || word="Ruby"
-  printf '  (volume %s is kept: %s, so it is not the %s volume of group "%s".\n' "$2" "$4" "$word" "$3"
-  printf '   Once nothing in it is needed: docker volume rm %s)\n' "$2"
+  if [[ "$4" == "it has no label" ]]; then
+    printf '  (volume %s is kept: %s, so it is not the %s volume of group "%s".\n' "$2" "$4" "$word" "$3"
+    printf '   Once nothing in it is needed: docker volume rm %s)\n' "$2"
+  else
+    printf '  (volume %s is kept: %s, so it is not the %s volume of group "%s";\n' "$2" "$4" "$word" "$3"
+    printf "   it may be that group's volume under another REPO_VOLUME_PREFIX, in use there.)\n"
+  fi
 }
 
 # Each volume's human-readable size, from ONE `docker system df -v` per run
@@ -232,11 +239,12 @@ _foreign_say() {
 # it made list --sizes slower with every group.
 declare -A _df_size=()
 _df_load() {
-  local n s
-  while read -r n s; do
-    if [[ -n "$n" ]]; then _df_size[$n]="$s"; fi
-  done < <(docker system df -v --format '{{range .Volumes}}{{.Name}} {{.Size}}
+  local l lines=()
+  mapfile -t lines < <(docker system df -v --format '{{range .Volumes}}{{.Name}} {{.Size}}
 {{end}}' 2>/dev/null)
+  for l in ${lines[@]+"${lines[@]}"}; do
+    if [[ "$l" == ?*' '?* ]]; then _df_size[${l%% *}]="${l#* }"; fi
+  done
 }
 # volume_size <volume>: its size, '-' when docker did not give one.
 volume_size() {
@@ -246,17 +254,17 @@ volume_size() {
 # _vol_cells <kind> <group> <sizes> <docker answers>: the group's volume of that
 # kind and its state, a line each, as list shows them. The state is "present",
 # or its size with --sizes, then " (in use)" while a running container mounts
-# it; "none", the name "-", with no such volume; "unknown" when docker cannot be
-# reached (<docker answers> 0) or cannot read the volume's labels. A volume of
-# the name that is not the group's (_vol_not_ours) is named, its state "not the
-# group's".
+# it; "none", the name "-", when docker says there is no such volume; "unknown"
+# when docker cannot be reached (<docker answers> 0), cannot say whether the
+# volume exists, or cannot read its labels. A volume of the name that is not the
+# group's (_vol_not_ours) is named, its state "not the group's".
 _vol_cells() {
-  local kind="$1" g="$2" vol state why
+  local kind="$1" g="$2" vol state why vout
   vol="$(_group_vol "$kind" "$g")"
   if (( ! $4 )); then
     state="unknown"
-  elif ! docker volume inspect "$vol" >/dev/null 2>&1; then
-    vol="-"; state="none"
+  elif ! vout="$(docker volume inspect "$vol" 2>&1 >/dev/null)"; then
+    if [[ "${vout,,}" == *"no such volume"* ]]; then vol="-"; state="none"; else state="unknown"; fi
   elif ! why="$(_vol_not_ours "$kind" "$vol" "$g")"; then
     state="unknown"
   elif [[ -n "$why" ]]; then
@@ -284,11 +292,11 @@ cmd_list() {
   # the PRJ-16 fix).
   local dk=1
   docker volume ls -q >/dev/null 2>&1 || dk=0
-  if (( show_sizes && dk )); then _df_load; fi
+  if (( show_sizes && dk )) && [[ -n "$names" ]]; then _df_load; fi
   # With no group directory left, the orphans are all there is to name: deleting
   # the directories by hand leaves exactly that, and list returned before them.
   # Each row: the group, its Ruby volume and state, its temp volume and state.
-  local g dsize
+  local g dsize cell_unknown=0
   local -a rc=() tc=()
   if [[ -z "$names" ]]; then
     printf 'No container groups yet (%s is empty or absent).\n' "$groups_root"
@@ -303,6 +311,7 @@ cmd_list() {
     [[ -n "$g" ]] || continue
     mapfile -t rc < <(_vol_cells ruby "$g" "$show_sizes" "$dk")
     mapfile -t tc < <(_vol_cells temp "$g" "$show_sizes" "$dk")
+    if [[ "${rc[1]-}" == unknown || "${tc[1]-}" == unknown ]]; then cell_unknown=1; fi
     if (( show_sizes )); then
       # The group directory holds the persistent cache and state folders, so
       # it grows on its own; du -sh | cut works with GNU and BSD du alike.
@@ -341,6 +350,12 @@ cmd_list() {
       fi
     done
     if (( nolab )); then _no_key_note "$own"; fi
+  fi
+  # A volume docker could not say exists, or whose it is, is not one it says is
+  # absent or another group's: its state is unknown, and the run says so, rc 1.
+  if (( cell_unknown )); then
+    printf 'ERROR: docker could not say whether some volumes exist or whose they are (state "unknown" above).\n' >&2
+    exit 1
   fi
 }
 
@@ -417,7 +432,7 @@ cmd_rm() {
       done
       _no_key_note "$own" >&2
     else
-      printf 'ERROR: no such group "%s" (no directory at %s, no volume %s and no temp volume of it).\n' "$name" "$dir" "${vol[ruby]}" >&2
+      printf 'ERROR: no such group "%s" (no directory at %s, and no Ruby or temp volume of its own).\n' "$name" "$dir" >&2
     fi
     for k in ruby temp; do
       if [[ "${act[$k]}" == foreign ]]; then _foreign_say "$k" "${vol[$k]}" "$name" "${lab[$k]}" >&2; fi

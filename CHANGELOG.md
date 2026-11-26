@@ -75,16 +75,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   between two calls had `rm` take the group's own temp volume for another's,
   removing the directory and leaving the volume, and another home's Ruby volume
   for one with no owner label, which it removed. It now refuses and removes
-  nothing, as when docker cannot say whether the volume exists; `list` shows
-  such a volume as `unknown`.
+  nothing, as when docker cannot say whether the volume exists. `list` shows
+  such a volume, and one docker cannot say exists, as `unknown` (not `none`)
+  and exits 1.
 - **`group.sh rm` no longer removes another prefix's volume by its name
   alone.** Under nested `REPO_VOLUME_PREFIX` values, prefix `p-rvm-x`'s volumes
   carry the Ruby volume names of groups `x-vartmp-g` and `x-rvm-g` under prefix
   `p`. A volume of the group's Ruby name that carries a temp volume's label or
-  another group's Ruby label is now named with its `docker volume rm` and left,
-  and `list` shows it as `not the group's`.
+  another group's Ruby label is now named and left, and `list` shows it as
+  `not the group's`. For such a volume, and one of the temp name labelled for
+  another group, `rm` no longer prints a `docker volume rm`: it is most likely
+  that group's, in use under its own prefix.
 - **`group.sh list --sizes` asks `docker system df -v` once per run**, not once
-  per volume: that call walks every volume on the daemon.
+  per volume, and not at all with no group to size: that call walks every
+  volume on the daemon.
 
 ## v0.11.0 — 2026-11-19
 

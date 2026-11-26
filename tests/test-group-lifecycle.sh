@@ -43,12 +43,16 @@ case "$1" in
           if [[ "$prev" == "--format" ]]; then :; elif [[ "$a" != "--format" ]]; then name="$a"; fi
           prev="$a"
         done
+        # FAKE_INSPECT_FAIL=<volume>: docker cannot say whether it exists.
+        [[ "$name" == "${FAKE_INSPECT_FAIL:-}" ]] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
         [[ -f "$FAKE_VOLUMES_DIR/$name" ]] || { echo "Error response from daemon: get $name: no such volume" >&2; exit 1; }
         fmt=""; prev=""
         for a in "${@:3}"; do [[ "$prev" == "--format" ]] && fmt="$a"; prev="$a"; done
         # FAKE_LABEL_FAIL=<volume>: docker says the volume exists, then cannot
-        # be reached when its labels are read.
-        if [[ "$fmt" == *Labels* && "$name" == "${FAKE_LABEL_FAIL:-}" ]]; then
+        # be reached when its labels are read; FAKE_LABEL_FAIL_KEY=<key> only
+        # when that one is.
+        if [[ "$fmt" == *Labels* && "$name" == "${FAKE_LABEL_FAIL:-}" ]] \
+           && [[ -z "${FAKE_LABEL_FAIL_KEY:-}" || "$fmt" == *"\"$FAKE_LABEL_FAIL_KEY\""* ]]; then
           echo "Cannot connect to the Docker daemon" >&2; exit 1
         fi
         if [[ "$fmt" == *Labels* ]]; then
@@ -606,6 +610,19 @@ dfn="$(grep -c . "$DFLOG")"
   && grep -qE '^tonly +- +none +ai-containers-vartmp-tonly +- ' <<<"$out" \
   && pass "list --sizes asks docker system df once, however many volumes it sizes" \
   || fail "list --sizes asked docker system df $dfn time(s) (got: $out)"
+: > "$DFLOG"
+out="$(FAKE_DF_LOG="$DFLOG" run_group list)"
+dfn="$(grep -c . "$DFLOG")"
+[[ "$dfn" == 0 ]] \
+  && pass "list without --sizes never asks docker system df" \
+  || fail "list without --sizes asked docker system df $dfn time(s)"
+EH="$TMP/empty-home-df"; mkdir -p "$EH"
+out="$(HOME="$EH" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" FAKE_DF_LOG="$DFLOG" bash "$REPO_DIR/group.sh" list --sizes 2>&1)"
+dfn="$(grep -c . "$DFLOG")"
+[[ "$dfn" == 0 ]] \
+  && pass "list --sizes with no group directory has nothing to size, and never asks docker system df" \
+  || fail "list --sizes with no group directory asked docker system df $dfn time(s) (got: $out)"
+rmdir "$EH"
 out="$(FAKE_DOCKER_DOWN=1 run_group list)"
 grep -qE '^tboth +ai-containers-rvm-tboth +unknown +ai-containers-vartmp-tboth +unknown$' <<<"$out" \
   && pass "list with docker unreachable says both volumes are unknown" \
@@ -790,8 +807,10 @@ out="$(run_group rm tun --yes)"; rc=$?
 tclean ai-containers-vartmp-tun
 mkdir -p "$GR/tlab"; mktmpvol ai-containers-vartmp-tlab tother
 out="$(run_group rm tlab --yes)"; rc=$?
-[[ "$rc" -eq 0 && ! -d "$GR/tlab" && "$out" == *'group "tother"'* && "$out" == *"docker volume rm ai-containers-vartmp-tlab"* ]] && tvol ai-containers-vartmp-tlab \
-  && pass "rm names a temp-name volume labelled for another group, and leaves it" \
+[[ "$rc" -eq 0 && ! -d "$GR/tlab" && "$out" == *'its label names group "tother", so it is not the temp volume of group "tlab";'* ]] \
+  && [[ "$out" == *"it may be that group's volume under another REPO_VOLUME_PREFIX"* && "$out" != *"docker volume rm ai-containers-vartmp-tlab"* ]] \
+  && tvol ai-containers-vartmp-tlab \
+  && pass "rm names a temp-name volume labelled for another group, and leaves it, with no command to remove it" \
   || fail "rm with a temp-name volume of another group (rc=$rc; got: $out)"
 tclean ai-containers-vartmp-tlab
 # A group that is only a temp volume, no directory and no Ruby volume, is found
@@ -816,16 +835,44 @@ out="$(FAKE_LABEL_FAIL=ai-containers-vartmp-tlf run_group rm tlf --yes)"; rc=$?
   && pass "rm refuses when docker cannot read the temp volume's labels, removing nothing" \
   || fail "rm with the temp volume's labels unreadable (rc=$rc; got: $out)"
 mkdir -p "$GR/tlf"; mkvol ai-containers-rvm-tlf tlf; mktmpvol ai-containers-vartmp-tlf tlf
-out="$(FAKE_LABEL_FAIL=ai-containers-vartmp-tlf run_group list)"
+out="$(FAKE_LABEL_FAIL=ai-containers-vartmp-tlf run_group list)"; rc=$?
 grep -qE '^tlf +ai-containers-rvm-tlf +present +ai-containers-vartmp-tlf +unknown$' <<<"$out" \
-  && pass "list says a temp volume whose labels docker cannot read is unknown, not another group's" \
-  || fail "list with the temp volume's labels unreadable (got: $out)"
+  && [[ "$rc" -ne 0 && "$out" == *"ERROR: docker could not say whether some volumes exist or whose they are"* ]] \
+  && pass "list says a temp volume whose labels docker cannot read is unknown, not another group's, and exits 1" \
+  || fail "list with the temp volume's labels unreadable (rc=$rc; got: $out)"
+# Nor is a docker that cannot say whether the volume exists one that says it
+# does not: the row's state is unknown, not none.
+out="$(FAKE_INSPECT_FAIL=ai-containers-vartmp-tlf run_group list)"; rc=$?
+grep -qE '^tlf +ai-containers-rvm-tlf +present +ai-containers-vartmp-tlf +unknown$' <<<"$out" \
+  && [[ "$rc" -ne 0 && "$out" == *"ERROR: docker could not say whether some volumes exist or whose they are"* ]] \
+  && pass "list says a volume docker cannot say exists is unknown, not none, and exits 1" \
+  || fail "list with the temp volume's existence unknown (rc=$rc; got: $out)"
+out="$(FAKE_INSPECT_FAIL=ai-containers-rvm-tlf run_group list)"; rc=$?
+grep -qE '^tlf +ai-containers-rvm-tlf +unknown +ai-containers-vartmp-tlf +present$' <<<"$out" \
+  && [[ "$rc" -ne 0 && "$out" == *"ERROR: docker could not say whether some volumes exist or whose they are"* ]] \
+  && pass "list says a Ruby volume docker cannot say exists is unknown, and exits 1" \
+  || fail "list with the Ruby volume's existence unknown (rc=$rc; got: $out)"
+# With every volume known, list exits 0 and says nothing of the kind.
+out="$(run_group list)"; rc=$?
+grep -qE '^tlf +ai-containers-rvm-tlf +present +ai-containers-vartmp-tlf +present$' <<<"$out" \
+  && [[ "$rc" -eq 0 && "$out" != *"ERROR:"* ]] \
+  && pass "list with every volume known exits 0, with no ERROR" \
+  || fail "list with every volume known (rc=$rc; got: $out)"
 VOL_OWNER="$THEIRS" mkvol ai-containers-rvm-tlf tlf
 out="$(FAKE_LABEL_FAIL=ai-containers-rvm-tlf run_group rm tlf --yes)"; rc=$?
 [[ "$rc" -ne 0 && -d "$GR/tlf" && "$out" == *"docker could not say whose ai-containers-rvm-tlf is"* ]] \
   && tvol ai-containers-rvm-tlf && tvol ai-containers-vartmp-tlf \
   && pass "rm refuses when docker cannot read the Ruby volume's labels, keeping another home's volume" \
   || fail "rm with the Ruby volume's labels unreadable (rc=$rc; got: $out)"
+# Each label rm judges a Ruby volume by, read alone and failing, refuses too.
+for key in ai-containers.vartmp-group ai-containers.rvm-group ai-containers.owner; do
+  out="$(FAKE_LABEL_FAIL=ai-containers-rvm-tlf FAKE_LABEL_FAIL_KEY="$key" run_group rm tlf --yes)"; rc=$?
+  [[ "$rc" -ne 0 && -d "$GR/tlf" && "$out" == *"docker could not say whose ai-containers-rvm-tlf is"* ]] \
+    && tvol ai-containers-rvm-tlf && tvol ai-containers-vartmp-tlf \
+    && pass "rm refuses when docker cannot read the Ruby volume's $key label alone" \
+    || fail "rm with the Ruby volume's $key label unreadable (rc=$rc; got: $out)"
+  mkdir -p "$GR/tlf"; VOL_OWNER="$THEIRS" mkvol ai-containers-rvm-tlf tlf; mktmpvol ai-containers-vartmp-tlf tlf
+done
 rm -rf "$GR/tlf"; tclean ai-containers-rvm-tlf ai-containers-vartmp-tlf
 
 # A group's Ruby volume was its by its name alone in rm and in list's row, so a
@@ -834,12 +881,14 @@ rm -rf "$GR/tlf"; tclean ai-containers-rvm-tlf ai-containers-vartmp-tlf
 # volume name of group x-vartmp-tn here, and that prefix's Ruby volume of group
 # g, ai-containers-rvm-x-rvm-g, the one of group x-rvm-g. A volume of the Ruby
 # name that carries a temp volume's label, or another group's Ruby label, is not
-# the group's: named with its docker volume rm and left. One with no label, made
-# before labels, is still the group's.
+# the group's: named and left, with no command to remove it, since it may be in
+# use under its own prefix. One with no label, made before labels, is still the
+# group's.
 mktmpvol ai-containers-rvm-x-vartmp-tn tn
 out="$(run_group rm x-vartmp-tn --yes)"; rc=$?
-[[ "$rc" -ne 0 && "$out" == *'no such group "x-vartmp-tn"'* && "$out" == *"docker volume rm ai-containers-rvm-x-vartmp-tn"* ]] \
-  && tvol ai-containers-rvm-x-vartmp-tn \
+[[ "$rc" -ne 0 && "$out" == *'no such group "x-vartmp-tn"'* && "$out" != *"no volume ai-containers-rvm-x-vartmp-tn"* ]] \
+  && [[ "$out" == *'it is a temp volume, its label naming group "tn", so it is not the Ruby volume of group "x-vartmp-tn";'* ]] \
+  && [[ "$out" != *"docker volume rm ai-containers-rvm-x-vartmp-tn"* ]] && tvol ai-containers-rvm-x-vartmp-tn \
   && pass "rm leaves a nested prefix's temp volume that has the group's Ruby volume name, naming it" \
   || fail "rm took a nested prefix's temp volume for the group's Ruby volume (rc=$rc; got: $out)"
 mkdir -p "$GR/x-vartmp-tn"
@@ -850,8 +899,8 @@ grep -qE "^x-vartmp-tn +ai-containers-rvm-x-vartmp-tn +not the group's +" <<<"$o
 rmdir "$GR/x-vartmp-tn"; tclean ai-containers-rvm-x-vartmp-tn
 mkvol ai-containers-rvm-x-rvm-g g; mkdir -p "$GR/x-rvm-g"
 out="$(run_group rm x-rvm-g --yes)"; rc=$?
-[[ "$rc" -eq 0 && ! -d "$GR/x-rvm-g" && "$out" == *'its label names group "g"'* && "$out" == *"docker volume rm ai-containers-rvm-x-rvm-g"* ]] \
-  && tvol ai-containers-rvm-x-rvm-g \
+[[ "$rc" -eq 0 && ! -d "$GR/x-rvm-g" && "$out" == *'its label names group "g", so it is not the Ruby volume of group "x-rvm-g"'* ]] \
+  && [[ "$out" != *"docker volume rm ai-containers-rvm-x-rvm-g"* ]] && tvol ai-containers-rvm-x-rvm-g \
   && pass "rm leaves a volume of the Ruby name labelled for another group, removing the directory" \
   || fail "rm took another group's Ruby volume by its name (rc=$rc; got: $out)"
 rm -rf "$GR/x-rvm-g"; tclean ai-containers-rvm-x-rvm-g

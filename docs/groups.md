@@ -293,10 +293,14 @@ from a protected git file's place, and `group.sh` neither lists nor removes it.
 volume of that name without the label (one a `docker run -v` made before the
 group's first launch, say) is shown by `list` as `not the group's`, named by
 `rm` with the `docker volume rm` that removes it, and removed by neither `rm`
-nor `gc`. The same goes for a volume of the group's Ruby volume name that carries
-a temp volume's label, or another group's Ruby label: under nested
-`REPO_VOLUME_PREFIX` values another prefix's volume can have that name. A Ruby
-volume with no label, made before volumes carried one, is still the group's.
+nor `gc`. A volume of the group's Ruby or temp volume name whose label names
+another group (a temp volume's label, on a volume of the Ruby name) is not the
+group's either: under nested `REPO_VOLUME_PREFIX` values another prefix's volume
+can have that name. `list` shows it as `not the group's`, and `rm` names it and
+leaves it, offering no command to remove it, since that prefix's group may be
+using it. A Ruby volume with no label, made before volumes carried one, is
+still the group's. A volume docker cannot say exists, or whose it is, shows as
+`unknown`, and `list` then exits 1.
 
 `group.sh rm` keeps a volume another home made, and removes this home's group
 directory. It refuses while a running container still mounts a volume it would
