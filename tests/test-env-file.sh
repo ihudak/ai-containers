@@ -356,9 +356,11 @@ grep -qx 'user-A:1' <<<"$out" && grep -qx 'user-NL:x|y|' <<<"$out" && grep -qx '
 # each runuser line carries the stash (as_sandbox_user's) or run_services' start
 # copy of it, and all three modes' final shells pass it through capsh.
 n_shell="$(grep -cF -- "-- -c 'exec env \"\$@\" /bin/bash -l' bash \${_aice_app_env[@]+\"\${_aice_app_env[@]}\"}" "$ENGINE/entrypoint.sh")"
+# setup_agent_tmp's is the one deliberate exception: it runs agent-tmp.sh under
+# `env -i` with a fixed PATH and is given no container.env (var-tmp volume design).
 # Continued lines joined first: a hand-over may wrap.
 joined="$(awk '{ if (sub(/\\$/, "")) { buf = buf $0; next } print buf $0; buf = "" }' "$ENGINE/entrypoint.sh")"
-bare="$(grep -E '^[^#]*runuser ' <<<"$joined" | grep -vF '_aice_app_env[@]' | grep -vF 'start_env[@]')"
+bare="$(grep -E '^[^#]*runuser ' <<<"$joined" | grep -vF '_aice_app_env[@]' | grep -vF 'start_env[@]' | grep -vF 'bash /usr/local/bin/agent-tmp.sh')"
 n_ru="$(grep -cE '^[^#]*runuser ' <<<"$joined")"
 [[ "$n_shell" == 3 && -z "$bare" && "$n_ru" -ge 1 ]] \
   && pass "E11 all three modes' shells, and all $n_ru runuser hand-overs, give container.env back" \

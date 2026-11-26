@@ -953,7 +953,7 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
 # lines below under dash, bash and posix-mode bash.
 #
 # The last line exports TMPDIR from AI_AGENT_TMPDIR, the per-container folder the
-# launcher made under the persistent /var/tmp. It is here and nowhere else on
+# start-up (entrypoint.sh: setup_agent_tmp()) made under the persistent /var/tmp. It is here and nowhere else on
 # purpose: /var/tmp is writable by the agent and outlives the container, so no
 # root process may take a folder in it as its temp directory, and the launcher
 # passes AI_AGENT_TMPDIR, never TMPDIR. Only a login or interactive shell of the

@@ -71,6 +71,37 @@ run_agent_skill_install() {
     bash /usr/local/bin/install-agent-skills.sh || true
 }
 
+# The launch's /var/tmp folder, and the pruning of old ones (var-tmp volume
+# design, steps 1 to 3). /var/tmp is a per-group Docker volume the launcher
+# mounts, so the host cannot make a folder in it (not on a Mac); this step does,
+# and prunes, in the container's own start-up.
+#  1. As root, only when the launcher passed AI_AGENT_TMP_RUNNING (so /var/tmp
+#     is the volume): make the mount's top folder root:root 1777. Only that
+#     folder, a mount point nothing in the container can swap, never anything in
+#     it. A fresh volume is root-owned and a copied-into one has the copy's mode;
+#     both must be open to the agent. Without the variable (an older launcher,
+#     /var/tmp a host bind) nothing runs: chowning a host folder to root would
+#     lock the user out of it.
+#  2. As the sandbox user, with `env -i` and a fixed PATH, not container.env
+#     (hence runuser here and not as_sandbox_user, which gives it back):
+#     agent-tmp.sh prunes old folders and makes this launch's own.
+#  3. If that failed, unset AI_AGENT_TMPDIR so the shell keeps /tmp rather than
+#     use a folder nothing made. The start is never refused over this.
+# AI_AGENT_TMP_RUNNING is the launcher's list of running containers' folders;
+# it is unset afterwards so no later process, the agent's shell included, has it.
+setup_agent_tmp() {
+  [[ -n "${AI_AGENT_TMP_RUNNING+x}" ]] || return 0
+  local slot=""
+  [[ "${AI_AGENT_TMPDIR:-}" == /var/tmp/* ]] && slot="${AI_AGENT_TMPDIR#/var/tmp/}"
+  chown root:root /var/tmp 2>/dev/null || true
+  chmod 1777 /var/tmp 2>/dev/null || true
+  "${_user_step[@]}" runuser -u "$sandbox_user" -- \
+    env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    bash /usr/local/bin/agent-tmp.sh /var/tmp "$slot" "$AI_AGENT_TMP_RUNNING" || unset AI_AGENT_TMPDIR
+  unset AI_AGENT_TMP_RUNNING
+  return 0
+}
+
 # ~/.rvm is a docker NAMED VOLUME for named groups, and Docker creates a fresh one
 # root-owned: it only copies ownership from the image for a path the image already
 # contains, and /home/<user> is created at runtime. setup_sandbox_user's recursive
@@ -451,6 +482,7 @@ case "$mode" in
     # In every mode the shell capsh starts as that user gives container.env back
     # (stash_app_env) and execs the login shell — after the switch, so no root
     # process ever holds it.
+    setup_agent_tmp
     chown_rvm_root
     run_ruby_reconcile
     link_default_ruby
@@ -499,6 +531,7 @@ case "$mode" in
     # capability surface for a convenience nobody has asked for, in a mode that
     # already captures everything automatically. Case 230-discovery-drops-
     # capabilities asserts the drop.
+    setup_agent_tmp
     chown_rvm_root
     run_ruby_reconcile
     link_default_ruby
@@ -523,6 +556,7 @@ case "$mode" in
     printf '║  projects that do not require network isolation.                 ║\n'
     printf '╚══════════════════════════════════════════════════════════════════╝\n'
 
+    setup_agent_tmp
     chown_rvm_root
     run_ruby_reconcile
     link_default_ruby

@@ -211,6 +211,89 @@ for m in restricted discovery open; do
     || fail "$m: run_services order (got: $order)"
 done
 
+# setup_agent_tmp (var-tmp volume design, steps 1 to 3): the launch's /var/tmp
+# folder is made and old ones pruned by agent-tmp.sh as the agent's user, with a
+# fixed environment, never container.env. Extracted by name; the script path is
+# replaced by a fake that records its arguments and environment, and runuser,
+# setpriv, chown and chmod are stubs that record theirs.
+for m in restricted discovery open; do
+  block="$(awk -v m="$m" '
+    $0 ~ "^[[:space:]]*"m"\\)" {grab=1; next}
+    grab && /;;/ {grab=0}
+    grab {print}
+  ' "$REPO_DIR/entrypoint.sh")"
+  order="$(grep -E '^[[:space:]]*(setup_agent_tmp|chown_rvm_root|run_services)$' <<<"$block" | tr -d ' ' | tr '\n' ' ')"
+  [[ "$order" == "setup_agent_tmp chown_rvm_root run_services " ]] \
+    && pass "$m: setup_agent_tmp runs just before chown_rvm_root, before run_services" \
+    || fail "$m: setup_agent_tmp wiring (got: $order)"
+done
+at_fake="$TMP/fake-agent-tmp.sh"; at_fn="$TMP/setup-agent-tmp.sh"; at_log="$TMP/at.log"
+cat > "$at_fake" <<FAKE
+#!/bin/sh
+printf 'args:%s\n' "\$*" >> "$at_log"
+env | sed -n 's/^/env:/p' >> "$at_log"
+exit "\$(cat "$TMP/at.exit")"
+FAKE
+awk '/^setup_agent_tmp\(\) \{/,/^\}/' "$REPO_DIR/entrypoint.sh" \
+  | sed "s#/usr/local/bin/agent-tmp.sh#$at_fake#g" > "$at_fn"
+if ! grep -q "$at_fake" "$at_fn"; then
+  fail "setup_agent_tmp could be extracted with its script path replaced"
+else
+  pass "setup_agent_tmp could be extracted with its script path replaced"
+  # at_run <running|UNSET> <AI_AGENT_TMPDIR|UNSET> <fake exit>; appends the after-state to the log
+  at_run() {
+    : > "$at_log"
+    ( set -euo pipefail
+      # shellcheck source=/dev/null
+      source "$at_fn"
+      eval "$(grep -m1 '^_user_step=' "$REPO_DIR/entrypoint.sh")"
+      setpriv() { local o=""; while (( $# )) && [[ "$1" != -- ]]; do o+=" $1"; shift; done; shift; echo "setpriv:$o" >> "$at_log"; "$@"; }
+      runuser() { echo "runuser:$1 $2 $3" >> "$at_log"; [[ "${1:-}" == -u && "${2:-}" == alice && "${3:-}" == -- ]] || return 97; shift 3; "$@"; }
+      chown() { echo "chown:$*" >> "$at_log"; }
+      chmod() { echo "chmod:$*" >> "$at_log"; }
+      # shellcheck disable=SC2034  # read by the extracted function
+      sandbox_user=alice; _aice_app_env=(APP=1); export APP=1; echo "$3" > "$TMP/at.exit"
+      if [[ "$1" == UNSET ]]; then unset AI_AGENT_TMP_RUNNING; else export AI_AGENT_TMP_RUNNING="$1"; fi
+      if [[ "$2" == UNSET ]]; then unset AI_AGENT_TMPDIR; else export AI_AGENT_TMPDIR="$2"; fi
+      rc=0; setup_agent_tmp || rc=$?
+      echo "rc:$rc"
+      echo "tmpdir:${AI_AGENT_TMPDIR-unset}"
+      echo "running:${AI_AGENT_TMP_RUNNING-unset}" ) >> "$at_log" 2>&1
+  }
+  S=200101-000000-1
+  at_run UNSET /var/tmp/$S 0
+  grep -qE '^(chown|chmod|args):' "$at_log" && fail "agent-tmp: variable unset runs no chown, chmod or script" || pass "agent-tmp: variable unset runs no chown, chmod or script"
+  grep -qx 'rc:0' "$at_log" && pass "agent-tmp: variable unset returns 0" || fail "agent-tmp: variable unset returns 0"
+  grep -qx 'running:unset' "$at_log" && pass "agent-tmp: AI_AGENT_TMP_RUNNING is unset after the step (unset case)" || fail "agent-tmp: running var after unset case"
+
+  at_run "" /var/tmp/$S 0
+  [[ "$(grep -E '^(chown|chmod):' "$at_log" | tr '\n' ' ')" == "chown:root:root /var/tmp chmod:1777 /var/tmp " ]] \
+    && pass "agent-tmp: empty-but-set runs chown root:root and chmod 1777 on /var/tmp only, no -R" \
+    || fail "agent-tmp: root part (got: $(grep -E '^(chown|chmod):' "$at_log" | tr '\n' ' '))"
+  grep -qx "args:/var/tmp $S " "$at_log" && pass "agent-tmp: script gets /var/tmp <slot> <empty running>" || fail "agent-tmp: args for empty running (got: $(grep '^args:' "$at_log"))"
+  grep -qx 'running:unset' "$at_log" && pass "agent-tmp: AI_AGENT_TMP_RUNNING is unset after the step (empty case)" || fail "agent-tmp: running var after empty case"
+  grep -qx "tmpdir:/var/tmp/$S" "$at_log" && pass "agent-tmp: AI_AGENT_TMPDIR kept when the script exits 0" || fail "agent-tmp: tmpdir kept on success"
+
+  at_run "a b ?" /var/tmp/$S 0
+  grep -qx "args:/var/tmp $S a b ?" "$at_log" && pass "agent-tmp: script gets exactly /var/tmp <slot> <running value>" || fail "agent-tmp: args (got: $(grep '^args:' "$at_log"))"
+  [[ "$(grep '^env:' "$at_log" | sed 's/^env://' | grep -vE '^(PWD|OLDPWD|SHLVL|_)=' | tr '\n' ' ')" == "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin " ]] \
+    && pass "agent-tmp: script's environment is exactly the fixed PATH" \
+    || fail "agent-tmp: script env (got: $(grep '^env:' "$at_log" | tr '\n' ' '))"
+  grep -qx 'setpriv: --bounding-set=-net_admin,-net_raw --no-new-privs' "$at_log" && grep -qx 'runuser:-u alice --' "$at_log" \
+    && pass "agent-tmp: runs through the RT-8 setpriv and runuser -u <sandbox user> --" \
+    || fail "agent-tmp: drop (log: $(tr '\n' ';' < "$at_log"))"
+
+  at_run "" /var/tmp/$S 1
+  grep -qx 'tmpdir:unset' "$at_log" && grep -qx 'rc:0' "$at_log" && grep -qx 'running:unset' "$at_log" \
+    && pass "agent-tmp: a failing script unsets AI_AGENT_TMPDIR, returns 0, unsets the running var" \
+    || fail "agent-tmp: failure handling (got: $(grep -E '^(rc|tmpdir|running):' "$at_log" | tr '\n' ' '))"
+
+  at_run "" /etc/x 0
+  grep -qx "args:/var/tmp  " "$at_log" \
+    && pass "agent-tmp: an AI_AGENT_TMPDIR outside /var/tmp/ gives the script an empty slot" \
+    || fail "agent-tmp: outside slot (got: $(grep '^args:' "$at_log"))"
+fi
+
 # The agent shell must not be root: capsh switching 0 to 0 clears no
 # capabilities (bugs review ENV-4). sandbox.sh refuses it; the entrypoint does
 # too, for a container started some other way, before anything else runs.
