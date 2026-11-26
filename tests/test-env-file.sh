@@ -360,11 +360,15 @@ n_shell="$(grep -cF -- "-- -c 'exec env \"\$@\" /bin/bash -l' bash \${_aice_app_
 # `env -i` with a fixed PATH and is given no container.env (var-tmp volume design).
 # Continued lines joined first: a hand-over may wrap.
 joined="$(awk '{ if (sub(/\\$/, "")) { buf = buf $0; next } print buf $0; buf = "" }' "$ENGINE/entrypoint.sh")"
-bare="$(grep -E '^[^#]*runuser ' <<<"$joined" | grep -vF '_aice_app_env[@]' | grep -vF 'start_env[@]' | grep -vF 'bash /usr/local/bin/agent-tmp.sh')"
+# Only that exact form is excepted, once: a runuser line that merely names the
+# script, without `env -i` and the fixed PATH, is not.
+at_form='runuser -u "\$sandbox_user" -- +env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin +bash /usr/local/bin/agent-tmp\.sh '
+bare="$(grep -E '^[^#]*runuser ' <<<"$joined" | grep -vF '_aice_app_env[@]' | grep -vF 'start_env[@]' | grep -vE "$at_form")"
 n_ru="$(grep -cE '^[^#]*runuser ' <<<"$joined")"
-[[ "$n_shell" == 3 && -z "$bare" && "$n_ru" -ge 1 ]] \
-  && pass "E11 all three modes' shells, and all $n_ru runuser hand-overs, give container.env back" \
-  || fail "E11 hand-overs give container.env back (final shells: $n_shell of 3; runuser without it: ${bare:-none}; runuser lines: $n_ru)"
+n_at="$(grep -E '^[^#]*runuser ' <<<"$joined" | grep -cE "$at_form")"
+[[ "$n_shell" == 3 && -z "$bare" && "$n_at" == 1 && "$n_ru" -ge 2 ]] \
+  && pass "E11 all three modes' shells, and all $(( n_ru - 1 )) other runuser hand-overs, give container.env back; agent-tmp.sh's alone runs under env -i" \
+  || fail "E11 hand-overs give container.env back (final shells: $n_shell of 3; runuser without it: ${bare:-none}; agent-tmp.sh env -i lines: $n_at of 1; runuser lines: $n_ru)"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

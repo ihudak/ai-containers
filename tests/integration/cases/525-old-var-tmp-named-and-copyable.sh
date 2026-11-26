@@ -68,10 +68,11 @@ fi
 assert_host_file_exists "$old/$old_slot/f"
 
 # ── Close the volume's top folder to the agent ─────────────────────────────────
-if docker run --rm --pull=never ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} -v "$vol:/v" --entrypoint sh "$IT_IMAGE" -c 'chown 0:0 /v && chmod 0755 /v' >/dev/null 2>&1; then
+if docker run --rm --pull=never ${IT_SELINUX_OPT:+"$IT_SELINUX_OPT"} -v "$vol:/v" --entrypoint sh "$IT_IMAGE" -c 'chown 0:0 /v && chmod 0755 /v' >/dev/null 2>"$IT_SCRATCH/525-close.err"; then
   pass "the volume's top folder is closed to the agent (root, 0755)"
 else
   fail "the volume's top folder is closed to the agent (root, 0755)"
+  sed 's/^/     /' "$IT_SCRATCH/525-close.err"
   it_finish
 fi
 

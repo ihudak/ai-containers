@@ -965,11 +965,14 @@ RUN chmod +x /usr/local/bin/link-default-ruby.sh
 # Never for root, whose id is 0. A TMPDIR already set wins, because the
 # project's container.env reaches the agent's shell before this file runs.
 # Only for a folder the shell can write and enter, else the shell keeps the
-# default /tmp rather than a TMPDIR every tool would fail in. The agent's own
-# shell has AI_AGENT_TMPDIR only once the start-up made the folder as that
-# user. A `docker exec` session gets the container's configured environment,
-# AI_AGENT_TMPDIR included even after a failed start-up unset it, and takes the
-# folder if it exists and that session's user can write and enter it.
+# default /tmp rather than a TMPDIR every tool would fail in. With this
+# launcher, which passes AI_AGENT_TMP_RUNNING too, the agent's own shell has
+# AI_AGENT_TMPDIR only once the start-up made the folder as that user; under
+# one that does not, the start-up leaves it as passed, and the -w/-x test
+# alone decides. A `docker exec` session gets the container's configured
+# environment, AI_AGENT_TMPDIR included even after a failed start-up unset it,
+# and takes the folder if it exists and that session's user can write and
+# enter it.
 RUN install -d /etc/skel/.local/bin && \
     printf '%s\n' \
       'export UV_TOOL_DIR="$HOME/.ai-tools/uv"' \

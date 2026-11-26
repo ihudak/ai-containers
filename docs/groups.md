@@ -48,9 +48,9 @@ Removing or backing up the group directory does not touch them:
 `./group.sh rm <group>` removes all three, and `./group.sh gc` collects a volume
 whose directory was deleted by hand. Volumes belong to a docker daemon, so each
 daemon you use (through another docker context, say) has its own volumes for a
-group. A docker that
-several homes share (every WSL distro's, under Docker Desktop) has one Ruby
-volume and one temp volume for a group name in all of them. Each home's `rm` and
+group. A docker that several homes share (every WSL distro's, under Docker
+Desktop) has one Ruby volume and one temp volume for a group name in all of
+them. Each home's `rm` and
 `gc` keep a volume another home made, and a launch that mounts one says so, but
 that is all: the home that made the volume can still remove it from under the
 others, with its `rm`, or its plain `gc` once its own group directory is gone,

@@ -2,14 +2,13 @@
 # what: gc skips the temp volumes: an orphaned vartmp volume survives, so 'assert_volume_absent <vartmp orphan>' goes red
 #
 diff --git a/group.sh b/group.sh
-index d965535..589f5ed 100755
 --- a/group.sh
 +++ b/group.sh
-@@ -442,6 +442,7 @@ cmd_gc() {
+@@ -525,6 +525,7 @@ cmd_gc() {
    local -A whose=()
    own="$(ai_containers_owner_known 2>/dev/null)" || own=""
    while read -r kind v; do
 +    [[ "$kind" == temp ]] && continue # MUTATION: gc never looks at a temp volume
-     g="$(_vol_group "$kind" "$v")" || continue      # no group's temp volume — never touched
-     [[ -d "$groups_root/$g" ]] && continue          # group still exists — keep
-     # Another home's, or one made before owner labels: its group may live in
+     grc=0; g="$(_vol_group "$kind" "$v")" || grc=$?
+     (( grc != 1 )) || continue                      # no group's volume — never touched
+     # Its labels, read so that a docker that cannot say is not one that says

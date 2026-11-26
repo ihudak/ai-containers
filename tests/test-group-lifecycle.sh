@@ -767,6 +767,24 @@ out="$(run_group rm tb2 --yes)"; rc=$?
   && pass "rm whose temp volume removal fails exits non-zero and leaves the directory" \
   || fail "rm whose temp volume removal fails (rc=$rc; got: $out)"
 tclean ai-containers-vartmp-tb2.rmfail
+# A Ruby volume docker will not remove does not stop rm trying the temp volume;
+# the directory stays, since one of its volumes does.
+mkvol ai-containers-rvm-tb2 tb2; mktmpvol ai-containers-vartmp-tb2 tb2
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-tb2.rmfail"
+out="$(run_group rm tb2 --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$GR/tb2" && "$out" == *"could not remove volume ai-containers-rvm-tb2"* ]] \
+  && tvol ai-containers-rvm-tb2 && ! tvol ai-containers-vartmp-tb2 \
+  && pass "rm whose Ruby volume removal fails still removes the temp volume, and leaves the directory" \
+  || fail "rm whose Ruby volume removal fails (rc=$rc; got: $out)"
+tclean ai-containers-rvm-tb2.rmfail
+# The temp volume's existence docker cannot say, after it answered for the Ruby
+# volume: refused, nothing removed.
+mktmpvol ai-containers-vartmp-tb2 tb2
+out="$(FAKE_INSPECT_FAIL=ai-containers-vartmp-tb2 run_group rm tb2 --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$GR/tb2" && "$out" == *"docker could not say whether ai-containers-vartmp-tb2 exists"* ]] \
+  && tvol ai-containers-rvm-tb2 && tvol ai-containers-vartmp-tb2 \
+  && pass "rm refuses when docker cannot say whether the temp volume exists, removing nothing" \
+  || fail "rm with the temp volume's existence unknown (rc=$rc; got: $out)"
 mkvol ai-containers-rvm-tb2 tb2
 out="$(run_group rm tb2 --yes)"; rc=$?
 [[ "$rc" -eq 0 && ! -d "$GR/tb2" ]] && ! tvol ai-containers-rvm-tb2 && ! tvol ai-containers-vartmp-tb2 \

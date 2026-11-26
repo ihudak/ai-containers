@@ -644,8 +644,8 @@ agent_exec_login() {  # $1=cid $2=command
 # REPO_VOLUME_PREFIX is scoped to the run (launcher_prepare exports it, so a
 # launch's own volumes are scoped too, not only the fixtures'), and that is a
 # SAFETY property, not tidiness: without it a fixture named "app" would be
-# `ai-containers-repo-app` — the same volume as the "app" a developer has been working in all week, which
-# the runner's sweep would then delete. With it, the fixture is
+# `ai-containers-repo-app` — the same volume as the "app" a developer has been
+# working in all week, which the runner's sweep would then delete. With it, the fixture is
 # `it-<run-id>-repo-app` and cannot collide with anything real.
 fixture_scope_init() {
   export REPO_VOLUME_PREFIX="it-$IT_RUN_ID"

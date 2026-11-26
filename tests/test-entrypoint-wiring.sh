@@ -222,15 +222,18 @@ for m in restricted discovery open; do
     grab && /;;/ {grab=0}
     grab {print}
   ' "$REPO_DIR/entrypoint.sh")"
-  order="$(grep -E '^[[:space:]]*(setup_agent_tmp|chown_rvm_root|run_services)$' <<<"$block" | tr -d ' ' | tr '\n' ' ')"
-  [[ "$order" == "setup_agent_tmp chown_rvm_root run_services " ]] \
-    && pass "$m: setup_agent_tmp runs just before chown_rvm_root, before run_services" \
-    || fail "$m: setup_agent_tmp wiring (got: $order)"
+  # After the user exists, and with nothing between it and chown_rvm_root: the
+  # next command line of the block, comments and blank lines aside, is that one.
+  order="$(grep -E '^[[:space:]]*(setup_sandbox_user|setup_agent_tmp|chown_rvm_root|run_services)$' <<<"$block" | tr -d ' ' | tr '\n' ' ')"
+  next="$(awk '/^[[:space:]]*setup_agent_tmp$/ {f=1; next} f && !/^[[:space:]]*(#|$)/ {gsub(/[[:space:]]/, ""); print; exit}' <<<"$block")"
+  [[ "$order" == "setup_sandbox_user setup_agent_tmp chown_rvm_root run_services " && "$next" == chown_rvm_root ]] \
+    && pass "$m: setup_agent_tmp runs after setup_sandbox_user, just before chown_rvm_root, before run_services" \
+    || fail "$m: setup_agent_tmp wiring (got: $order; next: $next)"
 done
 at_fake="$TMP/fake-agent-tmp.sh"; at_fn="$TMP/setup-agent-tmp.sh"; at_log="$TMP/at.log"
 cat > "$at_fake" <<FAKE
 #!/bin/sh
-printf 'args:%s\n' "\$*" >> "$at_log"
+{ printf 'args:%s|' "\$#"; printf '[%s]' "\$@"; printf '\n'; } >> "$at_log"
 env | sed -n 's/^/env:/p' >> "$at_log"
 exit "\$(cat "$TMP/at.exit")"
 FAKE
@@ -271,12 +274,13 @@ else
   [[ "$(grep -E '^(chown|chmod):' "$at_log" | tr '\n' ' ')" == "chown:root:root /var/tmp chmod:1777 /var/tmp " ]] \
     && pass "agent-tmp: empty-but-set runs chown root:root and chmod 1777 on /var/tmp only, no -R" \
     || fail "agent-tmp: root part (got: $(grep -E '^(chown|chmod):' "$at_log" | tr '\n' ' '))"
-  grep -qx "args:/var/tmp $S " "$at_log" && pass "agent-tmp: script gets /var/tmp <slot> <empty running>" || fail "agent-tmp: args for empty running (got: $(grep '^args:' "$at_log"))"
+  grep -qxF "args:3|[/var/tmp][$S][]" "$at_log" && pass "agent-tmp: script gets /var/tmp <slot> <empty running>, three arguments" || fail "agent-tmp: args for empty running (got: $(grep '^args:' "$at_log"))"
   grep -qx 'running:unset' "$at_log" && pass "agent-tmp: AI_AGENT_TMP_RUNNING is unset after the step (empty case)" || fail "agent-tmp: running var after empty case"
   grep -qx "tmpdir:/var/tmp/$S" "$at_log" && pass "agent-tmp: AI_AGENT_TMPDIR kept when the script exits 0" || fail "agent-tmp: tmpdir kept on success"
 
   at_run "a b ?" /var/tmp/$S 0
-  grep -qx "args:/var/tmp $S a b ?" "$at_log" && pass "agent-tmp: script gets exactly /var/tmp <slot> <running value>" || fail "agent-tmp: args (got: $(grep '^args:' "$at_log"))"
+  grep -qxF "args:3|[/var/tmp][$S][a b ?]" "$at_log" && pass "agent-tmp: script gets exactly /var/tmp <slot> <running value>, three arguments" || fail "agent-tmp: args (got: $(grep '^args:' "$at_log"))"
+  grep -qx 'running:unset' "$at_log" && pass "agent-tmp: AI_AGENT_TMP_RUNNING is unset after the step (listed case)" || fail "agent-tmp: running var after listed case"
   [[ "$(grep '^env:' "$at_log" | sed 's/^env://' | grep -vE '^(PWD|OLDPWD|SHLVL|_)=' | tr '\n' ' ')" == "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin " ]] \
     && pass "agent-tmp: script's environment is exactly the fixed PATH" \
     || fail "agent-tmp: script env (got: $(grep '^env:' "$at_log" | tr '\n' ' '))"
@@ -290,8 +294,8 @@ else
     || fail "agent-tmp: failure handling (got: $(grep -E '^(reached|tmpdir|running):' "$at_log" | tr '\n' ' '))"
 
   at_run "" /etc/x 0
-  grep -qx "args:/var/tmp  " "$at_log" \
-    && pass "agent-tmp: an AI_AGENT_TMPDIR outside /var/tmp/ gives the script an empty slot" \
+  grep -qxF "args:3|[/var/tmp][][]" "$at_log" && grep -qx 'running:unset' "$at_log" \
+    && pass "agent-tmp: an AI_AGENT_TMPDIR outside /var/tmp/ gives the script an empty slot, and the running var is unset" \
     || fail "agent-tmp: outside slot (got: $(grep '^args:' "$at_log"))"
 fi
 
