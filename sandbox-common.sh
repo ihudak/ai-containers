@@ -981,52 +981,68 @@ vartmp_group_from_volume() {
 # `docker run -v <name>:...` before the group's first launch makes exactly that,
 # unlabelled, and labels cannot be added afterwards.
 vartmp_volume_ensure() {
-  local group="$1" vol out err lab
+  local group="$1" vol out err lab asked=0
   vol="$(vartmp_volume_name "$group")"
   # No temporary file for docker's stderr: every launch runs this, and a launch
   # must not depend on a usable TMPDIR where nothing else needs one (T51, T53 in
   # tests/test-launcher-dir-ro.sh). Only a failed inspect is asked again, for
   # what docker says on stderr.
-  if out="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.vartmp-group"}}{{end}}' "$vol" 2>/dev/null)"; then
-    lab="${out%$'\n'}"
-    if [[ "$lab" != "$group" ]]; then
-      if [[ -z "$lab" ]]; then
-        printf 'ERROR: the volume %s exists but is not a temp volume of group "%s": it has no label.\n' "$vol" "$group" >&2
-        printf '       A launch labels the volume it makes, so this one was made some other way: by a\n' >&2
-        printf '       container started with -v %s:<path> before the group'"'"'s first launch, say.\n' "$vol" >&2
-      else
-        # The label is anyone's to set, and is printed: made safe for the terminal.
-        printf 'ERROR: the volume %s exists but belongs to group "%s", not "%s".\n' "$vol" "$(_ac_term "$lab")" "$group" >&2
-        printf '       It was made for that group, under another REPO_VOLUME_PREFIX or by hand.\n' >&2
+  #
+  # Two launches of one group can start together (right after an upgrade, every
+  # group's first launch makes its volume), and one can make the volume between
+  # the other's calls. Then the other's second inspect answers, or its create
+  # finds the volume there, which docker answers with success, the volume's own
+  # labels left as they were (measured, Docker 29.9.2). Either way the volume is
+  # checked as any other is, by asking again; so is the one this launch made.
+  # A docker that still has no steady answer after three asks cannot say.
+  while :; do
+    if out="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.vartmp-group"}}{{end}}' "$vol" 2>/dev/null)"; then
+      lab="${out%$'\n'}"
+      if [[ "$lab" != "$group" ]]; then
+        if [[ -z "$lab" ]]; then
+          printf 'ERROR: the volume %s exists but is not a temp volume of group "%s": it has no label.\n' "$vol" "$group" >&2
+          printf '       A launch labels the volume it makes, so this one was made some other way: by a\n' >&2
+          printf '       container started with -v %s:<path> before the group'"'"'s first launch, say.\n' "$vol" >&2
+        else
+          # The label is anyone's to set, and is printed: made safe for the terminal.
+          printf 'ERROR: the volume %s exists but belongs to group "%s", not "%s".\n' "$vol" "$(_ac_term "$lab")" "$group" >&2
+          printf '       It was made for that group, under another REPO_VOLUME_PREFIX or by hand.\n' >&2
+        fi
+        printf '       A launch cannot use it: a volume'"'"'s labels cannot be changed, and group.sh, which\n' >&2
+        printf '       knows a group'"'"'s temp volume by its label, would never take it for this group'"'"'s\n' >&2
+        printf '       (list shows it as not the group'"'"'s; rm names it and leaves it). Once nothing in\n' >&2
+        printf '       it is needed, clear the way with:\n         docker volume rm %s\n' "$vol" >&2
+        return 1
       fi
-      printf '       A launch cannot use it: a volume'"'"'s labels cannot be changed, and group.sh, which\n' >&2
-      printf '       knows a group'"'"'s temp volume by its label, would never take it for this group'"'"'s\n' >&2
-      printf '       (list shows it as not the group'"'"'s; rm names it and leaves it). Once nothing in\n' >&2
-      printf '       it is needed, clear the way with:\n         docker volume rm %s\n' "$vol" >&2
+      _group_volume_shared_note "$vol" "$group" temp
+      printf '%s\n' "$vol"; return 0
+    fi
+    asked=$((asked + 1))
+    if (( asked >= 3 )); then
+      printf 'ERROR: docker could not say whether %s exists: it was there, then not, each\n' "$vol" >&2
+      printf '       time this launch asked. Is something removing it (group.sh rm)?\n' >&2
       return 1
     fi
-    _group_volume_shared_note "$vol" "$group" temp
-    printf '%s\n' "$vol"; return 0
-  fi
-  err="$(docker volume inspect "$vol" 2>&1 >/dev/null)" || true
-  if [[ "${err,,}" != *"no such volume"* ]]; then
-    printf 'ERROR: docker could not say whether %s exists\n' "$vol" >&2
-    # And why, in docker's words: this is the first docker call of a launch that
-    # can refuse it, and a daemon that is stopped or a socket that refuses this
-    # user is the usual reason. Its first line that holds anything, one trailing
-    # CR cut, made safe for the terminal; nothing when docker said nothing.
-    err="${err#"${err%%[!$'\n']*}"}"; err="${err%%$'\n'*}"; err="${err%$'\r'}"
-    [[ -z "$err" ]] || printf '       docker said: %s\n' "$(_ac_term "$err")" >&2
-    return 1
-  fi
-  # With this HOME's id, as rvm_volume_ensure() does; a launch never fails over it.
-  local own; local -a olab=()
-  if own="$(ai_containers_owner_id 2>/dev/null)"; then olab=(--label "ai-containers.owner=${own}"); fi
-  if ! docker volume create --label "ai-containers.vartmp-group=${group}" ${olab[@]+"${olab[@]}"} "$vol" >/dev/null 2>&1; then
-    printf 'ERROR: could not create the temp volume %s\n' "$vol" >&2
-    return 1
-  fi
-  printf '%s\n' "$vol"
+    # Made meanwhile: checked like any other.
+    if err="$(docker volume inspect "$vol" 2>&1 >/dev/null)"; then continue; fi
+    if [[ "${err,,}" != *"no such volume"* ]]; then
+      printf 'ERROR: docker could not say whether %s exists\n' "$vol" >&2
+      # And why, in docker's words: this is the first docker call of a launch that
+      # can refuse it, and a daemon that is stopped or a socket that refuses this
+      # user is the usual reason. Its first line that holds anything, one trailing
+      # CR cut, made safe for the terminal; nothing when docker said nothing.
+      err="${err#"${err%%[!$'\n']*}"}"; err="${err%%$'\n'*}"; err="${err%$'\r'}"
+      [[ -z "$err" ]] || printf '       docker said: %s\n' "$(_ac_term "$err")" >&2
+      return 1
+    fi
+    # With this HOME's id, as rvm_volume_ensure() does; a launch never fails over it.
+    local own; local -a olab=()
+    if own="$(ai_containers_owner_id 2>/dev/null)"; then olab=(--label "ai-containers.owner=${own}"); fi
+    if ! docker volume create --label "ai-containers.vartmp-group=${group}" ${olab[@]+"${olab[@]}"} "$vol" >/dev/null 2>&1; then
+      printf 'ERROR: could not create the temp volume %s\n' "$vol" >&2
+      return 1
+    fi
+  done
 }
 
 # Returns 0 if any running container currently mounts docker volume $1.

@@ -33,6 +33,17 @@ FAKE_CREATE_LOG="$TMP/fake-create.log"; : > "$FAKE_CREATE_LOG"; export FAKE_CREA
 FAKE_BIN="$TMP/bin"; mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/docker" <<'FAKE'
 #!/usr/bin/env bash
+# FAKE_RACE_AT=<n>: another launch of the group makes the volume FAKE_RACE_VOL,
+# its labels FAKE_RACE_LABELS (one key=value a line; empty: none, as a
+# `docker run -v` makes it), just before this docker answers its n-th `volume`
+# call. Every `volume` call is counted in FAKE_CALLS.
+if [[ "$1" == volume && -n "${FAKE_CALLS:-}" ]]; then
+  n=$(( $(cat "$FAKE_CALLS" 2>/dev/null || echo 0) + 1 )); printf '%s\n' "$n" > "$FAKE_CALLS"
+  if [[ -n "${FAKE_RACE_AT:-}" ]] && (( n == FAKE_RACE_AT )) && [[ ! -f "$FAKE_VOLUMES_DIR/$FAKE_RACE_VOL" ]]; then
+    : > "$FAKE_VOLUMES_DIR/$FAKE_RACE_VOL"
+    printf '%s' "${FAKE_RACE_LABELS-}" > "$FAKE_VOLUMES_DIR/$FAKE_RACE_VOL.labels"
+  fi
+fi
 case "$1" in
   volume)
     case "$2" in
@@ -49,6 +60,9 @@ case "$1" in
           if [[ "$prev" == "--format" ]]; then fmt="$a"; elif [[ "$a" != "--format" ]]; then name="$a"; fi
           prev="$a"
         done
+        # FAKE_FORMAT_FAIL: an inspect with --format never finds the volume, a
+        # plain one does: a volume there, then not, each time it is asked.
+        [[ -n "${FAKE_FORMAT_FAIL:-}" && -n "$fmt" ]] && { echo "Error response from daemon: get $name: No such volume: $name" >&2; exit 1; }
         [[ -f "$FAKE_VOLUMES_DIR/$name" ]] || { echo "Error response from daemon: get $name: No such volume: $name" >&2; exit 1; }
         if [[ "$fmt" == *Labels* ]]; then
           key="$(printf '%s' "$fmt" | sed -n 's/.*index \.Labels "\([^"]*\)".*/\1/p')"
@@ -72,8 +86,12 @@ case "$1" in
         exit 0 ;;
       create)
         [[ -n "${FAKE_CREATE_FAIL:-}" ]] && exit 1
-        name="${@: -1}"; : > "$FAKE_VOLUMES_DIR/$name"; : > "$FAKE_VOLUMES_DIR/$name.labels"
+        name="${@: -1}"
         printf '%s\n' "$*" >> "$FAKE_CREATE_LOG"
+        # As docker does: a volume already there is answered with success, and
+        # keeps its own labels (measured, Docker 29.9.2).
+        [[ -f "$FAKE_VOLUMES_DIR/$name" ]] && { printf '%s\n' "$name"; exit 0; }
+        : > "$FAKE_VOLUMES_DIR/$name"; : > "$FAKE_VOLUMES_DIR/$name.labels"
         prev=""
         for a in "$@"; do
           [[ "$prev" == "--label" ]] && printf '%s\n' "$a" >> "$FAKE_VOLUMES_DIR/$name.labels"
@@ -181,6 +199,59 @@ check "a create that fails returns 1" "1" "$rc"
 check "a failed create prints nothing on stdout" "" "$out"
 [[ "$(cat "$TMP/err")" == "ERROR: "*"ai-containers-vartmp-docs"* ]] \
   && pass "a failed create prints an ERROR naming the volume" || fail "a failed create has no ERROR"
+
+# ── Ensure: another launch of the group makes the volume meanwhile ──────────────
+# Two launches of a group starting together (every group's first launch after
+# an upgrade makes its volume): the other one makes the volume between this
+# one's calls. A volume that appeared is checked like any other, by its label.
+# race <n> <labels> → runs ensure with the volume made before the n-th
+# `docker volume` call (1 the first inspect, 2 the inspect asked only for
+# docker's stderr, 3 the create); sets out, rc, err, calls.
+FAKE_CALLS="$TMP/fake-calls"
+race() {
+  reset_volumes; : > "$FAKE_CALLS"
+  out="$(FAKE_CALLS="$FAKE_CALLS" FAKE_RACE_AT="$1" FAKE_RACE_LABELS="$2" FAKE_RACE_VOL=ai-containers-vartmp-docs \
+    vartmp_volume_ensure docs 2>"$TMP/err")"; rc=$?
+  err="$(cat "$TMP/err")"; calls="$(cat "$FAKE_CALLS")"
+}
+mine="ai-containers.vartmp-group=docs
+ai-containers.owner=${own}
+"
+race 2 "$mine"
+check "made by another launch between the two inspects: used (rc=$rc; err: $err)" \
+  "0|ai-containers-vartmp-docs|" "$rc|$out|$err"
+check "  and this launch makes none" "" "$(cat "$FAKE_CREATE_LOG")"
+race 2 ""
+[[ "$rc" -eq 1 && -z "$out" && "$err" == *"it has no label"* && "$err" == *"docker volume rm ai-containers-vartmp-docs"* ]] \
+  && pass "made unlabelled between the two inspects: refused as a volume with no label" \
+  || fail "made unlabelled between the two inspects (rc=$rc; out: $out; err: $err)"
+# docker answers a create of a volume already there with success, and leaves its
+# labels as they are: the volume this launch asked for is checked all the same.
+race 3 ""
+[[ "$rc" -eq 1 && -z "$out" && "$err" == *"it has no label"* && "$err" == *"docker volume rm ai-containers-vartmp-docs"* ]] \
+  && pass "made unlabelled just before this launch's create: refused, not mounted" \
+  || fail "made unlabelled just before the create (rc=$rc; out: $out; err: $err)"
+race 3 "ai-containers.vartmp-group=docs
+ai-containers.owner=sha256:$(printf '%064d' 7)
+"
+[[ "$rc" -eq 0 && "$out" == ai-containers-vartmp-docs \
+   && "$err" == *"NOTE: the temp volume ai-containers-vartmp-docs was made by another home"* ]] \
+  && pass "made by another home's launch just before the create: used, with the shared-volume NOTE" \
+  || fail "made by another home just before the create (rc=$rc; out: $out; err: $err)"
+race 3 "ai-containers.vartmp-group=other
+"
+[[ "$rc" -eq 1 && -z "$out" && "$err" == *'belongs to group "other"'* ]] \
+  && pass "made for another group just before the create: refused" \
+  || fail "made for another group just before the create (rc=$rc; out: $out; err: $err)"
+# A volume that is there, then not, each time it is asked is asked about three
+# times, never forever.
+reset_volumes; : > "$FAKE_CALLS"; : > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-docs"
+out="$(FAKE_CALLS="$FAKE_CALLS" FAKE_FORMAT_FAIL=1 vartmp_volume_ensure docs 2>"$TMP/err")"; rc=$?
+err="$(cat "$TMP/err")"; calls="$(cat "$FAKE_CALLS")"
+[[ "$rc" -eq 1 && -z "$out" && "$calls" -le 6 \
+   && "$err" == "ERROR: docker could not say whether ai-containers-vartmp-docs exists: it was there, then not, each"* ]] \
+  && pass "a volume there, then not, at every ask: refused after three asks ($calls docker calls)" \
+  || fail "a volume there, then not (rc=$rc; calls=$calls; err: $err)"
 
 # ── Ensure: another home's volume is used, with a NOTE ──────────────────────────
 reset_volumes
