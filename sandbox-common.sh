@@ -918,7 +918,7 @@ rvm_volume_ensure() {
     local tl rl
     if ! tl="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.vartmp-group"}}{{end}}' "$vol" 2>/dev/null)" \
        || ! rl="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.rvm-group"}}{{end}}' "$vol" 2>/dev/null)"; then
-      printf 'ERROR: docker could not say whose the volume %s is (is docker running?).\n' "$vol" >&2
+      printf 'ERROR: docker could not say whose the volume %s is (is its daemon up?).\n' "$vol" >&2
       return 1
     fi
     # Labels are anyone's to set, and are printed: made safe for the terminal.
