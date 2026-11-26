@@ -96,10 +96,24 @@ group_names() {
 # directory missing here may be another home's group (bugs review PRJ-16); one
 # made before owner labels cannot be told apart, and is kept unless --all.
 _vol_owner_why() {
-  local o; o="$(docker_volume_label "$1" 'ai-containers.owner')"
-  if [[ -z "$o" ]]; then printf 'no owner label'; return 0; fi
-  if [[ -z "$2" || "$o" != "$2" ]]; then printf "another home's"; return 0; fi
+  _owner_why "$(docker_volume_label "$1" 'ai-containers.owner')" "$2"
+}
+
+# _owner_why <owner label> <this home's id>: _vol_owner_why on a label already read.
+_owner_why() {
+  if [[ -z "$1" ]]; then printf 'no owner label'; return 0; fi
+  if [[ -z "$2" || "$1" != "$2" ]]; then printf "another home's"; return 0; fi
   return 1
+}
+
+# _vol_label <volume> <key>: the label's value, empty when unset; rc 1 when
+# docker cannot say. sandbox-common.sh: `docker_volume_label()` reads a failure
+# as no label, which is what rm and list must not do: a docker that answered
+# whether the volume exists and then cannot say whose it is would have the
+# group's own temp volume read as not the group's, and another home's Ruby
+# volume as one with no owner label, which rm removes.
+_vol_label() {
+  docker volume inspect --format "{{if .Labels}}{{index .Labels \"$2\"}}{{end}}" "$1" 2>/dev/null
 }
 
 # _whose_say <why>: _vol_owner_why's answer, said for a volume --all takes.
@@ -175,42 +189,77 @@ _vol_group() {
   esac
 }
 
-# _tmp_foreign_say <volume> <group> <its label>: a volume of the group's temp
-# volume name that is not the group's, named with the command that removes it.
-# It was made outside a launch (a `docker run -v` of it, or for another group),
-# and a launch refuses it (sandbox-common.sh: `vartmp_volume_ensure()`); whose
-# it is cannot be told here, so it is never removed here.
-_tmp_foreign_say() {
-  local whose="it has no label"
-  [[ -z "$3" ]] || whose="its label names group \"$(_ac_term "$3")\""
-  printf '  (volume %s is kept: %s, so it is not the temp volume of group "%s".\n' "$1" "$whose" "$2"
-  printf '   Once nothing in it is needed: docker volume rm %s)\n' "$1"
+# _vol_not_ours <kind> <volume> <group>: why the volume of the group's Ruby or
+# temp volume name is not the group's, printed; nothing when it is; rc 1 when
+# docker cannot read its labels. A temp volume is the group's by its label alone
+# (see _vol_group). A Ruby volume is the group's unless it carries a temp
+# volume's label or another group's Ruby label: under nested REPO_VOLUME_PREFIX
+# values prefix p-rvm-x's temp volume p-rvm-x-vartmp-g has the Ruby volume name
+# of group x-vartmp-g under prefix p, and its Ruby volume of group g,
+# p-rvm-x-rvm-g, that of group x-rvm-g; by its name alone rm removed either. One
+# with no label, made before labels, is still the group's.
+_vol_not_ours() {
+  local tl rl
+  tl="$(_vol_label "$2" 'ai-containers.vartmp-group')" || return 1
+  case "$1" in
+    ruby) if [[ -n "$tl" ]]; then
+            printf 'it is a temp volume, its label naming group "%s"' "$(_ac_term "$tl")"; return 0
+          fi
+          rl="$(_vol_label "$2" 'ai-containers.rvm-group')" || return 1
+          [[ -z "$rl" || "$rl" == "$3" ]] || printf 'its label names group "%s"' "$(_ac_term "$rl")" ;;
+    temp) if [[ -z "$tl" ]]; then printf 'it has no label'
+          elif [[ "$tl" != "$3" ]]; then printf 'its label names group "%s"' "$(_ac_term "$tl")"; fi ;;
+  esac
+  return 0
 }
 
-# Human-readable size of a docker volume ('-' when unknown). Deliberately a
-# separate call behind --sizes: `docker system df -v` walks every volume and is
-# slow enough to be annoying as a default.
+# _foreign_say <kind> <volume> <group> <why>: a volume of the group's Ruby or
+# temp volume name that is not the group's (_vol_not_ours says why), named with
+# the command that removes it. It was made outside a launch (a `docker run -v`
+# of it), for another group, or under another REPO_VOLUME_PREFIX, and a launch
+# refuses a temp one (sandbox-common.sh: `vartmp_volume_ensure()`); whose it is
+# cannot be told here, so it is never removed here.
+_foreign_say() {
+  local word="temp"
+  [[ "$1" == temp ]] || word="Ruby"
+  printf '  (volume %s is kept: %s, so it is not the %s volume of group "%s".\n' "$2" "$4" "$word" "$3"
+  printf '   Once nothing in it is needed: docker volume rm %s)\n' "$2"
+}
+
+# Each volume's human-readable size, from ONE `docker system df -v` per run
+# (_df_load, which list --sizes calls before its rows): it walks every volume on
+# the daemon, slow enough to be annoying as a default, and asked once per volume
+# it made list --sizes slower with every group.
+declare -A _df_size=()
+_df_load() {
+  local n s
+  while read -r n s; do
+    if [[ -n "$n" ]]; then _df_size[$n]="$s"; fi
+  done < <(docker system df -v --format '{{range .Volumes}}{{.Name}} {{.Size}}
+{{end}}' 2>/dev/null)
+}
+# volume_size <volume>: its size, '-' when docker did not give one.
 volume_size() {
-  local vol="$1" out
-  out="$(docker system df -v --format '{{range .Volumes}}{{.Name}} {{.Size}}
-{{end}}' 2>/dev/null | grep -m1 "^${vol} " | cut -d' ' -f2- || true)"
-  printf '%s' "${out:--}"
+  printf '%s' "${_df_size[$1]:--}"
 }
 
 # _vol_cells <kind> <group> <sizes> <docker answers>: the group's volume of that
 # kind and its state, a line each, as list shows them. The state is "present",
 # or its size with --sizes, then " (in use)" while a running container mounts
 # it; "none", the name "-", with no such volume; "unknown" when docker cannot be
-# reached (<docker answers> 0). A volume of the temp name that is not the
-# group's by its label is named, its state "not the group's".
+# reached (<docker answers> 0) or cannot read the volume's labels. A volume of
+# the name that is not the group's (_vol_not_ours) is named, its state "not the
+# group's".
 _vol_cells() {
-  local kind="$1" g="$2" vol state
+  local kind="$1" g="$2" vol state why
   vol="$(_group_vol "$kind" "$g")"
   if (( ! $4 )); then
     state="unknown"
   elif ! docker volume inspect "$vol" >/dev/null 2>&1; then
     vol="-"; state="none"
-  elif [[ "$kind" == temp && "$(vartmp_group_from_volume "$vol")" != "$g" ]]; then
+  elif ! why="$(_vol_not_ours "$kind" "$vol" "$g")"; then
+    state="unknown"
+  elif [[ -n "$why" ]]; then
     state="not the group's"
   else
     if (( $3 )); then state="$(volume_size "$vol")"; else state="present"; fi
@@ -235,6 +284,7 @@ cmd_list() {
   # the PRJ-16 fix).
   local dk=1
   docker volume ls -q >/dev/null 2>&1 || dk=0
+  if (( show_sizes && dk )); then _df_load; fi
   # With no group directory left, the orphans are all there is to name: deleting
   # the directories by hand leaves exactly that, and list returned before them.
   # Each row: the group, its Ruby volume and state, its temp volume and state.
@@ -318,10 +368,10 @@ cmd_rm() {
   [[ -d "$dir" ]] && has_dir=1
 
   # Each volume on its own, Ruby then temp: its name, and what rm does with it
-  # (act: none, remove, keep, or foreign for a volume of the temp name that is
-  # not the group's), why it may be another home's, and the group a foreign
-  # one's label names.
-  local own maker="another home on this docker" k v vout
+  # (act: none, remove, keep, or foreign for a volume of the name that is not
+  # the group's), why it may be another home's, and why a foreign one is not
+  # the group's.
+  local own maker="another home on this docker" k v vout ol
   own="$(ai_containers_owner_known 2>/dev/null)" || own=""
   # With no owner key, this home's own labelled volume looks like another's.
   [[ -n "$own" ]] || maker="another home on this docker, or this one before it lost its owner key,"
@@ -337,17 +387,19 @@ cmd_rm() {
       printf 'ERROR: docker could not say whether %s exists (is docker running?); refusing.\n' "$v" >&2
       exit 1
     fi
-    # A temp volume is the group's by its label alone; one of the name without
-    # it is named, never removed.
-    if [[ "$k" == temp ]]; then
-      lab[$k]="$(vartmp_group_from_volume "$v")"
-      if [[ "${lab[$k]}" != "$name" ]]; then act[$k]=foreign; continue; fi
+    # Whose it is, from labels read so that a docker that cannot say is not one
+    # that says there are none (_vol_label). One of the name that is not the
+    # group's (_vol_not_ours) is named, never removed.
+    if ! lab[$k]="$(_vol_not_ours "$k" "$v" "$name")" || ! ol="$(_vol_label "$v" 'ai-containers.owner')"; then
+      printf 'ERROR: docker could not say whose %s is (is docker running?); refusing.\n' "$v" >&2
+      exit 1
     fi
+    if [[ -n "${lab[$k]}" ]]; then act[$k]=foreign; continue; fi
     # A volume another home made: one docker serves several homes, and that
     # home's group of this name mounts the same volume. Kept and named; this
     # home's directory goes (review of the PRJ-16 fix).
     act[$k]=remove
-    if why[$k]="$(_vol_owner_why "$v" "$own")" && [[ "${why[$k]}" == "another home's" ]]; then act[$k]=keep; fi
+    if why[$k]="$(_owner_why "$ol" "$own")" && [[ "${why[$k]}" == "another home's" ]]; then act[$k]=keep; fi
   done
 
   # Nothing of this home's to remove: no directory, and no volume but another
@@ -367,7 +419,9 @@ cmd_rm() {
     else
       printf 'ERROR: no such group "%s" (no directory at %s, no volume %s and no temp volume of it).\n' "$name" "$dir" "${vol[ruby]}" >&2
     fi
-    if [[ "${act[temp]}" == foreign ]]; then _tmp_foreign_say "${vol[temp]}" "$name" "${lab[temp]}" >&2; fi
+    for k in ruby temp; do
+      if [[ "${act[$k]}" == foreign ]]; then _foreign_say "$k" "${vol[$k]}" "$name" "${lab[$k]}" >&2; fi
+    done
     exit 1
   fi
 
@@ -406,7 +460,7 @@ cmd_rm() {
         printf '  (%s %s is kept: %s made it, and its group "%s" there may use it)\n' "$word" "${vol[$k]}" "$maker" "$name"
         kept=1 ;;
       foreign)
-        _tmp_foreign_say "${vol[$k]}" "$name" "${lab[$k]}" ;;
+        _foreign_say "$k" "${vol[$k]}" "$name" "${lab[$k]}" ;;
     esac
   done
   if (( kept )); then _no_key_note "$own"; fi
