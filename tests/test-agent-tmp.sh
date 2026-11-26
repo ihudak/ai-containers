@@ -351,12 +351,16 @@ check "  and kept" test -d "$D/200101-000000-1"
 check "  and touched (ctime after the clock's cut-off)" bash -c '[[ "$(find -P "$1" -maxdepth 0 -cnewer "$2")" ]]' _ "$D/200101-000000-1" "$D/200101-000000-1/f"
 rm -rf "$D.bin"; at_clean
 
-# The freed size is du's, summed over what was removed: a folder holding 2 MiB of
-# random data (which no filesystem compresses) is 2.0M whatever the blocks round to.
+# The freed size is du's, summed over what was removed, rounded up as du -h
+# rounds. A folder holding 2000 KiB of random data (which no filesystem
+# compresses) is 2.0M on ext4, which charges the folder a 4 KiB block (2004),
+# and on tmpfs and btrfs, which charge it none (2000): du -h says 2.0M from
+# 1946 to 2048 KiB, so up to 48 KiB charged beyond the data. 2048 KiB of data
+# was 2052 on ext4, 2.1M.
 at_setup; at_old 200101-000000-1
-dd if=/dev/urandom of="$D/200101-000000-1/big" bs=1024 count=2048 2>/dev/null
+dd if=/dev/urandom of="$D/200101-000000-1/big" bs=1024 count=2000 2>/dev/null
 at_run "" --now "$(at_far)"
-check "a removed folder of 2 MiB: the NOTE says 2.0M freed" \
+check "a removed folder holding 2000 KiB: the NOTE says 2.0M freed" \
   grep -qxF "NOTE: removed 1 temp folder(s) of stopped containers, untouched for 30 days, from $D (2.0M freed)." "$ERR"
 at_clean
 
