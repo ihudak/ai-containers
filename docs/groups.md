@@ -50,12 +50,11 @@ whose directory was deleted by hand. Volumes belong to a docker daemon, so each
 daemon you use (through another docker context, say) has its own volumes for a
 group. A docker that several homes share (every WSL distro's, under Docker
 Desktop) has one Ruby volume and one temp volume for a group name in all of
-them. Each home's `rm` and
-`gc` keep a volume another home made, and a launch that mounts one says so, but
-that is all: the home that made the volume can still remove it from under the
-others, with its `rm`, or its plain `gc` once its own group directory is gone,
-and any home can with `gc --all`. The other homes' groups then build their
-Rubies again, or lose their old `/var/tmp` folders. See
+them. Each home's `rm` and `gc` keep a volume another home made, and a launch
+that mounts one says so, but that is all: the home that made the volume can
+still remove it from under the others, with its `rm`, or its plain `gc` once its
+own group directory is gone, and any home can with `gc --all`. The other homes'
+groups then build their Rubies again, or lose their old `/var/tmp` folders. See
 [Several homes on one docker](troubleshooting.md#several-homes-on-one-docker-wsl-distros-or-users).
 
 ## What survives a restart
@@ -253,6 +252,7 @@ inspecting, backing up, and duplicating one:
 # List groups (and their Ruby and temp volumes)
 ./group.sh list
 ./group.sh list --sizes   # each volume's size, and a GROUP DIR column: du -sh of the group directory
+                          # ("at least <size>" where du cannot read all of it)
 
 # Back up a group's directory
 tar czf docs-group.tgz -C "$HOME/.ai-containers" docs

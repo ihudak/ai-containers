@@ -104,14 +104,29 @@ prune() {
     if rm -rf -- "$d" 2>/dev/null && [[ ! -e "$d" ]]; then
       n=$((n + 1)); total_kb=$((total_kb + kb))
     else
-      printf 'NOTE: could not remove %s; it is kept, and checked again in 30 days.\n' "$d" >&2
+      # rm -rf removes what it can before it fails, so part of the folder may be
+      # gone: what is left is kept.
+      printf 'NOTE: could not remove all of %s; what is left of it is kept, and checked again in 30 days.\n' "$d" >&2
       touch -c -h -- "$d" 2>/dev/null || true
     fi
   done
   if (( n > 0 )); then
-    if (( total_kb >= 1048576 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fG", k/1048576}')"
-    elif (( total_kb >= 1024 )); then size="$(awk -v k="$total_kb" 'BEGIN{printf "%.1fM", k/1024}')"
-    else size="${total_kb}K"; fi
+    # As GNU du -h prints it, which is what du -sh in the container says: rounded
+    # up, one decimal below 10, a whole number from 10, carried to the next unit
+    # at 1024. k/1024^n is exact in a double for any size here, and so is v*10.
+    size="$(awk -v k="$total_kb" 'BEGIN {
+      if (k == 0) { print "0"; exit }
+      split("K M G T P E", u, " "); v = k; i = 1
+      while (v >= 1024 && i < 6) { v /= 1024; i++ }
+      if (v < 10) {
+        t = int(v * 10); if (t < v * 10) t++
+        if (t < 100) { printf "%d.%d%s\n", int(t / 10), t % 10, u[i]; exit }
+        v = 10
+      }
+      t = int(v); if (t < v) t++
+      if (t >= 1024 && i < 6) { printf "1.0%s\n", u[i + 1]; exit }
+      printf "%d%s\n", t, u[i]
+    }')"
     printf 'NOTE: removed %d temp folder(s) of stopped containers, untouched for 30 days, from %s (%s freed).\n' \
       "$n" "$dir" "$size" >&2
   fi

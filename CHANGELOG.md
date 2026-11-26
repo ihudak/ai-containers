@@ -57,7 +57,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `docker volume rm` and leaves it.
 
 - **`group.sh list --sizes` shows each group directory's size** in a `GROUP DIR`
-  column.
+  column; where `du` cannot read all of the directory (a folder the agent made
+  unreadable), the total of what it read, as `at least <size>`.
 
 ### Changed
 

@@ -177,8 +177,50 @@ printf '#!/bin/sh\nexit 1\n' > "$FAKE_DU/du"; chmod +x "$FAKE_DU/du"
 out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"
 row="$(grep -E '^default ' <<<"$out")"
 grep -qE '[[:space:]]\?$' <<<"$row" \
-  && pass "list --sizes shows ? for a group dir du cannot read" \
-  || fail "list --sizes shows ? for a group dir du cannot read (got: $out)"
+  && pass "list --sizes shows ? for a du that prints nothing" \
+  || fail "list --sizes shows ? for a du that prints nothing (got: $out)"
+
+# du exits 1 when it cannot read part of the directory (a folder the agent made
+# unreadable), after printing the total of what it could read: list shows that
+# total as the least the directory holds, not "?" (open follow-up 6 of the
+# 2026-11-26 /var/tmp backlog). A du that prints nothing is still "?", above.
+printf '#!/bin/sh\nfor a; do p="$a"; done\nprintf "12M\\t%%s\\n" "$p"\necho "du: cannot read directory" >&2\nexit 1\n' > "$FAKE_DU/du"
+out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"
+row="$(grep -E '^default ' <<<"$out")"
+grep -qE '[[:space:]]at least 12M$' <<<"$row" \
+  && pass "list --sizes shows a partial total, as at least that, where du could not read all of a group dir" \
+  || fail "list --sizes with a partial du total (got: $out)"
+
+# A du that pads the size with blanks, as BSD's prints a human size in four
+# columns (" 12K"; FreeBSD's du.c, source-read): the cell drops them, and a
+# partial total reads "at least 12M" with one blank.
+printf '#!/bin/sh\nfor a; do p="$a"; done\nprintf " 12M\\t%%s\\n" "$p"\nexit 1\n' > "$FAKE_DU/du"
+out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"
+row="$(grep -E '^default ' <<<"$out")"
+grep -qE '[[:space:]]at least 12M$' <<<"$row" \
+  && pass "list --sizes drops the blanks du pads a size with" \
+  || fail "list --sizes with a blank-padded du size (got: $out)"
+
+# du is asked in the C locale: in one whose decimal point is neither "." nor
+# "," GNU du prints U+066B for it (LC_ALL=ps_AF.UTF-8, measured), which is no size here.
+# The fake prints that unless LC_ALL is C.
+printf '#!/bin/sh\nfor a; do p="$a"; done\nif [ "${LC_ALL:-}" = C ]; then printf "1.6M\\t%%s\\n" "$p"; else printf "1\\331\\2536M\\t%%s\\n" "$p"; fi\n' > "$FAKE_DU/du"
+out="$(LC_ALL=C.UTF-8 PATH="$FAKE_DU:$PATH" run_group list --sizes)"
+row="$(grep -E '^default ' <<<"$out")"
+grep -qE '[[:space:]]1\.6M$' <<<"$row" \
+  && pass "list --sizes asks du for the size in the C locale" \
+  || fail "list --sizes in another locale's decimal point (got: $out)"
+
+# Only what reads as a size is shown: a du that prints something else (a word,
+# another line before the size, a word before the tab) is "?".
+for body in 'printf "garbage\\n"' 'printf "oops\\n12M\\t%s\\n" "$p"' 'printf "garbage\\t%s\\n" "$p"'; do
+  printf '#!/bin/sh\nfor a; do p="$a"; done\n%s\n' "$body" > "$FAKE_DU/du"
+  out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"
+  row="$(grep -E '^default ' <<<"$out")"
+  grep -qE '[[:space:]]\?$' <<<"$row" \
+    && pass "list --sizes shows ? for a du output that is no size ($body)" \
+    || fail "list --sizes with a du output that is no size, $body (got: $out)"
+done
 
 # A repo volume must never appear in group listings.
 : > "$FAKE_VOLUMES_DIR/ai-containers-repo-app"
