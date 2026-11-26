@@ -969,11 +969,15 @@ launcher_ro_overlay() {
   # What one mount's scan found, in every other writable mount that exposes it:
   # an outer mount's scan does not reach a repository under a pruned
   # node_modules or past its depth, and one only the inner mount's scan found
-  # stayed writable in the outer mount's view (GIT-51; G142).
+  # stayed writable in the outer mount's view (GIT-51; G142). Another mount of
+  # the very source it was found in counts too: the group's own mounts are not
+  # scanned (_git_skip_root), and a group folder also in EXTRA_MOUNTS left a
+  # repository's config and hooks writable through the group's mount (G335), as
+  # launcher_ro_overlay()'s twin loop did for launchers (T93).
   local nu=${#ug[@]}
   for (( k = 0; k < nu; k++ )); do
     for j in ${bsrc[@]+"${!bsrc[@]}"}; do
-      [[ "${bsrc[j]}" != "${usrc[k]}" ]] || continue
+      [[ "${bsrc[j]}" != "${usrc[k]}" || "${bdst[j]}" != "${udst[k]}" ]] || continue
       [[ "${ug[k]}" == "${bsrc[j]}" || "${ug[k]}" == "${bsrc[j]}"/* ]] || continue
       xv2="${bdst[j]}${ug[k]#"${bsrc[j]}"}"
       [[ -z "${uhave[$xv2]:-}" ]] || continue

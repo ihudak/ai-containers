@@ -222,13 +222,13 @@ check "made by another launch between the two inspects: used (rc=$rc; err: $err)
   "0|ai-containers-vartmp-docs|" "$rc|$out|$err"
 check "  and this launch makes none" "" "$(cat "$FAKE_CREATE_LOG")"
 race 2 ""
-[[ "$rc" -eq 1 && -z "$out" && "$err" == *"it has no label"* && "$err" == *"docker volume rm ai-containers-vartmp-docs"* ]] \
+[[ "$rc" -eq 1 && -z "$out" && "$err" == *"it has no temp volume label"* && "$err" == *"docker volume rm ai-containers-vartmp-docs"* ]] \
   && pass "made unlabelled between the two inspects: refused as a volume with no label" \
   || fail "made unlabelled between the two inspects (rc=$rc; out: $out; err: $err)"
 # docker answers a create of a volume already there with success, and leaves its
 # labels as they are: the volume this launch asked for is checked all the same.
 race 3 ""
-[[ "$rc" -eq 1 && -z "$out" && "$err" == *"it has no label"* && "$err" == *"docker volume rm ai-containers-vartmp-docs"* ]] \
+[[ "$rc" -eq 1 && -z "$out" && "$err" == *"it has no temp volume label"* && "$err" == *"docker volume rm ai-containers-vartmp-docs"* ]] \
   && pass "made unlabelled just before this launch's create: refused, not mounted" \
   || fail "made unlabelled just before the create (rc=$rc; out: $out; err: $err)"
 race 3 "ai-containers.vartmp-group=docs

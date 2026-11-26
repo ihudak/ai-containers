@@ -212,7 +212,7 @@ _vol_not_ours() {
           fi
           rl="$(_vol_label "$2" 'ai-containers.rvm-group')" || return 1
           [[ -z "$rl" || "$rl" == "$3" ]] || printf 'its label names group "%s"' "$(_ac_term "$rl")" ;;
-    temp) if [[ -z "$tl" ]]; then printf 'it has no label'
+    temp) if [[ -z "$tl" ]]; then printf 'it has no temp volume label'
           elif [[ "$tl" != "$3" ]]; then printf 'its label names group "%s"' "$(_ac_term "$tl")"; fi ;;
   esac
   return 0
@@ -229,7 +229,7 @@ _vol_not_ours() {
 _foreign_say() {
   local word="temp"
   [[ "$1" == temp ]] || word="Ruby"
-  if [[ "$4" == "it has no label" ]]; then
+  if [[ "$4" == "it has no temp volume label" ]]; then
     printf '  (volume %s is kept: %s, so it is not the %s volume of group "%s".\n' "$2" "$4" "$word" "$3"
     printf '   Once nothing in it is needed: docker volume rm %s)\n' "$2"
   else
@@ -558,7 +558,7 @@ cmd_gc() {
   fi
   if [[ -z "$targets" ]]; then
     if (( skipped )); then
-      printf 'Nothing removed: %d orphaned volume(s) of this home skipped (above).\n' "$skipped"
+      printf 'Nothing removed: %d volume(s) skipped (above).\n' "$skipped"
       (( ! unknown )) || exit 1
     else
       printf 'Nothing to collect: every Ruby and temp volume of this home has a group directory.\n'

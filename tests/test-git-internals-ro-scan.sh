@@ -657,6 +657,24 @@ has_mount "$w92/r/.git/hooks:/workspace/work92/r/.git/hooks:ro" \
   || fail "G92 a repository under the group's directory was skipped ($(git_mounts | grep work92 | tr '\n' ' '))"
 rm -rf "$HOME/.ai-containers/default/work92"
 
+# ── G335: a group folder also in EXTRA_MOUNTS is protected in both views ──────
+# The group's own mounts are not scanned, and the propagation of what one
+# mount's scan found to every other mount that exposes it passed over a mount
+# of the same source as taken care of. So a repository in a group folder that
+# EXTRA_MOUNTS also lists got its config and hooks read-only under /workspace
+# only, and they stayed writable through the group's own mount (found by the
+# persistent-scratch work, Task 5; the launcher overlay's twin was T93).
+gs335="$HOME/.ai-containers/default/.ssh"
+mkdir -p "$gs335" && "${G[@]}" init -q "$gs335/r" && gs335="$(cd "$gs335" && pwd -P)" \
+  || { printf 'SCAFFOLD-FAILED: G335\n'; exit 1; }
+EXTRA_MOUNTS="$gs335" launch "$TMP/app"
+[[ "$LAUNCH_RC" == 0 ]] && has_mount "$gs335/r/.git/config:/workspace/.ssh/r/.git/config:ro" \
+  && has_mount "$gs335/r/.git/config:/home/tester/.ssh/r/.git/config:ro" \
+  && has_mount "$gs335/r/.git/hooks:/home/tester/.ssh/r/.git/hooks:ro" \
+  && pass "G335 a repository in a group folder also in EXTRA_MOUNTS is read-only through the group's mount too" \
+  || fail "G335 group folder in EXTRA_MOUNTS (rc=$LAUNCH_RC; git mounts: $(git_mounts | sed "s#$TMP#T#g" | tr '\n' ' '))"
+rm -rf "$HOME/.ai-containers/default/.ssh/r"
+
 # ── G125: on a filesystem that heeds case, nothing is spelled ───────────────
 # Only a path that crosses a directory ignoring case, or lies on a Windows
 # filesystem, is spelled as on disk (from readdir or getcwd), and only those

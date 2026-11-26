@@ -1027,7 +1027,7 @@ vartmp_volume_ensure() {
       lab="${out%$'\n'}"
       if [[ "$lab" != "$group" ]]; then
         if [[ -z "$lab" ]]; then
-          printf 'ERROR: the volume %s exists but is not a temp volume of group "%s": it has no label.\n' "$vol" "$group" >&2
+          printf 'ERROR: the volume %s exists but is not a temp volume of group "%s": it has no temp volume label.\n' "$vol" "$group" >&2
           printf '       A launch labels the volume it makes, so this one was made some other way: by a\n' >&2
           printf '       container started with -v %s:<path> before the group'"'"'s first launch, say.\n' "$vol" >&2
         else

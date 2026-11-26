@@ -95,6 +95,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and exits 1; `list` leaves it out of the orphans and exits 1. Read as a
   volume with no labels, `gc --all` removed an orphaned Ruby volume of this
   home, or another prefix's temp volume named like one.
+- **A repository in a group folder that `EXTRA_MOUNTS` also lists is
+  protected through the group's own mount too.** Its git config and hooks were
+  read-only under `/workspace` only, and writable at the group's path (`~/.ssh`,
+  `~/.cache`, …), from which the host's git would run what the agent wrote.
 - **`group.sh list --sizes` asks `docker system df -v` once per run**, not once
   per volume, and not at all with no group to size: that call walks every
   volume on the daemon.

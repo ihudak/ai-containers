@@ -43,8 +43,9 @@ case "$1" in
           if [[ "$prev" == "--format" ]]; then :; elif [[ "$a" != "--format" ]]; then name="$a"; fi
           prev="$a"
         done
-        # FAKE_INSPECT_FAIL=<volume>: docker cannot say whether it exists.
-        [[ "$name" == "${FAKE_INSPECT_FAIL:-}" ]] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+        # FAKE_INSPECT_FAIL=<volume>: docker cannot say whether it exists (a
+        # plain inspect; a read of its labels still answers).
+        [[ "$name" == "${FAKE_INSPECT_FAIL:-}" && "$*" != *Labels* ]] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
         [[ -f "$FAKE_VOLUMES_DIR/$name" ]] || { echo "Error response from daemon: get $name: no such volume" >&2; exit 1; }
         fmt=""; prev=""
         for a in "${@:3}"; do [[ "$prev" == "--format" ]] && fmt="$a"; prev="$a"; done
@@ -255,7 +256,7 @@ out="$(run_group gc --all --yes)"; rc=$?
 mkvol "ai-containers-rvm-unsure" "unsure"
 out="$(FAKE_PS_FAIL=1 run_group gc --yes)"; rc=$?
 [[ "$rc" -ne 0 && -f "$FAKE_VOLUMES_DIR/ai-containers-rvm-unsure" && "$out" == *"Skipping ai-containers-rvm-unsure — docker could not list the containers"* ]] \
-  && [[ "$out" == *"Nothing removed: 1 orphaned volume(s) of this home skipped"* && "$out" != *"Nothing to collect"* ]] \
+  && [[ "$out" == *"Nothing removed: 1 volume(s) skipped"* && "$out" != *"Nothing to collect"* ]] \
   && pass "PRJ-16 gc skips a volume when docker cannot say whether a container uses it, and says so, rc 1" \
   || fail "PRJ-16 gc with docker ps failing (rc=$rc; got: $out)"
 run_group gc --yes >/dev/null
@@ -815,6 +816,7 @@ mkdir -p "$GR/tun"; mkvol ai-containers-rvm-tun tun; : > "$FAKE_VOLUMES_DIR/ai-c
 out="$(run_group rm tun --yes)"; rc=$?
 [[ "$rc" -eq 0 && ! -d "$GR/tun" && "$out" == *"docker volume rm ai-containers-vartmp-tun"* ]] \
   && ! tvol ai-containers-rvm-tun && tvol ai-containers-vartmp-tun && [[ "$out" != *"Removed volume ai-containers-vartmp-tun"* ]] \
+  && [[ "$out" == *"it has no temp volume label, so it is not the temp volume of group \"tun\""* ]] \
   && pass "rm names an unlabelled volume of the temp name with its docker volume rm, and leaves it" \
   || fail "rm with an unlabelled temp-name volume (rc=$rc; got: $out)"
 # That volume alone is no group: refused, still named.
@@ -955,6 +957,16 @@ out="$(FAKE_LABEL_FAIL=ai-containers-vartmp-tgt run_group gc --yes)"; rc=$?
   && pass "gc names a temp volume whose label docker cannot read, rather than pass it over, and exits 1" \
   || fail "gc with an orphaned temp volume's label unreadable (rc=$rc; got: $out)"
 tclean ai-containers-vartmp-tgt
+# A Ruby volume's group is its label's, and only one with no label is its
+# name's: gc --all takes an orphaned Ruby volume with no label by its name, and
+# keeps one whose label names a group that has a directory, whatever its name.
+: > "$FAKE_VOLUMES_DIR/ai-containers-rvm-tnolab"
+mkdir -p "$GR/g336"; mkvol ai-containers-rvm-x-rvm-g336 g336
+out="$(run_group gc --all --yes)"; rc=$?
+[[ "$rc" -eq 0 ]] && ! tvol ai-containers-rvm-tnolab && tvol ai-containers-rvm-x-rvm-g336 \
+  && pass "gc --all takes an unlabelled orphaned Ruby volume by its name, and keeps one whose label names an existing group" \
+  || fail "gc --all, a Ruby volume's group by label or name (rc=$rc; got: $out)"
+rm -rf "$GR/g336"; tclean ai-containers-rvm-x-rvm-g336 ai-containers-rvm-tnolab
 mkdir -p "$GR/tleg"; : > "$FAKE_VOLUMES_DIR/ai-containers-rvm-tleg"
 out="$(run_group rm tleg --yes)"; rc=$?
 [[ "$rc" -eq 0 && ! -d "$GR/tleg" ]] && ! tvol ai-containers-rvm-tleg \
