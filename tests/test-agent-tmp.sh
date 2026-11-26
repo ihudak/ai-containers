@@ -254,7 +254,7 @@ at_old 200101-000000-1; at_old 200101-000000-2
 at_run "200101-000000-2" --now "$(at_far)"
 check "an old folder is removed (rc=$RC)" test ! -e "$D/200101-000000-1"
 check "  with its NOTE" grep -qF "NOTE: removed 1 temp folder(s) of stopped containers, untouched for 30 days, from $D (" "$ERR"
-check "  and freed size" grep -q 'freed)\.$' "$ERR"
+check "  and freed size, in K for a folder under 1M" grep -qE '\([0-9]+K freed\)\.$' "$ERR"
 check "a folder named in <running> is kept, however old" test -d "$D/200101-000000-2"
 check "the launch's folder is made, exit 0" test "$RC" -eq 0 -a -d "$D/$SLOT"
 check "  mode 700" test "$(p_stat_mode "$D/$SLOT")" = 700
@@ -328,6 +328,45 @@ PATH="$D.bin:$PATH" at_run "" --now "$(at_far)"
 check "a folder rm cannot remove is named" grep -qF "NOTE: could not remove $D/200101-000000-1; it is kept, and checked again in 30 days." "$ERR"
 check "  and kept" test -d "$D/200101-000000-1"
 check "  and touched (ctime after the clock's cut-off)" bash -c '[[ "$(find -P "$1" -maxdepth 0 -cnewer "$2")" ]]' _ "$D/200101-000000-1" "$D/200101-000000-1/f"
+rm -rf "$D.bin"; at_clean
+
+# The freed size is du's, summed over what was removed: a folder holding 2 MiB of
+# random data (which no filesystem compresses) is 2.0M whatever the blocks round to.
+at_setup; at_old 200101-000000-1
+dd if=/dev/urandom of="$D/200101-000000-1/big" bs=1024 count=2048 2>/dev/null
+at_run "" --now "$(at_far)"
+check "a removed folder of 2 MiB: the NOTE says 2.0M freed" \
+  grep -qxF "NOTE: removed 1 temp folder(s) of stopped containers, untouched for 30 days, from $D (2.0M freed)." "$ERR"
+at_clean
+
+# A link of the folder form that the listing names, as if a folder had been
+# swapped for one after find read the directory, is never removed: only a
+# directory that is no link is a candidate. The fake find adds it to the one
+# call that lists the directory (the one with -mindepth); the clock puts the
+# link's own change time past 30 days.
+at_setup; mkdir -p "$D/elsewhere"; : > "$D/elsewhere/keep"; ln -s elsewhere "$D/200101-000000-7"
+mkdir -p "$D.bin"
+cat > "$D.bin/find" <<FAKEFIND
+#!/usr/bin/env bash
+"$(command -v find)" "\$@"; rc=\$?
+for a in "\$@"; do [[ "\$a" == -mindepth ]] && printf '%s\0' "$D/200101-000000-7"; done
+exit \$rc
+FAKEFIND
+chmod +x "$D.bin/find"
+PATH="$D.bin:$PATH" at_run "" --now "$(at_far)"
+check "a link the listing names is kept (rc=$RC)" test -L "$D/200101-000000-7"
+check "  its target and what it holds are untouched" test -f "$D/elsewhere/keep"
+check "  and nothing is said of it" bash -c '! grep -qE "NOTE: removed|could not remove" "$1"' _ "$ERR"
+rm -rf "$D.bin"; at_clean
+
+# A folder counts as removed only once it is gone: an rm that says it removed
+# the folder while the folder is still there keeps it, named.
+at_setup; at_old 200101-000000-1
+at_fakebin rm 'for a in "$@"; do [[ "$a" == "'"$D"'/"* ]] && exit 0; done; exec /bin/rm "$@"'
+PATH="$D.bin:$PATH" at_run "" --now "$(at_far)"
+check "rm says done but the folder is there: named as not removed" \
+  grep -qF "NOTE: could not remove $D/200101-000000-1; it is kept, and checked again in 30 days." "$ERR"
+check "  and not counted as removed" bash -c '! grep -q "NOTE: removed" "$1"' _ "$ERR"
 rm -rf "$D.bin"; at_clean
 
 at_setup; at_old "$SLOT"

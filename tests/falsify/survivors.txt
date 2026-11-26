@@ -1027,17 +1027,24 @@ services.d/redis.sh:stmt-delete:c439266b023d2b833980108b498c67a9ca75ea25
 # ── 26 ────────────────────────────────────────────────────────────────────────
 # entrypoint.sh as its functions (GAP-3, 2026-11-03): the EXECUTED-PARTIAL row
 # mutates only the functions four tests extract and run. 63 of 65 killed.
+# setup_agent_tmp joined the row on 2026-11-26: 71 of 75 killed.
 
-GROUP: entrypoint.sh — `|| true` turned into `&& true` inside two functions
+GROUP: entrypoint.sh — `|| true` turned into `&& true` inside three functions
 entrypoint.sh:logic-flip:3511c5025f231c57748285f5d7ba8c346dbdd2b0
 entrypoint.sh:logic-flip:6454fff6f7154f6f4a4f8953b77697a25a762208
+entrypoint.sh:logic-flip:fd7355c7501c507cdbffae70a882f51c19e50f12
+entrypoint.sh:logic-flip:efab6f038feb5c5754debb6ae495b6247d17d3f9
     /usr/local/bin/start-services.sh prepare || true      (run_services)
     grep -v 'outside of the UID_MIN' <<<"$err" >&2 || true   (useradd_matching_host_uid)
+    chown root:root /var/tmp 2>/dev/null || true           (setup_agent_tmp)
+    chmod 1777 /var/tmp 2>/dev/null || true                (setup_agent_tmp)
   EQUIVALENT: under the entrypoint's `set -e`, bash ignores the failure of every
     command in a `&&`/`||` list but the last, so `X && true` continues exactly
-    where `X || true` does. Neither list is the last command of its function
-    (run_services goes on to the start phase; the other is followed by
-    `return "$rc"`), so the list's status is never read either.
+    where `X || true` does. None of the lists is the last command of its
+    function (run_services goes on to the start phase; the grep is followed by
+    `return "$rc"`; setup_agent_tmp's chown and chmod by the runuser of
+    agent-tmp.sh, whose own `||` list decides the function's course), so the
+    list's status is never read either.
 
 # ── 27 ────────────────────────────────────────────────────────────────────────
 # project-files.sh (feature-gaps review GAP-2, 2026-11-10): 269 mutants, 242
@@ -1329,3 +1336,39 @@ project.sh:logic-flip:17108257b5888f3300d54c94344cdc0d6c54cce4
     names the link itself). A path that is not there, or a regular file,
     passes `! -L`, and rmdir fails on both. A plain directory passes both
     guards. No input separates the two programs.
+
+# ── 30 ────────────────────────────────────────────────────────────────────────
+# agent-tmp.sh (2026-11-26): 64 mutants, 55 killed by tests/test-agent-tmp.sh.
+# The freed-size NOTE, the link guard and the "is it gone" check were survivors
+# of the first measurement (46 of 64), killed since by assertions of their own.
+
+GROUP: agent-tmp.sh runs without errexit, and prune's status is read by nothing
+agent-tmp.sh:return-flip:fe013a4665e352493e5fedade3e7055d95dbbce1
+agent-tmp.sh:return-flip:09117967ee129a330904c0240fb8c3f45f63085e
+agent-tmp.sh:return-flip:b5bd60e0f90c87b8ae0f3b309278bd2e60f072cd
+agent-tmp.sh:return-flip:74075048bf7733698e2b2387a2bb69aedabecec1
+agent-tmp.sh:return-flip:7244b48dedeb7bb6a238963ef6089efb39e719f5
+agent-tmp.sh:return-flip:06d3d9b2060dd51343d5f19f0e531f15c507e3d1
+agent-tmp.sh:logic-flip:e181bfa71f97e72e07e5fe57bcd1bceaa110d517
+agent-tmp.sh:logic-flip:18089dea31e39e7cbb7a96f95041e74da3c4d759
+    [[ "$running_arg" == "?" ]] && return 0           (prune: <running> unknown)
+    [[ -d "$dir" ]] || return 0                         (prune: no /var/tmp)
+    uid="$(id -u)" || return 0                          (prune)
+    ref="$(mktemp)" || return 0                         (prune)
+    touch -t "…" "$ref" 2>/dev/null || return 0         (prune)
+    return 0                                            (prune's last line)
+    prune || true                                       (its one call)
+    touch -c -h -- "$d" 2>/dev/null || true             (prune, twice: a folder
+                                                         kept for what it holds,
+                                                         and one rm left)
+  damaged:  each `return 0` becomes `return 1`; each `|| true` becomes `&& true`.
+  EQUIVALENT: the script sets `set -uo pipefail` and deliberately NOT `-e`, so
+    no failing status ends it, and nothing reads the ones these mutants change.
+    prune's only caller is `prune || true`, a statement whose status the next
+    line (the mkdir of the launch's folder) never looks at, and the script's
+    own exit status is set by the explicit `exit 1`/`exit 0` after that mkdir;
+    the RETURN trap that removes the reference file runs whatever prune
+    returns. The first touch is followed by `continue`, and the second is the
+    last command of the else branch of an `if` that is a statement inside the
+    loop, whose status nothing reads either. Every file and every line on
+    stderr is the same either way.
