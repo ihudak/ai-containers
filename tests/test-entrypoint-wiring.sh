@@ -255,15 +255,16 @@ else
       sandbox_user=alice; _aice_app_env=(APP=1); export APP=1; echo "$3" > "$TMP/at.exit"
       if [[ "$1" == UNSET ]]; then unset AI_AGENT_TMP_RUNNING; else export AI_AGENT_TMP_RUNNING="$1"; fi
       if [[ "$2" == UNSET ]]; then unset AI_AGENT_TMPDIR; else export AI_AGENT_TMPDIR="$2"; fi
-      rc=0; setup_agent_tmp || rc=$?
-      echo "rc:$rc"
+      # Bare, as PID 1 calls it: under `|| rc=$?` errexit is off for the whole body.
+      setup_agent_tmp
+      echo "reached"
       echo "tmpdir:${AI_AGENT_TMPDIR-unset}"
       echo "running:${AI_AGENT_TMP_RUNNING-unset}" ) >> "$at_log" 2>&1
   }
   S=200101-000000-1
   at_run UNSET /var/tmp/$S 0
   grep -qE '^(chown|chmod|args):' "$at_log" && fail "agent-tmp: variable unset runs no chown, chmod or script" || pass "agent-tmp: variable unset runs no chown, chmod or script"
-  grep -qx 'rc:0' "$at_log" && pass "agent-tmp: variable unset returns 0" || fail "agent-tmp: variable unset returns 0"
+  grep -qx 'reached' "$at_log" && pass "agent-tmp: variable unset returns 0 (bare, under errexit)" || fail "agent-tmp: variable unset returns 0 under errexit"
   grep -qx 'running:unset' "$at_log" && pass "agent-tmp: AI_AGENT_TMP_RUNNING is unset after the step (unset case)" || fail "agent-tmp: running var after unset case"
 
   at_run "" /var/tmp/$S 0
@@ -284,9 +285,9 @@ else
     || fail "agent-tmp: drop (log: $(tr '\n' ';' < "$at_log"))"
 
   at_run "" /var/tmp/$S 1
-  grep -qx 'tmpdir:unset' "$at_log" && grep -qx 'rc:0' "$at_log" && grep -qx 'running:unset' "$at_log" \
+  grep -qx 'tmpdir:unset' "$at_log" && grep -qx 'reached' "$at_log" && grep -qx 'running:unset' "$at_log" \
     && pass "agent-tmp: a failing script unsets AI_AGENT_TMPDIR, returns 0, unsets the running var" \
-    || fail "agent-tmp: failure handling (got: $(grep -E '^(rc|tmpdir|running):' "$at_log" | tr '\n' ' '))"
+    || fail "agent-tmp: failure handling (got: $(grep -E '^(reached|tmpdir|running):' "$at_log" | tr '\n' ' '))"
 
   at_run "" /etc/x 0
   grep -qx "args:/var/tmp  " "$at_log" \
