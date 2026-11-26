@@ -67,6 +67,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   paths. The launch's walk for planted launchers does not enter those two group
   folders (the git scan already skipped group mounts). An image rebuild
   (`./build.sh`) and `./sync-to-projects.sh` are needed for an existing project.
+- **CI's falsify tier runs `group.sh` in a shard of its own**, as it already
+  does `repo-git-reset.sh`, `version.sh` and `project.sh`: the shard for every
+  other target was cancelled at its 90-minute cap once `group.sh` had grown to
+  219 mutants.
 
 ### Fixed
 

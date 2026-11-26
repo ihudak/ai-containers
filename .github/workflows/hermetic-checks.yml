@@ -224,7 +224,7 @@ jobs:
         # took 405 min on 4 workers, so it is split by mutant, not by target.
         # The list here and FALSIFY_PROJECT_SLICES below must agree;
         # tests/test-falsify-shards.sh checks that slices 1..N each run once.
-        shard: [repo-git-reset, version, project-1, project-2, project-3, project-4, project-5, project-6, rest, deep]
+        shard: [repo-git-reset, version, group, project-1, project-2, project-3, project-4, project-5, project-6, rest, deep]
     env:
       FALSIFY_SPLIT_TARGET: repo-git-reset.sh
       # project.sh (feature-gaps review GAP-28) has shards of its own too, by
@@ -240,6 +240,11 @@ jobs:
       # against the 90-min cap and was cancelled at it twice in ten runs
       # (2026-11-18/19); version.sh was 13 of its 72 min, its largest target.
       FALSIFY_VERSION_TARGET: version.sh
+      # group.sh has one too, by the same rule: rest took 61 min on 2026-11-24
+      # and 70 on 2026-11-26, group.sh 7 min of the 70 (186 mutants), and was
+      # cancelled at the cap later that day, with group.sh at 219 mutants and,
+      # by the run's timestamps, about twice the time.
+      FALSIFY_GROUP_TARGET: group.sh
 
     steps:
       - uses: actions/checkout@v7
@@ -289,7 +294,9 @@ jobs:
             project-*) select=(--target "$FALSIFY_PROJECT_TARGET" --slice "${SHARD#project-}/$FALSIFY_PROJECT_SLICES"
                                --select-oracles --stop-at-kill) ;;
             version) select=(--target "$FALSIFY_VERSION_TARGET") ;;
-            rest) select=(--exclude-target "$FALSIFY_SPLIT_TARGET" --exclude-target "$FALSIFY_VERSION_TARGET" --exclude-target "$FALSIFY_PROJECT_TARGET") ;;
+            group) select=(--target "$FALSIFY_GROUP_TARGET") ;;
+            rest) select=(--exclude-target "$FALSIFY_SPLIT_TARGET" --exclude-target "$FALSIFY_VERSION_TARGET" --exclude-target "$FALSIFY_GROUP_TARGET"
+                          --exclude-target "$FALSIFY_PROJECT_TARGET") ;;
             deep) select=(--deep) ;;
             *) echo "unknown falsify shard: $SHARD" >&2; exit 2 ;;
           esac
