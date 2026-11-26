@@ -275,7 +275,7 @@ at_old 200101-000000-1; at_old 200101-000000-2
 at_run "200101-000000-2" --now "$(at_far)"
 check "an old folder is removed (rc=$RC)" test ! -e "$D/200101-000000-1"
 check "  with its NOTE" grep -qF "NOTE: removed 1 temp folder(s) of stopped containers, untouched for 30 days, from $D (" "$ERR"
-check "  and freed size, in K for a folder under 1M" grep -qE '\([0-9]+K freed\)\.$' "$ERR"
+check "  and freed size, in K for a folder under 1M (0 for one du counts as none)" grep -qE '\(([0-9][0-9.]*K|0) freed\)\.$' "$ERR"
 check "a folder named in <running> is kept, however old" test -d "$D/200101-000000-2"
 check "the launch's folder is made, exit 0" test "$RC" -eq 0 -a -d "$D/$SLOT"
 check "  mode 700" test "$(p_stat_mode "$D/$SLOT")" = 700
@@ -346,7 +346,7 @@ at_clean
 at_setup; at_old 200101-000000-1
 at_fakebin rm 'for a in "$@"; do [[ "$a" == "'"$D"'/"* ]] && exit 1; done; exec /bin/rm "$@"'
 PATH="$D.bin:$PATH" at_run "" --now "$(at_far)"
-check "a folder rm cannot remove is named" grep -qF "NOTE: could not remove $D/200101-000000-1; it is kept, and checked again in 30 days." "$ERR"
+check "a folder rm cannot remove is named" grep -qF "NOTE: could not remove all of $D/200101-000000-1; what is left of it is kept, and checked again in 30 days." "$ERR"
 check "  and kept" test -d "$D/200101-000000-1"
 check "  and touched (ctime after the clock's cut-off)" bash -c '[[ "$(find -P "$1" -maxdepth 0 -cnewer "$2")" ]]' _ "$D/200101-000000-1" "$D/200101-000000-1/f"
 rm -rf "$D.bin"; at_clean
@@ -359,6 +359,32 @@ at_run "" --now "$(at_far)"
 check "a removed folder of 2 MiB: the NOTE says 2.0M freed" \
   grep -qxF "NOTE: removed 1 temp folder(s) of stopped containers, untouched for 30 days, from $D (2.0M freed)." "$ERR"
 at_clean
+
+# An rm -rf that fails part way has removed part of the folder: what is left is
+# kept, and the NOTE says so rather than that the folder is kept as it was. The
+# fake rm removes the file inside, then fails as on a file it cannot unlink.
+at_setup; at_old 200101-000000-1; : > "$D/200101-000000-1/g"
+at_fakebin rm 'for a in "$@"; do [[ "$a" == "'"$D"'/"* ]] && { /bin/rm -f -- "$a/f"; exit 1; }; done; exec /bin/rm "$@"'
+PATH="$D.bin:$PATH" at_run "" --now "$(at_far)"
+check "rm that removed part of a folder: what is left is named as kept" \
+  grep -qxF "NOTE: could not remove all of $D/200101-000000-1; what is left of it is kept, and checked again in 30 days." "$ERR"
+check "  the part rm removed is gone and the rest is kept" test ! -e "$D/200101-000000-1/f" -a -e "$D/200101-000000-1/g"
+check "  and it is not counted as removed" bash -c '! grep -q "NOTE: removed" "$1"' _ "$ERR"
+rm -rf "$D.bin"; at_clean
+
+# The freed size reads as GNU du -h reads (what du -sh in the container says):
+# rounded up, one decimal below 10, a whole number from 10, carried to the next
+# unit at 1024, through T. Measured with du (GNU coreutils) 9.12 --apparent-size
+# on files of each size. The fake du gives each removed folder the size.
+for pair in 1:1.0K 4:4.0K 10:10K 1023:1023K 1024:1.0M 1025:1.1M 1537:1.6M 10239:10M 10241:11M \
+            1047552:1023M 1048064:1.0G 1048577:1.1G 1073741824:1.0T 1073741825:1.1T; do
+  at_setup; at_old 200101-000000-1
+  at_fakebin du 'printf "%s\t%s\n" '"${pair%%:*}"' "${@: -1}"'
+  PATH="$D.bin:$PATH" at_run "" --now "$(at_far)"
+  check "a removed folder of ${pair%%:*} KiB: the NOTE says ${pair#*:} freed, as du -h does" \
+    grep -qxF "NOTE: removed 1 temp folder(s) of stopped containers, untouched for 30 days, from $D (${pair#*:} freed)." "$ERR"
+  rm -rf "$D.bin"; at_clean
+done
 
 # A link of the folder form that the listing names, as if a folder had been
 # swapped for one after find read the directory, is never removed: only a
@@ -386,7 +412,7 @@ at_setup; at_old 200101-000000-1
 at_fakebin rm 'for a in "$@"; do [[ "$a" == "'"$D"'/"* ]] && exit 0; done; exec /bin/rm "$@"'
 PATH="$D.bin:$PATH" at_run "" --now "$(at_far)"
 check "rm says done but the folder is there: named as not removed" \
-  grep -qF "NOTE: could not remove $D/200101-000000-1; it is kept, and checked again in 30 days." "$ERR"
+  grep -qF "NOTE: could not remove all of $D/200101-000000-1; what is left of it is kept, and checked again in 30 days." "$ERR"
 check "  and not counted as removed" bash -c '! grep -q "NOTE: removed" "$1"' _ "$ERR"
 rm -rf "$D.bin"; at_clean
 
