@@ -890,9 +890,16 @@ if command -v python3 >/dev/null 2>&1; then
   if [[ "$RC" == 0 ]]; then pass "a stale socket in the checkout does not refuse the reset"
   else fail "socket refused (rc=$RC: $OUT)"; fi
 fi
-# The grafts setting must not bury a fetch error under git's deprecation hint.
+# The STALE reason is git's error, not the helper's default, and no grafts
+# hint comes before it (though git 2.34 to 2.56 print none for a clone that
+# fails: TST-42). The URL is relative and the helper runs in $TMP, so git's
+# error fits the helper's 200-character cut however long TMPDIR is: with
+# "$TMP/does-not-exist.git", under run-all.sh, a TMPDIR of 106 characters cut
+# the name off.
 W="$(mk_repo hint)"
-AI_REPO_URL="$TMP/does-not-exist.git" run_script inspect "$W"
+cd "$TMP" || { printf 'SCAFFOLD-FAILED: cd %s\n' "$TMP"; exit 1; }
+AI_REPO_URL=does-not-exist.git run_script inspect "$W"
+cd - >/dev/null || { printf 'SCAFFOLD-FAILED: cd back\n'; exit 1; }
 if grep -q '^STALE|fatal: repository .*does-not-exist.git' <<<"$OUT" && ! grep -qi 'graft' <<<"$OUT"; then
   pass "an unreachable remote's STALE reason is git's error, not a grafts hint"
 else fail "STALE reason (out: $(grep STALE <<<"$OUT" | cut -c1-160))"; fi
