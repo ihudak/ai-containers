@@ -191,6 +191,17 @@ grep -qE '[[:space:]]at least 12M$' <<<"$row" \
   && pass "list --sizes shows a partial total, as at least that, where du could not read all of a group dir" \
   || fail "list --sizes with a partial du total (got: $out)"
 
+# Only what reads as a size is shown: a du that prints something else (no tab
+# before the path, another line before the size, words before the tab) is "?".
+for body in 'printf "garbage\\n"' 'printf "oops\\n12M\\t%s\\n" "$p"' 'printf "garbage\\t%s\\n" "$p"'; do
+  printf '#!/bin/sh\nfor a; do p="$a"; done\n%s\n' "$body" > "$FAKE_DU/du"
+  out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"
+  row="$(grep -E '^default ' <<<"$out")"
+  grep -qE '[[:space:]]\?$' <<<"$row" \
+    && pass "list --sizes shows ? for a du output that is no size ($body)" \
+    || fail "list --sizes with a du output that is no size, $body (got: $out)"
+done
+
 # A repo volume must never appear in group listings.
 : > "$FAKE_VOLUMES_DIR/ai-containers-repo-app"
 out="$(run_group list)"
