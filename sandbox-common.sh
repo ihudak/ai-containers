@@ -1002,6 +1002,12 @@ vartmp_volume_ensure() {
   err="$(docker volume inspect "$vol" 2>&1 >/dev/null)" || true
   if [[ "${err,,}" != *"no such volume"* ]]; then
     printf 'ERROR: docker could not say whether %s exists\n' "$vol" >&2
+    # And why, in docker's words: this is the first docker call of a launch that
+    # can refuse it, and a daemon that is stopped or a socket that refuses this
+    # user is the usual reason. Its first line that holds anything, one trailing
+    # CR cut, made safe for the terminal; nothing when docker said nothing.
+    err="${err#"${err%%[!$'\n']*}"}"; err="${err%%$'\n'*}"; err="${err%$'\r'}"
+    [[ -z "$err" ]] || printf '       docker said: %s\n' "$(_ac_term "$err")" >&2
     return 1
   fi
   # With this HOME's id, as rvm_volume_ensure() does; a launch never fails over it.

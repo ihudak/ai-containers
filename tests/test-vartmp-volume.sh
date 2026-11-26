@@ -37,7 +37,13 @@ case "$1" in
   volume)
     case "$2" in
       inspect)
-        [[ -n "${FAKE_INSPECT_DOWN:-}" ]] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+        # FAKE_INSPECT_DOWN: docker cannot answer, saying FAKE_INSPECT_MSG (set
+        # and empty: saying nothing) on stderr.
+        if [[ -n "${FAKE_INSPECT_DOWN:-}" ]]; then
+          msg="${FAKE_INSPECT_MSG-Cannot connect to the Docker daemon}"
+          [[ -z "$msg" ]] || printf '%s\n' "$msg" >&2
+          exit 1
+        fi
         name=""; fmt=""; prev=""
         for a in "${@:3}"; do
           if [[ "$prev" == "--format" ]]; then fmt="$a"; elif [[ "$a" != "--format" ]]; then name="$a"; fi
@@ -138,8 +144,27 @@ out="$(FAKE_INSPECT_DOWN=1 vartmp_volume_ensure docs 2>"$TMP/err")"; rc=$?
 check "an inspect that fails for another reason returns 1" "1" "$rc"
 check "that refusal prints nothing on stdout" "" "$out"
 check "that refusal says docker could not say" \
-  "ERROR: docker could not say whether ai-containers-vartmp-docs exists" "$(cat "$TMP/err")"
+  "ERROR: docker could not say whether ai-containers-vartmp-docs exists" "$(head -1 "$TMP/err")"
 check "that refusal creates nothing" "" "$(cat "$FAKE_CREATE_LOG")"
+
+# What docker said comes with it: a stopped daemon, or a socket that refuses this
+# user, is the usual reason a launch fails here, and the ERROR alone names a volume.
+down='Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?'
+out="$(FAKE_INSPECT_DOWN=1 FAKE_INSPECT_MSG="$down" vartmp_volume_ensure docs 2>"$TMP/err")"; rc=$?
+check "a daemon that cannot be reached returns 1" "1" "$rc"
+check "  with the ERROR and, under it, what docker said" \
+  "ERROR: docker could not say whether ai-containers-vartmp-docs exists
+       docker said: $down" "$(cat "$TMP/err")"
+# Only its first line that holds anything, and a control character in it reaches
+# the terminal as ?.
+out="$(FAKE_INSPECT_DOWN=1 FAKE_INSPECT_MSG=$'\nbad \e]0;x\a daemon\r\nsecond line' vartmp_volume_ensure docs 2>"$TMP/err")"; rc=$?
+check "docker's message is made safe for the terminal, its first line only (rc=$rc)" \
+  "ERROR: docker could not say whether ai-containers-vartmp-docs exists
+       docker said: bad ?]0;x? daemon" "$(cat "$TMP/err")"
+# A docker that says nothing gets no empty "docker said:" line.
+out="$(FAKE_INSPECT_DOWN=1 FAKE_INSPECT_MSG='' vartmp_volume_ensure docs 2>"$TMP/err")"; rc=$?
+check "docker silent: the ERROR alone (rc=$rc)" \
+  "ERROR: docker could not say whether ai-containers-vartmp-docs exists" "$(cat "$TMP/err")"
 
 out="$(FAKE_CREATE_FAIL=1 vartmp_volume_ensure docs 2>"$TMP/err")"; rc=$?
 check "a create that fails returns 1" "1" "$rc"
