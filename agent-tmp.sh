@@ -37,9 +37,24 @@ if (( $# < 3 )); then
   exit 2
 fi
 dir="$1" slot="$2" running_arg="$3"
-now=""
-if [[ "${4:-}" == --now ]]; then now="${5:-}"; fi
-[[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+# --now is a decimal count of seconds, a leading zero included (10#: bash would
+# read 0123 as octal and 089 as an error), and at most 15 digits, well inside
+# bash's arithmetic. Anything else after the three arguments is a usage error,
+# never a fall-back to the real clock.
+if (( $# > 3 )); then
+  if [[ $# -ne 5 || "$4" != --now || ! "$5" =~ ^[0-9]{1,15}$ ]]; then
+    printf 'usage: agent-tmp.sh <dir> <slot> <running> [--now <epoch>]\n' >&2
+    exit 2
+  fi
+  now=$((10#$5))
+else
+  now="$(date +%s)"
+fi
+# The cut-off is written for touch -t, and both sides read it in UTC: in local
+# time the hour a clock goes back names two times, and touch took either,
+# moving the cut-off by an hour. A container has no TZ here (env -i), a test
+# host may.
+export TZ=UTC0
 
 name_re='^[0-9]{6}-[0-9]{6}-[0-9]+$'
 cap=50 readmax=500 age=2592000

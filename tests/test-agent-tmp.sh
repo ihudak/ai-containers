@@ -232,6 +232,27 @@ check "an old .var-tmp that is a dangling link is named (rc=$RC)" \
 check "  and left as it is" test -L "$GROUP_ROOT/.var-tmp"
 teardown
 
+# In a home whose path holds a ':', the copy command still binds the old folder
+# at /src: `-v` splits at every ':', so it goes through --mount, as every bind
+# of a launch holding one does (sandbox-common.sh: `_bind_mount_arg()`). The
+# printed line, read as a shell reads it, is the argv docker would get.
+setup
+export HOME="$TMP/ho:me"; mkdir -p "$HOME"; HOME="$(p_realdir "$HOME")"; export HOME
+GROUP_ROOT="$HOME/.ai-containers/default"
+mkdir -p "$GROUP_ROOT/.var-tmp"
+run_sandbox
+grep -F 'docker run ' "$ERR" > "$TMP/err-run.txt"
+check "a home holding ':' launches and names its old .var-tmp with a copy command (rc=$RC)" \
+  bash -c '[[ "$1" -eq 0 && "$(grep -c . "$2")" == 1 ]]' _ "$RC" "$TMP/err-run.txt"
+line="$(sed 's/^ *//' "$TMP/err-run.txt")"
+( eval "set -- $line"; printf '%s\n' "$@" ) > "$TMP/copy-argv.txt"
+pair_in() { awk -v f="$1" -v v="$2" 'p == f && $0 == v { ok = 1 } { p = $0 } END { exit !ok }' "$3"; }
+check "  which binds the old folder read-only at /src through --mount" \
+  pair_in --mount "type=bind,\"source=$GROUP_ROOT/.var-tmp\",\"destination=/src\",readonly" "$TMP/copy-argv.txt"
+check "  and the group's volume at /dst" pair_in -v "$VOL:/dst" "$TMP/copy-argv.txt"
+check "  and copies with cp -a /src/. /dst/" bash -c '[[ "$(tail -n 3 "$1" | tr "\n" " ")" == "-a /src/. /dst/ " ]]' _ "$TMP/copy-argv.txt"
+teardown
+
 # ── agent-tmp.sh, run directly ──
 # Change time cannot be set back, so "old" items are made first, T is recorded,
 # and after a sleep the "recent" ones; --now T+1+30 days then makes everything
@@ -389,5 +410,43 @@ at_setup
 bash "$AT" "$D" "$SLOT" 2>/dev/null; rc=$?
 check "fewer than 3 arguments: exit 2" test "$rc" -eq 2
 at_clean
+
+# --now is a decimal count of seconds, a leading zero included. Read as bash
+# reads a number, 0123 was octal and 089 an error, and junk, an empty value or
+# one past bash's arithmetic went on in silence, on the real clock or a wrapped
+# one. Each, and anything else after the three arguments, is a usage error.
+at_setup; at_old 200101-000000-1
+at_run "" --now "0$(at_far)"
+check "--now with a leading zero is read as decimal: the old folder is removed (rc=$RC)" \
+  bash -c '[[ "$1" -eq 0 && ! -e "$2" ]]' _ "$RC" "$D/200101-000000-1"
+at_clean
+for bad in abc '' -5 1e9 99999999999999999999; do
+  at_setup; at_old 200101-000000-1
+  at_run "" --now "$bad"
+  check "--now '$bad': exit 2, nothing pruned or made (rc=$RC)" bash -c \
+    '[[ "$1" -eq 2 && -d "$2/200101-000000-1" && ! -e "$2/$3" ]]' _ "$RC" "$D" "$SLOT"
+  at_clean
+done
+at_setup
+at_run "" --now
+check "--now with no value: exit 2 (rc=$RC)" test "$RC" -eq 2
+at_run "" --later 5
+check "an unknown option: exit 2 (rc=$RC)" test "$RC" -eq 2
+check "  and no folder is made" test ! -e "$D/$SLOT"
+at_clean
+
+# The cut-off, 30 days before now, is handed to touch -t in UTC, and touch reads
+# it in UTC. Written in local time, the hour a clock goes back names two times,
+# and touch took either, moving the cut-off by an hour. Containers run in UTC;
+# the host a test runs on need not.
+at_setup
+N="$(at_far)"
+want="$(date -u -d "@$((N - 2592000))" +%Y%m%d%H%M.%S 2>/dev/null || date -u -r "$((N - 2592000))" +%Y%m%d%H%M.%S)"
+at_fakebin touch 'printf "%s|%s\n" "${TZ-unset}" "$*" >> "'"$D"'.touch"; exec '"$(command -v touch)"' "$@"'
+PATH="$D.bin:$PATH" TZ=XST5XDT,M3.2.0,M11.1.0 at_run "" --now "$N"
+check "the cut-off goes to touch -t as UTC, touch reading it in UTC, under any caller's TZ" \
+  grep -qE "^UTC0\|-t ${want//./\\.} " "$D.touch"
+check "  and the folder is made (rc=$RC)" test "$RC" -eq 0 -a -d "$D/$SLOT"
+rm -rf "$D.bin" "$D.touch"; at_clean
 
 if [[ $fails -eq 0 ]]; then printf 'ALL PASS\n'; else printf '%d FAILED\n' "$fails"; exit 1; fi

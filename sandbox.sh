@@ -8690,12 +8690,17 @@ run_container() {
   # The bind version's folder is never mounted, copied or removed here: named,
   # with how to copy it into the volume and how to remove it, at every launch
   # while it is there.
-  local _old_vt="$group_root/.var-tmp"
+  local _old_vt="$group_root/.var-tmp" _vt_f _vt_v
   if [[ -e "$_old_vt" || -L "$_old_vt" ]]; then
+    # The old folder is bound as every bind of a launch is (_bind_mount_arg):
+    # `-v` splits at every ':', so a home holding one gets --mount. It lies in
+    # the group directory, which this launch binds already, so docker can be
+    # handed its name intact.
+    _bind_mount_arg _vt_f _vt_v "$_old_vt" /src ro
     printf 'NOTE: %s is no longer mounted: /var/tmp is now the Docker volume %s.\n' "$(_q "$_old_vt")" "$vartmp_vol" >&2
     printf '      To copy what it holds into the volume:\n' >&2
-    printf '        docker run --rm --pull=never %s--entrypoint cp -v %s:/src:ro -v %s:/dst %s -a /src/. /dst/\n' \
-      "${selinux_opt:+$selinux_opt }" "$(_q "$_old_vt")" "$vartmp_vol" "$(_q "$image_name")" >&2
+    printf '        docker run --rm --pull=never %s--entrypoint cp %s %s -v %s:/dst %s -a /src/. /dst/\n' \
+      "${selinux_opt:+$selinux_opt }" "$_vt_f" "$(_q "$_vt_v")" "$vartmp_vol" "$(_q "$image_name")" >&2
     printf '      Then, once nothing in it is needed and no container of group "%s" runs:\n' "$group" >&2
     printf '        rm -rf %s\n' "$(_q "$_old_vt")" >&2
   fi
