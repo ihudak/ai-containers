@@ -2654,15 +2654,39 @@ rm -rf "$G93/.cache/pip" "$G93/.local/state/p"
 # by name and cannot be checked).
 mkdir -p "$G93/.cache/locked" "$G93/.cache/sealed"
 chmod 000 "$G93/.cache/locked"; chmod 100 "$G93/.cache/sealed"
-launch "$LAUNCHER" "$TMP/app"
-m93="$(mounts)"
-if [[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] && ! err_names "$G93/.cache/locked" && ! err_names "$G93/.cache/sealed" \
-   && ! grep -aqF -e "$G93/.cache/locked" -e "$G93/.cache/sealed" <<<"$m93"; then
-  pass "T93 a folder the agent made unlistable in the group's cache does not refuse the launch"
+if ls "$G93/.cache/locked" >/dev/null 2>&1; then
+  # Root lists both, so nothing here is unlistable, and each check below would
+  # pass whether the group's cache is walked or not (CI's floor job runs as root).
+  printf "NOTE: T93's unlistable folders not run: a mode-000 folder can be listed here (root)\n"
 else
-  fail "T93 unlistable folders in the group's cache (rc=$LAUNCH_RC; $(grep -aF -e ERROR -e WARNING "$ERR" | head -2 | tr '\n' ' '))"
+  launch "$LAUNCHER" "$TMP/app"
+  m93="$(mounts)"
+  if [[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] && ! err_names "$G93/.cache/locked" && ! err_names "$G93/.cache/sealed" \
+     && ! grep -aqF -e "$G93/.cache/locked" -e "$G93/.cache/sealed" <<<"$m93"; then
+    pass "T93 a folder the agent made unlistable in the group's cache does not refuse the launch"
+  else
+    fail "T93 unlistable folders in the group's cache (rc=$LAUNCH_RC; $(grep -aF -e ERROR -e WARNING "$ERR" | head -2 | tr '\n' ' '))"
+  fi
+  # The group's cache mounted into /workspace too (G92) is walked there like any
+  # mount: a folder you can search but not list refuses the launch, and one you
+  # cannot search either is read-only in both views, /workspace's and
+  # ~/.cache's, each named. Left writable through ~/.cache, it would be a
+  # folder of the mount the agent could fill unchecked.
+  EXTRA_MOUNTS="$G93/.cache" launch "$LAUNCHER" "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$G93/.cache/sealed can be searched but not listed by you" \
+    && pass "T93 the group's cache also in EXTRA_MOUNTS: a folder you can search but not list refuses the launch" \
+    || fail "T93 a searchable unlistable folder in the group's cache in EXTRA_MOUNTS (rc=$LAUNCH_RC; $(grep -aF ERROR "$ERR" | head -1))"
+  chmod 700 "$G93/.cache/sealed"; rm -rf "$G93/.cache/sealed"
+  EXTRA_MOUNTS="$G93/.cache" launch "$LAUNCHER" "$TMP/app"
+  m93="$(mounts)"
+  [[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.cache/locked:/workspace/.cache/locked:ro" <<<"$m93" \
+    && grep -aqxF "$G93/.cache/locked:/home/tester/.cache/locked:ro" <<<"$m93" \
+    && grep -aqF "launchers; it is mounted read-only at /workspace/.cache/locked." "$ERR" \
+    && grep -aqF "launchers; it is mounted read-only at /home/tester/.cache/locked." "$ERR" \
+    && pass "T93 the group's cache also in EXTRA_MOUNTS: an unsearchable folder is read-only in both views, each named" \
+    || fail "T93 an unsearchable folder in the group's cache in EXTRA_MOUNTS (rc=$LAUNCH_RC; mounts: $(grep -aF locked <<<"$m93" | tr '\n' ' '); $(grep -aF -e ERROR -e 'read-only at' "$ERR" | head -3 | tr '\n' ' '))"
 fi
-chmod 700 "$G93/.cache/locked" "$G93/.cache/sealed"; rm -rf "$G93/.cache/locked" "$G93/.cache/sealed"
+chmod 700 "$G93/.cache/locked" "$G93/.cache/sealed" 2>/dev/null; rm -rf "$G93/.cache/locked" "$G93/.cache/sealed"
 # The control, scope: the rest of the group is walked as before.
 printf 'claude-code=ON\n' > "$TMP/conf93"
 mk_launcher "$G93/.claude/p"
