@@ -201,8 +201,18 @@ grep -qE '[[:space:]]at least 12M$' <<<"$row" \
   && pass "list --sizes drops the blanks du pads a size with" \
   || fail "list --sizes with a blank-padded du size (got: $out)"
 
-# Only what reads as a size is shown: a du that prints something else (no tab
-# before the path, another line before the size, words before the tab) is "?".
+# du is asked in the C locale: in one whose decimal point is neither "." nor
+# "," GNU du prints U+066B for it (LC_ALL=ps_AF.UTF-8, measured), which is no size here.
+# The fake prints that unless LC_ALL is C.
+printf '#!/bin/sh\nfor a; do p="$a"; done\nif [ "${LC_ALL:-}" = C ]; then printf "1.6M\\t%%s\\n" "$p"; else printf "1\\331\\2536M\\t%%s\\n" "$p"; fi\n' > "$FAKE_DU/du"
+out="$(LC_ALL=C.UTF-8 PATH="$FAKE_DU:$PATH" run_group list --sizes)"
+row="$(grep -E '^default ' <<<"$out")"
+grep -qE '[[:space:]]1\.6M$' <<<"$row" \
+  && pass "list --sizes asks du for the size in the C locale" \
+  || fail "list --sizes in another locale's decimal point (got: $out)"
+
+# Only what reads as a size is shown: a du that prints something else (a word,
+# another line before the size, a word before the tab) is "?".
 for body in 'printf "garbage\\n"' 'printf "oops\\n12M\\t%s\\n" "$p"' 'printf "garbage\\t%s\\n" "$p"'; do
   printf '#!/bin/sh\nfor a; do p="$a"; done\n%s\n' "$body" > "$FAKE_DU/du"
   out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"

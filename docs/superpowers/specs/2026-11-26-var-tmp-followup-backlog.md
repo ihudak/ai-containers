@@ -76,7 +76,7 @@ Wording and docs:
    an agent needs, pointing to `docs/groups.md` for the rest.
    **Done:** the six paragraphs link to `docs/groups.md` for what a user sees
    and keep the rules a change must not break (10,010 characters become
-   8,181).
+   8,280).
 
 ## Other platforms
 
