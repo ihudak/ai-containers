@@ -180,6 +180,17 @@ grep -qE '[[:space:]]\?$' <<<"$row" \
   && pass "list --sizes shows ? for a group dir du cannot read" \
   || fail "list --sizes shows ? for a group dir du cannot read (got: $out)"
 
+# du exits 1 when it cannot read part of the directory (a folder the agent made
+# unreadable), after printing the total of what it could read: list shows that
+# total as the least the directory holds, not "?" (open follow-up 6 of the
+# 2026-11-26 /var/tmp backlog). A du that prints nothing is still "?", above.
+printf '#!/bin/sh\nfor a; do p="$a"; done\nprintf "12M\\t%%s\\n" "$p"\necho "du: cannot read directory" >&2\nexit 1\n' > "$FAKE_DU/du"
+out="$(PATH="$FAKE_DU:$PATH" run_group list --sizes)"
+row="$(grep -E '^default ' <<<"$out")"
+grep -qE '[[:space:]]at least 12M$' <<<"$row" \
+  && pass "list --sizes shows a partial total, as at least that, where du could not read all of a group dir" \
+  || fail "list --sizes with a partial du total (got: $out)"
+
 # A repo volume must never appear in group listings.
 : > "$FAKE_VOLUMES_DIR/ai-containers-repo-app"
 out="$(run_group list)"

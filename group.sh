@@ -301,7 +301,7 @@ cmd_list() {
   # With no group directory left, the orphans are all there is to name: deleting
   # the directories by hand leaves exactly that, and list returned before them.
   # Each row: the group, its Ruby volume and state, its temp volume and state.
-  local g dsize cell_unknown=0
+  local g dsize dout drc cell_unknown=0
   local -a rc=() tc=()
   if [[ -z "$names" ]]; then
     printf 'No container groups yet (%s is empty or absent).\n' "$groups_root"
@@ -319,8 +319,15 @@ cmd_list() {
     if [[ "${rc[1]-}" == unknown || "${tc[1]-}" == unknown ]]; then cell_unknown=1; fi
     if (( show_sizes )); then
       # The group directory holds the persistent cache and state folders, so
-      # it grows on its own; du -sh | cut works with GNU and BSD du alike.
-      dsize="$(du -sh "$groups_root/$g" 2>/dev/null | cut -f1)" || dsize=""
+      # it grows on its own; the field before the tab is du -sh's size, GNU's
+      # and BSD's alike. du exits 1 when it cannot read part of the directory
+      # (a folder the agent made unreadable), having printed the total of what
+      # it could read: that total is shown as the least it holds. Nothing
+      # printed is "?".
+      drc=0; dout="$(du -sh "$groups_root/$g" 2>/dev/null)" || drc=$?
+      dsize="${dout%%$'\t'*}"
+      [[ "$dout" == *$'\t'* && -n "$dsize" && "$dsize" != *$'\n'* ]] || dsize=""
+      if [[ -n "$dsize" ]] && (( drc )); then dsize="at least $dsize"; fi
       printf '%-24s  %-40s  %-16s  %-40s  %-16s  %s\n' "$g" "${rc[0]-}" "${rc[1]-}" "${tc[0]-}" "${tc[1]-}" "${dsize:-?}"
     else
       printf '%-24s  %-40s  %-16s  %-40s  %s\n' "$g" "${rc[0]-}" "${rc[1]-}" "${tc[0]-}" "${tc[1]-}"
