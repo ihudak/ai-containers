@@ -15,7 +15,7 @@
 
 ## Summary
 
-39 bugs: 3 HIGH, 8 MEDIUM, 28 LOW. No SVC or BLD findings. TST-41 and PLAT-12, found while fixing them, are in section 9; TST-42, found later, in section 10.
+39 bugs: 3 HIGH, 8 MEDIUM, 28 LOW. No SVC or BLD findings. TST-41 and PLAT-12, found while fixing them, are in section 9; TST-42 to TST-44, found later, in section 10.
 
 ### HIGH — fix first
 
@@ -73,6 +73,8 @@
 | TST-41 | CONFIRMED | `tests/test-report.sh` fails wherever `TMPDIR` lies under `HOME` (found while fixing PRJ-15) |
 | PLAT-12 | CONFIRMED | with uutils' `stat`, a git directory's recorded identity has its birth time in whole seconds (found while reviewing GAP-30's fix) |
 | TST-42 | CONFIRMED | `tests/test-repo-git-reset.sh` fails wherever `TMPDIR` is longer than 105 characters (found 2026-11-26, running the suite for #397) |
+| TST-43 | CONFIRMED | CI's falsify jobs `repo-git-reset` and `rest` run up to their 90-minute limit on a slow runner (found 2026-11-27, measuring GAP-2's next target) |
+| TST-44 | CONFIRMED | `tests/test-agent-tools-reconcile.sh` skips its lock cases while any other process holds a lock on `/dev/null` (found 2026-11-27: main's CI on `4bbdfab` went red) |
 
 ---
 
@@ -946,3 +948,24 @@ No TODO, FIXME, "follow-up" or "deferred" marker added to code since bec1c57 pro
 - **Expected:** the suite passes wherever `TMPDIR` is.
 - **Also found:** the check's other half, that no grafts hint comes before git's error, guards nothing on the gits measured. A clone that fails prints no hint with `GIT_GRAFT_FILE=/dev/null`, the damage it was written for, and neither does a fetch from a missing remote (git 2.34.1, 2.43.0 and 2.56.1): git prints it only once it reads commits. With git 2.56.1 the whole file passes with that damage. What the check still catches is a STALE reason that is not git's error: with `CLONE_ERR` left empty, the helper's own default, it fails under a short and a long `TMPDIR`. It is kept as it is.
 - **The product's cut:** `repo.sh` shows the same 200 characters (`STALE: its recorded remote could not be cloned (…)`), so a recorded URL of more than about 150 characters loses the end of git's error, which says why. A remote's URL is rarely that long, and this is not changed.
+
+### TST-43: CI's falsify jobs `repo-git-reset` and `rest` run up to their 90-minute limit on a slow runner
+- **Status: OPEN** (logged 2026-11-27, Linux agent). To be split, as the workflow's comment says, the user's choice: `repo-git-reset` in two slices, as `project.sh` is, and `rest` in two.
+- **Severity:** LOW (CI only: a cancelled job fails the run, and a rerun usually passes)
+- **Confidence:** CONFIRMED
+- **Location:** `.github/workflows/hermetic-checks.yml`: `timeout-minutes: 90`, the falsify job's limit, and the matrix of its jobs
+- **Introduced:** before the window; the jobs have grown with the corpus since the 2026-10-30 split
+- **What happens:** GitHub's runners are not all as fast: the same job, with the same verdicts, takes about twice as long on some. In the last 12 runs of `tests.yml` (2026-11-20 to 2026-11-27), `repo-git-reset` took 42 to 44 minutes on a fast runner and 81 to 86 on a slow one, and `rest` took 60 to 87. Each was cancelled at the limit once: `rest` on main (run 45814437874, 2026-11-26 11:52 UTC) and `repo-git-reset` on #397's branch (run 45865922225, 17:13 the same day). A cancelled job fails the run, and the PR's checks with it.
+- **Repro:** the job times of those runs (`gh run view <id> --json jobs`).
+- **Expected:** every falsify job ends well inside its limit on a slow runner.
+- **Suggested approach:** the workflow's rule: "If one shard nears the cap, split again by the same rule rather than raising this." `repo-git-reset.sh` is one target of 394 mutants (312 distinct identities) and slices as `project.sh` does (`run.sh --slice K/N`). `rest` is 37 targets of seconds to 8 minutes each, most under 2, and a slice of it is refused when any of them has fewer distinct identities than slices (`tests/falsify/run.sh`: `has fewer distinct identities than`): a split of it either lets such a slice of a many-target run pass over that target, or splits by some other rule that still covers every target exactly once.
+
+### TST-44: `tests/test-agent-tools-reconcile.sh` skips its lock cases while any other process holds a lock on `/dev/null`
+- **Status: FIXED** (2026-11-27, Linux agent). The test asks whether `flock` works on a temporary file of its own.
+- **Severity:** LOW (test only)
+- **Confidence:** CONFIRMED
+- **Location:** `tests/test-agent-tools-reconcile.sh`: the probe before the RT-17 lock cases
+- **Introduced:** with RT-17's fix (2026-11-18)
+- **What happens:** the test ran its RT-17 cases (a held lock is waited for within the bound, a process an installer leaves running does not keep the lock, a FIFO or a lock file that cannot be opened does not hold up a start) only when `flock -E 75 -n /dev/null true` succeeded, to skip them where the host has no util-linux `flock`. That takes a real lock on `/dev/null`, which every process shares: while another holds one, the probe fails and the test prints `SKIP: RT-17 lock cases need util-linux flock`. CI's falsify job runs this test in four workers at once, one mutant each, so two probes can meet. When one did, on main's CI for `4bbdfab` (#398's merge), the `logic-flip` of `agent-tools-reconcile.sh`'s `[[ "$lock_wait" =~ ^[0-9]{1,5}$ ]] || lock_wait=900`, which only the held-lock case kills, survived, and `check-ledger.sh --strict` failed the `rest` job (79 killed and 13 survived where the two runs before had 80 and 12).
+- **Repro:** `flock /dev/null sleep 120 &`, then `bash tests/test-agent-tools-reconcile.sh`: `SKIP: RT-17 lock cases need util-linux flock`, `0 failure(s)`; with the `||` made `&&`, still `0 failure(s)`. With the fix, the same runs print the held-lock case's `PASS:`, and with the mutant `FAIL: a held lock: rc=124 after 20s`.
+- **Expected:** the cases run wherever `flock` works, whatever else on the host holds a lock.

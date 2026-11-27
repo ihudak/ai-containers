@@ -604,8 +604,14 @@ grep -qE '^[[:space:]]*flock -w "\$lock_wait" -E 75 9' "$REPO_DIR/agent-tools-re
 # The lock file is in the group's home, which the agent writes: a holder that
 # never lets go (`flock ~/.ai-tools/.reconcile.lock sleep infinity`) stopped every
 # later start of the group before its shell. Needs util-linux flock, which the
-# container has; skipped where the host has none.
-if flock -E 75 -n /dev/null true 2>/dev/null; then
+# container has; skipped where the host has none. That is asked of a file of the
+# test's own: /dev/null is every process's, so a lock held on it elsewhere (this
+# probe in a parallel falsify worker) read as no flock and skipped these cases,
+# and a mutant only they kill survived (TST-44).
+flock_probe="$(mktemp)" || { printf 'SCAFFOLD-FAILED: mktemp\n'; exit 1; }
+flock -E 75 -n "$flock_probe" true 2>/dev/null; flock_rc=$?
+rm -f "$flock_probe"
+if [[ "$flock_rc" -eq 0 ]]; then
   h="$(mktemp -d)" || { printf 'SCAFFOLD-FAILED: mktemp -d\n'; exit 1; }; bin="$(mktemp -d)"; mk_stubs "$bin" "$h"
   mkdir -p "$h/.ai-tools"
   flock "$h/.ai-tools/.reconcile.lock" sleep 30 & holder=$!
