@@ -15,7 +15,7 @@
 
 ## Summary
 
-39 bugs: 3 HIGH, 8 MEDIUM, 28 LOW. No SVC or BLD findings. TST-41 and PLAT-12, found while fixing them, are in section 9.
+39 bugs: 3 HIGH, 8 MEDIUM, 28 LOW. No SVC or BLD findings. TST-41 and PLAT-12, found while fixing them, are in section 9; TST-42, found later, in section 10.
 
 ### HIGH — fix first
 
@@ -72,6 +72,7 @@
 | DOC-17 | CONFIRMED | two counts in AGENTS.md no longer match the code |
 | TST-41 | CONFIRMED | `tests/test-report.sh` fails wherever `TMPDIR` lies under `HOME` (found while fixing PRJ-15) |
 | PLAT-12 | CONFIRMED | with uutils' `stat`, a git directory's recorded identity has its birth time in whole seconds (found while reviewing GAP-30's fix) |
+| TST-42 | CONFIRMED | `tests/test-repo-git-reset.sh` fails wherever `TMPDIR` is longer than 105 characters (found 2026-11-26, running the suite for #397) |
 
 ---
 
@@ -931,3 +932,17 @@ No TODO, FIXME, "follow-up" or "deferred" marker added to code since bec1c57 pro
 - **Repro:** `stat -c '%.9W' .` and `gnustat -c '%.9W' .` on a host whose `stat` is uutils'.
 - **Expected:** the nanoseconds wherever a `stat` on the host gives them.
 - **Suggested approach:** where `stat` prints no fraction and `gnustat` does, use `gnustat`, as `_timeout_prefix()` takes `gnutimeout`. The record's lines written before then hold whole seconds: a recorded birth time with no fraction has to be compared to the second, or every repository is reported once more and the scan loses the lines it finds a protected directory by (GIT-105).
+
+## 10. Found after this review
+
+### TST-42: `tests/test-repo-git-reset.sh` fails wherever `TMPDIR` is longer than 105 characters
+- **Status: FIXED** (2026-11-26, Linux agent). The check runs the helper in `$TMP` with the relative URL `does-not-exist.git`, so git's error is as long wherever `TMPDIR` is.
+- **Severity:** LOW (test only)
+- **Confidence:** CONFIRMED
+- **Location:** `tests/test-repo-git-reset.sh`: the `an unreachable remote's STALE reason is git's error, not a grafts hint` check
+- **Introduced:** before the window
+- **What happens:** the check gave the helper `AI_REPO_URL="$TMP/does-not-exist.git"` and wants the STALE record to name `does-not-exist.git`. The helper keeps the first 200 characters of git's error (`repo-git-reset.sh: cut -c1-200`). Under `tests/run-all.sh`, `fatal: repository '`, the temp directories below `TMPDIR` and the name take 95 of them, so with a `TMPDIR` of 106 characters or more the name is cut off and the check fails (measured: it passes at 100 and fails at 106). Claude Code's scratch directories are about that long before any name of their own (104 here). Found running the suite three ways for the /var/tmp follow-ups (#397): it failed only in the arm whose `TMPDIR` is a link inside the scratch directory, and failed the same way at `main`.
+- **Repro:** `TMPDIR=<a directory whose path is 106 characters> ./tests/run-all.sh repo-git-reset.sh` → `FAIL: STALE reason (out: STALE|fatal: repository '…`.
+- **Expected:** the suite passes wherever `TMPDIR` is.
+- **Also found:** the check's other half, that no grafts hint comes before git's error, guards nothing on the gits measured. A clone that fails prints no hint with `GIT_GRAFT_FILE=/dev/null`, the damage it was written for, and neither does a fetch from a missing remote (git 2.34.1, 2.43.0 and 2.56.1): git prints it only once it reads commits. With git 2.56.1 the whole file passes with that damage. What the check still catches is a STALE reason that is not git's error: with `CLONE_ERR` left empty, the helper's own default, it fails under a short and a long `TMPDIR`. It is kept as it is.
+- **The product's cut:** `repo.sh` shows the same 200 characters (`STALE: its recorded remote could not be cloned (…)`), so a recorded URL of more than about 150 characters loses the end of git's error, which says why. A remote's URL is rarely that long, and this is not changed.
