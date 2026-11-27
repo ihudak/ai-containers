@@ -83,8 +83,20 @@ Wording and docs:
 - **macOS (Colima, and Docker Desktop where a Mac has it):**
   `docs/superpowers/plans/2026-11-26-mac-recheck.md`. Report only. Its numbers
   decide two questions:
-  - whether `~/.cache` becomes a per-group volume like `/var/tmp`;
-  - whether the launch's three extra docker calls are trimmed.
+  - whether `~/.cache` becomes a per-group volume like `/var/tmp`: **yes**
+    (2026-11-27, the user's decision after a small-file benchmark the re-check
+    added: a uv install 8–9× faster on a volume). Design and plan:
+    `2026-11-27-cache-volume-design.md`, `../plans/2026-11-27-cache-volume.md`;
+  - whether the launch's three extra docker calls are trimmed: measured at
+    ~15 ms each on Colima, under the 300 ms threshold, so not trimmed unless the
+    user decides otherwise.
+
+  The re-check also found case 525 failing on Colima: the copy command a launch
+  prints for an old `.var-tmp` runs `cp -a` as root, and root reads a Mac
+  bind's files as `0:0`, so the old 0700 folders end up the agent cannot enter.
+  Open; the cache volume's one-time copy runs as the agent's uid for this
+  reason (`sandbox-common.sh`: `_cache_copy_prog`), and the printed command
+  could do the same.
 
   After the report, delete the git-ignored
   `.superpowers/sdd/2026-11-23-persistent-agent-scratch/`.

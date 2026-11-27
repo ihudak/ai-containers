@@ -29,7 +29,7 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 │   ├── .yarn/             ← yarn home, when yarn= is ON (mounted, never copied)
 │   ├── .gradle/           ← Gradle user home, when any JVM key is set (mounted, never copied)
 │   ├── .m2/               ← Maven repository, ditto
-│   ├── .cache/            ← mounted at ~/.cache, always (qmd's index, Playwright's browsers, pip's, uv's and node-gyp's caches)
+│   ├── .cache/            ← only in a group older than its cache volume: copied into it once, then left alone
 │   ├── .local/state/      ← mounted at ~/.local/state, always
 │   ├── .config/dtctl/    ← tools.d config dir, seeded once from $HOME if present
 │   └── .config/dtmgd/    ← ditto
@@ -37,46 +37,51 @@ The default group is named `default`. Its directory is `~/.ai-containers/default
 └── java-backend/       ← another custom group
 ```
 
-Two things a group owns are **not** in this directory: they are Docker volumes,
-on every platform. Its containers' `/var/tmp` is the volume
-`ai-containers-vartmp-<group>`, which the group's first launch makes (see
+Three things a group owns are **not** in this directory: they are Docker
+volumes, on every platform. Its containers' `/var/tmp` is the volume
+`ai-containers-vartmp-<group>` and their `~/.cache` the volume
+`ai-containers-cache-<group>`, which the group's first launch makes (see
 [What survives a restart](#what-survives-a-restart)), and its Ruby home
 (`~/.rvm` in the container: rvm, every Ruby version and its gems, only when
 `ruby=` is set) is the volume `ai-containers-rvm-<group>`. With
-`REPO_VOLUME_PREFIX` set, both names start with it instead of `ai-containers`.
+`REPO_VOLUME_PREFIX` set, the names start with it instead of `ai-containers`.
 Removing or backing up the group directory does not touch them:
-`./group.sh rm <group>` removes all three, and `./group.sh gc` collects a volume
+`./group.sh rm <group>` removes all four, and `./group.sh gc` collects a volume
 whose directory was deleted by hand. Volumes belong to a docker daemon, so each
 daemon you use (through another docker context, say) has its own volumes for a
 group. A docker that several homes share (every WSL distro's, under Docker
-Desktop) has one Ruby volume and one temp volume for a group name in all of
+Desktop) has one Ruby, one temp and one cache volume for a group name in all of
 them. Each home's `rm` and `gc` keep a volume another home made, and a launch
 that mounts one says so, but that is all: the home that made the volume can
 still remove it from under the others, with its `rm`, or its plain `gc` once its
 own group directory is gone, and any home can with `gc --all`. The other homes'
-groups then build their Rubies again, or lose their old `/var/tmp` folders. See
+groups then build their Rubies again, lose their old `/var/tmp` folders, or
+fill their caches again. See
 [Several homes on one docker](troubleshooting.md#several-homes-on-one-docker-wsl-distros-or-users).
 
 ## What survives a restart
 
 Containers run with `--rm`, so what survives is what is mounted. From a group:
 the agent dotfile directories, `~/.ai-tools`, and three places mounted whole,
-whatever `sandbox.conf` says: the group directory's `.cache` and `.local/state`
-at `~/.cache` and `~/.local/state`, and the group's Docker volume at `/var/tmp`.
+whatever `sandbox.conf` says: the group directory's `.local/state` at
+`~/.local/state`, and the group's Docker volumes at `~/.cache` and `/var/tmp`.
 The rest of the container, `/tmp` among it, is gone when the container exits,
 and so is anything made directly in the `/workspace` umbrella: only the
 repositories and directories mounted inside it persist, in the places they come
 from.
 
-`/var/tmp` is a Docker volume rather than a folder of the group directory so
-that archives unpack there on a Mac. GNU tar holds back a link whose target
-contains `..` behind a placeholder file that macOS file sharing (virtiofs)
-cannot open, so on a folder shared from the Mac it fails with
+`/var/tmp` and `~/.cache` are Docker volumes rather than folders of the group
+directory so that archives unpack there on a Mac. GNU tar holds back a link
+whose target contains `..` behind a placeholder file that macOS file sharing
+(virtiofs) cannot open, so on a folder shared from the Mac it fails with
 `Cannot open: Permission denied`, and a Node.js release tarball, for one, holds
-such a link. **On a Mac, `~/.cache` and `~/.local/state` keep that limit**: they
-stay folders of the group directory, so that you can look into and clear them
-from the Mac. Unpack such an archive into `$TMPDIR` or `/tmp` instead. (Measured
-on Colima; Docker Desktop was not measured.)
+such a link. `~/.cache` is a volume for speed as well: a cache is thousands of
+small files, which macOS file sharing serves one slow request at a time
+(measured: a `uv pip install` 8 to 9 times faster on the volume, creating,
+reading and deleting small files 40 to 60 times). **On a Mac, `~/.local/state`
+keeps the tar limit**: it stays a folder of the group directory, so that you
+can look into it from the Mac. (Measured on Colima; Docker Desktop was not
+measured.)
 
 Each launch gets its own folder in `/var/tmp`, named
 `<YYMMDD-HHMMSS-pid>`, which the container's start-up makes, and the agent's
@@ -112,17 +117,26 @@ the group with another `SANDBOX_UID` removes its own. Nothing else in
   anything in it can be removed at the first start after that container exits.
 
 **Seeing and reclaiming the space.** `./group.sh list --sizes` shows the size
-of each group directory and of each of its volumes. To see what `~/.cache` and
-`~/.local/state` hold:
+of each group directory and of each of its volumes. To see what
+`~/.local/state` holds:
 
 ```bash
-du -sh ~/.ai-containers/<group>/.cache/* ~/.ai-containers/<group>/.local/state/*
+du -sh ~/.ai-containers/<group>/.local/state/*
 ```
 
 Remove what you no longer need with `rm -rf` while no container of that group
-runs, since a running one may be using it: a tool's cache, say
-(`rm -rf ~/.ai-containers/<group>/.cache/pip`). A cache is downloaded again when
-a tool next needs it; what a long run keeps in `~/.local/state` is not.
+runs, since a running one may be using it. What a long run keeps in
+`~/.local/state` is not made again.
+
+`~/.cache` is not on the host. From a running container of the group,
+`du -sh ~/.cache/*` shows what each tool keeps there, and
+`rm -rf ~/.cache/pip`, say, removes one tool's cache. To empty the whole cache,
+remove the volume while no container of the group runs; the next launch makes
+a new, empty one, and each tool downloads again what it needs:
+
+```bash
+docker volume rm ai-containers-cache-<group>
+```
 
 `/var/tmp` is not on the host. From a running container of the group,
 `du -sh /var/tmp/*` shows its folders, and `rm -rf /var/tmp/<YYMMDD-HHMMSS-pid>`
@@ -142,6 +156,20 @@ clears the way. The folders running containers use are those
 `docker ps --format '{{.Label "ai-containers.tmpslot"}}'` lists; leave them
 alone.
 
+**A group's old `.cache`.** Before `~/.cache` was a volume, it was the group
+directory's `.cache`. The launch that makes a group's cache volume copies that
+folder into it, once, saying so before and after, so qmd's index and
+Playwright's browsers are not built and downloaded again; a large cache takes a
+while. The copy gives the files to the user the container runs as. The old
+folder is never changed or removed: a project of the group not yet synced to
+this version still mounts it. Remove it once none does, with the `rm -rf` the
+launch printed. If the copy fails, a `WARNING:` says so and the group starts
+with an empty cache. A launcher killed during the copy leaves a hidden
+`.ai-containers-copying-*` folder in the volume, which takes space until the
+volume is removed. A group made from another one
+(`AI_CONTAINER_GROUP_INIT=from:<group>`) gets that group's qmd index out of its
+cache volume.
+
 **An old `.var-tmp`.** Before `/var/tmp` was a volume, a build of this
 repository that was never released mounted the group directory's `.var-tmp`
 there. If a group has one, every launch says so in a `NOTE:`, with the
@@ -150,7 +178,7 @@ removes it once nothing in it is needed and no container of the group runs.
 The launcher never removes it.
 
 **Do not run `git` or `./sandbox.sh` on the host inside a repository an agent
-made in a group's `.cache` or `.local/state`.** The launcher does not scan them
+made in a group's `.local/state`.** The launcher does not scan them
 for hooks and launchers, as it does not scan a group's other folders, because
 the host is not meant to run anything from there: a repository's hooks and
 config are the agent's. Read and copy its files freely.
@@ -184,7 +212,7 @@ Group 'docs' not found. Initialize from:
 
 Pick `1)` to copy the group-scoped dotfile slice from `default` (or whichever group is listed first). Pick `host` to copy from `$HOME`. Pick `<empty>` to start with an empty group (only `.ssh/` and `.agents/` are scaffolded). Pick `q` to abort.
 
-The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube` — and, as before, qmd's index (`.cache/qmd`). Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, `.cache` except qmd's index, `.local/state`, `.yarn`, `.gradle`, `.m2`, and the `/var/tmp` volume): cloning a group should not clone gigabytes that each tool rebuilds by itself.
+The slice is credentials and settings — the agent dotfile dirs, `.ssh`, `.agents`, the `tools.d` config dirs, and `.aws`/`.azure`/`.kube` — and, as before, qmd's index (`.cache/qmd`). Regenerable installs and caches are group-scoped but **not** copied (`.ai-tools`, `.rvm`, `.local/share/claude`, the cache volume except qmd's index, `.local/state`, `.yarn`, `.gradle`, `.m2`, and the `/var/tmp` volume): cloning a group should not clone gigabytes that each tool rebuilds by itself.
 
 **Non-interactive (no TTY or scripted use):**
 
@@ -261,8 +289,8 @@ tar czf docs-group.tgz -C "$HOME/.ai-containers" docs
 cp -a ~/.ai-containers/default ~/.ai-containers/new-project
 ```
 
-Both take the whole directory, so they now carry every cache in `.cache` and the
-state in `.local/state` too, which can be large (not `/var/tmp`, a volume):
+Both take the whole directory, so they now carry the state in `.local/state`
+too, which can be large (not `/var/tmp` or `~/.cache`, which are volumes):
 `./group.sh list --sizes` shows how large, and
 [What survives a restart](#what-survives-a-restart) how to clear them first.
 

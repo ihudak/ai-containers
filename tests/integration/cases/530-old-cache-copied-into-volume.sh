@@ -5,11 +5,12 @@
 #
 # ~/.cache used to be a host folder, <group>/.cache, bound over the container
 # path. It is now the group's Docker volume, and the launch that makes the
-# volume copies the old folder into it once (sandbox-common.sh:
-# `cache_volume_copy_old()`): qmd's index and Playwright's browsers are slow to
-# rebuild. The copy runs as the agent's uid, so what it makes is the agent's:
-# on a Mac, root reads a host bind's files as its own, and a copy as root left
-# folders in the volume that the agent could not enter (case 525's failure).
+# volume copies the old folder into it once
+# (sandbox-common.sh: `cache_volume_copy_old()`): qmd's index and Playwright's
+# browsers are slow to rebuild. The copy runs as the agent's uid, so what it
+# makes is the agent's: on a Mac, root reads a host bind's files as its own, and
+# a copy as root left folders in the volume that the agent could not enter
+# (case 525's failure).
 # That half is seen only on a Mac; on Linux the files keep the host uid either
 # way, and mutation 530-old-cache-not-copied is what this case catches.
 #
