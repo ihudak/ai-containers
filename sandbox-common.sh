@@ -875,7 +875,7 @@ rvm_group_from_volume() {
 # does not silently discard already-compiled rubies (minutes per version to rebuild).
 #   $1 = group name   $2 = group root dir   $3 = image to run the copy in
 # _group_volume_shared_note <volume> <group> <kind>: a NOTE when the group's
-# volume was made by another home; <kind> is "ruby" or "temp". One docker serves
+# volume was made by another home; <kind> is "ruby", "temp" or "cache". One docker serves
 # several homes (Docker Desktop's, by every WSL distro), and the volume's name has
 # no home in it, so that home's group of this name may mount the same volume, and
 # that home's group.sh can remove it from under this one (rm, or gc once its group
@@ -889,8 +889,9 @@ _group_volume_shared_note() {
   own="$(ai_containers_owner_id 2>/dev/null)" || own=""
   [[ -n "$own" && "$o" == "$own" ]] && return 0
   case "$3" in
-    ruby) what="Ruby"; tail="this group then builds its Rubies again." ;;
-    *)    what="temp"; tail="this group then loses its temp folders." ;;
+    ruby)  what="Ruby"; tail="this group then builds its Rubies again." ;;
+    cache) what="cache"; tail="this group then fills its caches again." ;;
+    *)     what="temp"; tail="this group then loses its temp folders." ;;
   esac
   printf 'NOTE: the %s volume %s was made by another home on this docker (another WSL distro or\n' "$what" "$1" >&2
   printf '      user), or by this one before ~/.ai-containers/project-id.key was lost. That home'"'"'s group\n' >&2
@@ -912,11 +913,14 @@ rvm_volume_ensure() {
     # p-rvm-x-vartmp-g, is group x-vartmp-g's Ruby volume name under prefix p, and
     # its Ruby volume of group g, p-rvm-x-rvm-g, group x-rvm-g's. Mounted as
     # ~/.rvm, the agent would write into that group's volume. One carrying a temp
-    # volume's label, or another group's Ruby label, is refused, and so is one
-    # whose labels docker cannot read; the launch goes on without Ruby. One with
-    # no label, made before labels, is still the group's, as group.sh takes it.
-    local tl rl
+    # or cache volume's label (prefix p-rvm-x's cache volume of group g is group
+    # x-cache-g's Ruby volume name under prefix p), or another group's Ruby label,
+    # is refused, and so is one whose labels docker cannot read; the launch goes
+    # on without Ruby. One with no label, made before labels, is still the
+    # group's, as group.sh takes it.
+    local tl rl cl
     if ! tl="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.vartmp-group"}}{{end}}' "$vol" 2>/dev/null)" \
+       || ! cl="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.cache-group"}}{{end}}' "$vol" 2>/dev/null)" \
        || ! rl="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.rvm-group"}}{{end}}' "$vol" 2>/dev/null)"; then
       printf 'ERROR: docker could not say whose the volume %s is (is its daemon up?).\n' "$vol" >&2
       return 1
@@ -924,6 +928,12 @@ rvm_volume_ensure() {
     # Labels are anyone's to set, and are printed: made safe for the terminal.
     if [[ -n "$tl" ]]; then
       printf 'ERROR: the volume %s is a temp volume of group "%s", not the Ruby volume of group "%s".\n' "$vol" "$(_ac_term "$tl")" "$group" >&2
+      printf '       It is most likely that group'"'"'s, under another REPO_VOLUME_PREFIX. Give this group\n' >&2
+      printf '       another name, or this home its own REPO_VOLUME_PREFIX.\n' >&2
+      return 1
+    fi
+    if [[ -n "$cl" ]]; then
+      printf 'ERROR: the volume %s is a cache volume of group "%s", not the Ruby volume of group "%s".\n' "$vol" "$(_ac_term "$cl")" "$group" >&2
       printf '       It is most likely that group'"'"'s, under another REPO_VOLUME_PREFIX. Give this group\n' >&2
       printf '       another name, or this home its own REPO_VOLUME_PREFIX.\n' >&2
       return 1
@@ -997,19 +1007,53 @@ vartmp_group_from_volume() {
   docker_volume_label "$1" 'ai-containers.vartmp-group'
 }
 
-# vartmp_volume_ensure <group>: echo the group's temp volume name and return 0,
-# making the volume (with its labels) when it is not there. Returns 1 with an
-# ERROR: on stderr, never mounting anything, when the volume cannot be made, when
-# docker cannot say whether it exists, or when a volume of that exact name is
-# not this group's. Mounted, such a volume would serve as the group's /var/tmp
-# while group.sh, which knows a group's temp volume by its label alone, never
-# takes it for the group's: `list` shows it as not the group's, `rm` names it
-# with its `docker volume rm` and leaves it, and `gc` passes it over. A
-# `docker run -v <name>:...` before the group's first launch makes exactly that,
-# unlabelled, and labels cannot be added afterwards.
-vartmp_volume_ensure() {
-  local group="$1" vol out err lab asked=0
-  vol="$(vartmp_volume_name "$group")"
+# ── Cache (~/.cache) volume ─────────────────────────────────────────────────────
+#
+# A group's ~/.cache lives on the Docker volume "<prefix>-cache-<group>". The
+# "-cache-" infix keeps it out of repo.sh's discovery ("-repo-") and of the Ruby
+# and temp volume code ("-rvm-", "-vartmp-"). Like the temp volume, every one is
+# new, so none predates its label, and the label alone says whose it is.
+#
+# Label:  ai-containers.cache-group   the container group this cache volume serves
+
+cache_volume_name() {
+  printf '%s-cache-%s' "$repo_volume_prefix" "$(sanitize_volume_token "$1")"
+}
+
+# Echo every volume named "<prefix>-cache-*", labelled or not, one per line.
+cache_volumes() {
+  volumes_named "${repo_volume_prefix}-cache-"
+}
+
+# Echo the group a cache volume serves: its label, or nothing, never its name
+# (as vartmp_group_from_volume, and for the same reason).
+cache_group_from_volume() {
+  docker_volume_label "$1" 'ai-containers.cache-group'
+}
+
+# ── Ensuring a temp or cache volume ─────────────────────────────────────────────
+
+# _group_volume_ensure <kind> <group> <name-var> [<made-var>]: the group's volume
+# of <kind> — temp (/var/tmp) or cache (~/.cache), the two a group's label alone
+# decides — made (with its labels) when it is not there. Sets <name-var> to its
+# name and, when given, <made-var> to 1 when this launch made it, else 0, and
+# returns 0. Returns 1 with an ERROR: on stderr, never mounting anything, when
+# the volume cannot be made, when docker cannot say whether it exists, or when a
+# volume of that exact name is not this group's. Mounted, such a volume would
+# serve the group while group.sh, which knows a group's temp and cache volumes by
+# their labels alone, never takes it for the group's: `list` shows it as not the
+# group's, `rm` names it with its `docker volume rm` and leaves it, and `gc`
+# passes it over. A `docker run -v <name>:...` before the group's first launch
+# makes exactly that, unlabelled, and labels cannot be added afterwards. The
+# variables are set with printf -v, which a local of the same name here would
+# take instead: every local starts _gve_, and no caller passes such a name.
+_group_volume_ensure() {
+  local _gve_kind="$1" _gve_group="$2" _gve_vol _gve_key _gve_out _gve_err _gve_lab _gve_asked=0 _gve_made=0
+  case "$_gve_kind" in
+    temp)  _gve_vol="$(vartmp_volume_name "$_gve_group")"; _gve_key=ai-containers.vartmp-group ;;
+    cache) _gve_vol="$(cache_volume_name "$_gve_group")";  _gve_key=ai-containers.cache-group ;;
+    *) printf 'ERROR: _group_volume_ensure: no volume kind %s\n' "$_gve_kind" >&2; return 1 ;;
+  esac
   # No temporary file for docker's stderr: every launch runs this, and a launch
   # must not depend on a usable TMPDIR where nothing else needs one (T51, T53 in
   # tests/test-launcher-dir-ro.sh). Only a failed inspect is asked again, for
@@ -1021,55 +1065,169 @@ vartmp_volume_ensure() {
   # finds the volume there, which docker answers with success, the volume's own
   # labels left as they were (measured, Docker 29.9.2). Either way the volume is
   # checked as any other is, by asking again; so is the one this launch made.
-  # A docker that still has no steady answer after three asks cannot say.
+  # A docker that still has no steady answer after three asks cannot say. Both
+  # launches then count the volume as made by them, which a caller that fills a
+  # new volume (cache_volume_copy_old) allows for.
   while :; do
-    if out="$(docker volume inspect --format '{{if .Labels}}{{index .Labels "ai-containers.vartmp-group"}}{{end}}' "$vol" 2>/dev/null)"; then
-      lab="${out%$'\n'}"
-      if [[ "$lab" != "$group" ]]; then
-        if [[ -z "$lab" ]]; then
-          printf 'ERROR: the volume %s exists but is not a temp volume of group "%s": it has no temp volume label.\n' "$vol" "$group" >&2
+    if _gve_out="$(docker volume inspect --format "{{if .Labels}}{{index .Labels \"$_gve_key\"}}{{end}}" "$_gve_vol" 2>/dev/null)"; then
+      _gve_lab="${_gve_out%$'\n'}"
+      if [[ "$_gve_lab" != "$_gve_group" ]]; then
+        if [[ -z "$_gve_lab" ]]; then
+          printf 'ERROR: the volume %s exists but is not a %s volume of group "%s": it has no %s volume label.\n' "$_gve_vol" "$_gve_kind" "$_gve_group" "$_gve_kind" >&2
           printf '       A launch labels the volume it makes, so this one was made some other way: by a\n' >&2
-          printf '       container started with -v %s:<path> before the group'"'"'s first launch, say.\n' "$vol" >&2
+          printf '       container started with -v %s:<path> before the group'"'"'s first launch, say.\n' "$_gve_vol" >&2
         else
           # The label is anyone's to set, and is printed: made safe for the terminal.
-          printf 'ERROR: the volume %s exists but belongs to group "%s", not "%s".\n' "$vol" "$(_ac_term "$lab")" "$group" >&2
+          printf 'ERROR: the volume %s exists but belongs to group "%s", not "%s".\n' "$_gve_vol" "$(_ac_term "$_gve_lab")" "$_gve_group" >&2
           printf '       It was made for that group, under another REPO_VOLUME_PREFIX or by hand.\n' >&2
         fi
         printf '       A launch cannot use it: a volume'"'"'s labels cannot be changed, and group.sh, which\n' >&2
-        printf '       knows a group'"'"'s temp volume by its label, would never take it for this group'"'"'s\n' >&2
+        printf '       knows a group'"'"'s %s volume by its label, would never take it for this group'"'"'s\n' "$_gve_kind" >&2
         printf '       (list shows it as not the group'"'"'s; rm names it and leaves it). Once nothing in\n' >&2
-        printf '       it is needed, clear the way with:\n         docker volume rm %s\n' "$vol" >&2
+        printf '       it is needed, clear the way with:\n         docker volume rm %s\n' "$_gve_vol" >&2
         return 1
       fi
-      _group_volume_shared_note "$vol" "$group" temp
-      printf '%s\n' "$vol"; return 0
+      _group_volume_shared_note "$_gve_vol" "$_gve_group" "$_gve_kind"
+      printf -v "$3" '%s' "$_gve_vol"
+      [[ -z "${4:-}" ]] || printf -v "$4" '%s' "$_gve_made"
+      return 0
     fi
-    asked=$((asked + 1))
-    if (( asked >= 3 )); then
-      printf 'ERROR: docker could not say whether %s exists: it was there, then not, each\n' "$vol" >&2
+    _gve_asked=$((_gve_asked + 1))
+    if (( _gve_asked >= 3 )); then
+      printf 'ERROR: docker could not say whether %s exists: it was there, then not, each\n' "$_gve_vol" >&2
       printf '       time this launch asked. Is something removing it (group.sh rm)?\n' >&2
       return 1
     fi
     # Made meanwhile: checked like any other.
-    if err="$(docker volume inspect "$vol" 2>&1 >/dev/null)"; then continue; fi
-    if [[ "${err,,}" != *"no such volume"* ]]; then
-      printf 'ERROR: docker could not say whether %s exists\n' "$vol" >&2
+    if _gve_err="$(docker volume inspect "$_gve_vol" 2>&1 >/dev/null)"; then continue; fi
+    if [[ "${_gve_err,,}" != *"no such volume"* ]]; then
+      printf 'ERROR: docker could not say whether %s exists\n' "$_gve_vol" >&2
       # And why, in docker's words: this is the first docker call of a launch that
       # can refuse it, and a daemon that is stopped or a socket that refuses this
       # user is the usual reason. Its first line that holds anything, one trailing
       # CR cut, made safe for the terminal; nothing when docker said nothing.
-      err="${err#"${err%%[!$'\n']*}"}"; err="${err%%$'\n'*}"; err="${err%$'\r'}"
-      [[ -z "$err" ]] || printf '       docker said: %s\n' "$(_ac_term "$err")" >&2
+      _gve_err="${_gve_err#"${_gve_err%%[!$'\n']*}"}"; _gve_err="${_gve_err%%$'\n'*}"; _gve_err="${_gve_err%$'\r'}"
+      [[ -z "$_gve_err" ]] || printf '       docker said: %s\n' "$(_ac_term "$_gve_err")" >&2
       return 1
     fi
     # With this HOME's id, as rvm_volume_ensure() does; a launch never fails over it.
-    local own; local -a olab=()
-    if own="$(ai_containers_owner_id 2>/dev/null)"; then olab=(--label "ai-containers.owner=${own}"); fi
-    if ! docker volume create --label "ai-containers.vartmp-group=${group}" ${olab[@]+"${olab[@]}"} "$vol" >/dev/null 2>&1; then
-      printf 'ERROR: could not create the temp volume %s\n' "$vol" >&2
+    local _gve_own; local -a _gve_olab=()
+    if _gve_own="$(ai_containers_owner_id 2>/dev/null)"; then _gve_olab=(--label "ai-containers.owner=${_gve_own}"); fi
+    if ! docker volume create --label "${_gve_key}=${_gve_group}" ${_gve_olab[@]+"${_gve_olab[@]}"} "$_gve_vol" >/dev/null 2>&1; then
+      printf 'ERROR: could not create the %s volume %s\n' "$_gve_kind" "$_gve_vol" >&2
       return 1
     fi
+    _gve_made=1
   done
+}
+
+# vartmp_volume_ensure <group>: echo the group's temp volume name and return 0,
+# making it when it is not there; refuses as _group_volume_ensure does.
+vartmp_volume_ensure() {
+  local _vve_vol
+  _group_volume_ensure temp "$1" _vve_vol || return 1
+  printf '%s\n' "$_vve_vol"
+}
+
+# cache_volume_ensure <group> <name-var> <made-var>: the group's cache volume, as
+# _group_volume_ensure. In the launching shell, not a $( ): the caller needs to
+# know whether this launch made it (cache_volume_copy_old fills only a new one).
+cache_volume_ensure() {
+  _group_volume_ensure cache "$1" "$2" "$3"
+}
+
+# The program the copies into a new cache volume run in the project image
+# (cache_volume_copy_old, cache_volume_copy_qmd), as root, with what to copy from
+# at /src (read-only) and the new volume at /dst; $1 $2 the sandbox uid and gid,
+# $3 the launcher's pid, $4 what to copy: "." for all of /src, or one entry of it
+# (nothing to do when it is not there). Root gives the volume's top
+# folder to the agent and makes a staging folder of the agent's; the copy itself
+# runs AS THE AGENT, so every file it makes is the agent's, ownership given rather
+# than preserved: root reads a host bind's files on Colima as 0:0, and a `cp -a` as
+# root put root-owned folders in a volume the agent could not enter (case 525). A
+# `0700` folder stays readable (the agent owns it); links stay links (-d); modes and
+# times are kept. Each top-level entry then moves up with one rename, a name already
+# there left alone (two first launches of the group copying at once), so a tool's
+# cache is all there or absent, never half-copied; the staging folder goes either
+# way. A launcher killed mid-copy leaves the staging folder, hidden, in the volume.
+_cache_copy_prog='set -u
+u=$1 g=$2 s=/dst/.ai-containers-copying-$3 e=$4
+[ -e "/src/$e" ] || [ -L "/src/$e" ] || exit 0
+chown "$u:$g" /dst && install -d -o "$u" -g "$g" -m 0700 "$s" \
+  && setpriv --reuid="$u" --regid="$g" --clear-groups -- cp -dR --preserve=mode,timestamps,links "/src/$e" "$s/"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  for e in "$s"/* "$s"/.[!.]* "$s"/..?*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    n=${e##*/}
+    [ -e "/dst/$n" ] || [ -L "/dst/$n" ] || mv -- "$e" "/dst/$n" || rc=1
+  done
+fi
+rm -rf -- "$s"
+exit "$rc"'
+
+# cache_volume_copy_qmd <from-group> <volume> <image> <uid> <gid>: give a group
+# made from another (AI_CONTAINER_GROUP_INIT=from:<group>, or the menu) that
+# group's qmd index, which _copy_group_slice carries as a credential-sized thing
+# worth keeping, out of that group's cache volume, where it lives once that group
+# has one; its host .cache/qmd, which _copy_group_slice copies, is then at best an
+# old copy. Run before cache_volume_copy_old, whose copy then leaves the qmd the
+# volume holds as it is. Only from a volume that is that group's by its label;
+# nothing when it has none (or its labels cannot be read). Volume to volume, so no
+# host path and no SELinux option, as seed_workcopy_volume. Never refuses the
+# launch.
+cache_volume_copy_qmd() {
+  local from="$1" vol="$2" image="$3" uid="$4" gid="$5" svol err
+  svol="$(cache_volume_name "$from")"
+  [[ "$(cache_group_from_volume "$svol" 2>/dev/null)" == "$from" ]] || return 0
+  printf 'Copying group "%s"'"'"'s qmd index into the docker volume %s...\n' "$from" "$vol" >&2
+  if err="$(docker run --rm --pull=never --network none -v "$svol:/src:ro" -v "$vol:/dst" \
+       --entrypoint bash "$image" -c "$_cache_copy_prog" _ "$uid" "$gid" "$$" qmd 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  printf 'WARNING: copying group "%s"'"'"'s qmd index from %s failed: this group'"'"'s qmd builds\n' "$from" "$svol" >&2
+  printf '         its index again.\n' >&2
+  err="${err%"${err##*[!$'\n']}"}"; err="${err##*$'\n'}"; err="${err%$'\r'}"
+  [[ -z "$err" ]] || printf '         It said: %s\n' "$(_ac_term "$err")" >&2
+  return 0
+}
+
+# cache_volume_copy_old <old-folder> <volume> <image> <uid> <gid> <group>: fill the
+# group's cache volume, which this launch has just made, with what the folder the
+# group's ~/.cache was a bind of holds: qmd's index and Playwright's browsers
+# (~500 MB) among it, which are slow to rebuild. Once, by the launch that made
+# the volume, and only from a folder that holds something (followed when it is a
+# link, as the bind followed it). Never refuses the launch: a copy that fails
+# warns and the group starts with an empty cache. The old folder is never changed
+# or removed: projects of the group on an older engine (not yet synced) still
+# mount it.
+cache_volume_copy_old() {
+  local old="$1" vol="$2" image="$3" uid="$4" gid="$5" group="$6" entries src selinux_opt err
+  local -a obind=()
+  [[ -d "$old" ]] || return 0
+  if ! entries="$(ls -A -- "$old" 2>/dev/null)"; then
+    printf 'WARNING: cannot read %s, the folder this group'"'"'s ~/.cache was before it became the\n' "$(_ac_term "$old")" >&2
+    printf '         docker volume %s: nothing is copied from it, and the cache starts empty.\n' "$vol" >&2
+    return 0
+  fi
+  [[ -n "$entries" ]] || return 0
+  src="$(resolve_path "$old")"
+  printf 'Copying this group'"'"'s ~/.cache into the docker volume %s (one time; a large cache takes a while)...\n' "$vol" >&2
+  if selinux_opt="$(selinux_security_opt)" \
+     && docker_bind obind "$src" /src ro "The group's old ~/.cache" \
+     && err="$(docker run --rm --pull=never --network none ${selinux_opt:+"$selinux_opt"} "${obind[@]}" -v "$vol:/dst" \
+          --entrypoint bash "$image" -c "$_cache_copy_prog" _ "$uid" "$gid" "$$" . 2>&1 >/dev/null)"; then
+    printf 'Copied. %s is no longer mounted; projects of group "%s" not yet synced to this\n' "$(_ac_term "$old")" "$group" >&2
+    printf 'engine still use it. Once none does, remove it:\n  rm -rf %s\n' "$(_ac_term "$old")" >&2
+    return 0
+  fi
+  printf 'WARNING: copying %s into the docker volume %s failed: this group'"'"'s cache\n' "$(_ac_term "$old")" "$vol" >&2
+  printf '         starts empty, and its tools fill it again. The old folder is kept as it was.\n' >&2
+  # What went wrong, in the copy's words: its last line that holds anything, made
+  # safe for the terminal.
+  err="${err%"${err##*[!$'\n']}"}"; err="${err##*$'\n'}"; err="${err%$'\r'}"
+  [[ -z "$err" ]] || printf '         It said: %s\n' "$(_ac_term "$err")" >&2
+  return 0
 }
 
 # Returns 0 if any running container currently mounts docker volume $1.
@@ -1305,8 +1463,12 @@ group_menu_choices() {
            | while IFS= read -r d; do printf '%s\0' "$d"; done)
 }
 
+# GROUP_INIT_FROM: the existing group this launch made the new group from, or
+# empty (sandbox.sh reads it, for cache_volume_copy_qmd).
+# shellcheck disable=SC2034  # GROUP_INIT_FROM is read by sandbox.sh, which sources this file
 ensure_group_exists() {
   local group="$1" root="$2"
+  GROUP_INIT_FROM=""
   if [[ -d "$root" ]]; then
     return
   fi
@@ -1329,6 +1491,7 @@ ensure_group_exists() {
         fi
         mkdir -p "$root"
         _copy_group_slice "$src_root" "$root"
+        GROUP_INIT_FROM="$src_name"
         ;;
       *)
         echo "ERROR: unknown AI_CONTAINER_GROUP_INIT value '${AI_CONTAINER_GROUP_INIT}'. Expected: clean, from:host, or from:<group>." >&2
@@ -1411,6 +1574,7 @@ ensure_group_exists() {
       fi
       mkdir -p "$root"
       _copy_group_slice "$src_root" "$root"
+      GROUP_INIT_FROM="$chosen"
       ;;
   esac
 }

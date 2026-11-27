@@ -67,7 +67,7 @@ setup() {
   mkdir -p "$TMP/bin"
   cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
-[[ "\$1" == volume && "\$*" == *-vartmp-* ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
+[[ "\$1" == volume && ( "\$*" == *-vartmp-* || "\$*" == *-cache-* ) ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
 if [[ "\$1" == "volume" ]]; then exit 0; fi
 exit 1

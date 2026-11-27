@@ -5,18 +5,21 @@
 #
 # 510 proves the credential directories persist. This is the same contract for
 # the three folders tools use as scratch and cache: a build's downloads, a
-# tool's state, a half-finished temp file. ~/.cache and ~/.local/state are group
-# directories on the host, mounted over the container path. /var/tmp is the
-# group's Docker NAMED VOLUME (<prefix>-vartmp-<group>), not a host bind: GNU tar
-# holds back a link whose target holds `..` behind a mode-000 placeholder,
-# which macOS virtiofs cannot open, so an archive unpacked into $TMPDIR failed
-# on a Mac with a bind (the bug that put ~/.rvm on a volume too). Either way a
-# container run with --rm leaves its files for the next one.
+# tool's state, a half-finished temp file. ~/.local/state is a group directory on
+# the host, mounted over the container path. /var/tmp and ~/.cache are the
+# group's Docker NAMED VOLUMES (<prefix>-vartmp-<group>, <prefix>-cache-<group>),
+# not host binds: GNU tar holds back a link whose target holds `..` behind a
+# mode-000 placeholder, which macOS virtiofs cannot open, so an archive unpacked
+# into $TMPDIR, or into ~/.cache, failed on a Mac with a bind (the bug that put
+# ~/.rvm on a volume too), and a cache's thousands of small files were many
+# times slower there. Either way a container run with --rm leaves its files for
+# the next one.
 #
-# The tar check below is that Mac failure, run for real. It can go red only on
-# a Mac: on Linux a bind holds the same links, so mutation 520-var-tmp-bind
-# leaves it green and is caught by the mount-type assertion (case 460 is the
-# precedent for a check whose bite depends on the host).
+# The tar checks below are that Mac failure, run for real. They can go red only
+# on a Mac: on Linux a bind holds the same links, so mutations 520-var-tmp-bind
+# and 520-cache-bind leave them green and are caught by the mount-type
+# assertions (case 460 is the precedent for a check whose bite depends on the
+# host).
 #
 # Each container also gets a folder of its own inside /var/tmp, named by launch
 # time and launcher pid, and the agent's login shell points TMPDIR at it. Two
@@ -38,6 +41,14 @@ if [[ "$vol_a" == "volume it-$IT_RUN_ID-vartmp-scratch" ]]; then
   pass "/var/tmp is the group's Docker volume"
 else
   fail "/var/tmp is the group's Docker volume — got '$vol_a'"
+fi
+
+home_a="$(agent_exec "$cid_a" 'printf %s "$HOME"' 2>/dev/null)"
+cvol_a="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "'"$home_a/.cache"'"}}{{.Type}} {{.Name}}{{end}}{{end}}' "$cid_a" 2>/dev/null)"
+if [[ -n "$home_a" && "$cvol_a" == "volume it-$IT_RUN_ID-cache-scratch" ]]; then
+  pass "the group's cache volume is mounted at ~/.cache"
+else
+  fail "the group's cache volume is mounted at ~/.cache — got '$cvol_a' (home '$home_a')"
 fi
 
 group_dir="$IT_LAUNCH_HOME/.ai-containers/scratch"
@@ -63,12 +74,18 @@ if agent_exec_login "$cid_a" 'cd "$TMPDIR" && mkdir -p s/a/b s/x && ln -s ../../
 else
   fail "tar unpacks a link whose target holds .. into \$TMPDIR"
 fi
+if agent_exec_login "$cid_a" 'cd "$HOME/.cache" && mkdir -p tt/s/a/b tt/s/x && ln -s ../../x tt/s/a/b/l && tar -C tt/s -cf tt/t.tar a x && mkdir tt/u && tar -C tt/u -xf tt/t.tar && test -L tt/u/a/b/l && rm -rf tt' >/dev/null 2>&1; then
+  pass "tar unpacks a link whose target holds .. into ~/.cache"
+else
+  fail "tar unpacks a link whose target holds .. into ~/.cache"
+fi
 
 agent_exec "$cid_a" "printf a > '$t1/a' && mkdir -p \"\$HOME/.cache/it\" \"\$HOME/.local/state/it\" \
   && printf b > \"\$HOME/.cache/it/b\" && printf c > \"\$HOME/.local/state/it/c\"" >/dev/null 2>&1 || true
 
-assert_host_file_exists "$group_dir/.cache/it/b"
 assert_host_file_exists "$group_dir/.local/state/it/c"
+[[ ! -e "$group_dir/.cache" ]] && pass "the launch made no host .cache for the group" \
+  || fail "the launch made a host .cache for the group: $group_dir/.cache"
 
 root_tmp="$(docker exec "$cid_a" bash -lc 'printf %s "${TMPDIR-unset}"' 2>/dev/null)"
 if [[ "$root_tmp" == "unset" ]]; then

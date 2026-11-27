@@ -12,16 +12,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   restart.** Containers run with `--rm`, so a folder an agent believed was kept,
   such as `~/.cache/<run>` or Claude Code's scratch folder under `/tmp`, was gone
   with the container; a long run lost its background agents' output that way.
-  The group's `.cache` and `.local/state` are now mounted whole at `~/.cache` and
-  `~/.local/state`, and `/var/tmp` is the group's Docker volume
-  `ai-containers-vartmp-<group>` (`$REPO_VOLUME_PREFIX-vartmp-<group>` with that
-  variable set), whatever `sandbox.conf` says. `/var/tmp` is a volume on every
-  platform, as `~/.rvm` is and for the same reason: GNU tar holds back a link
-  whose target contains `..` behind a mode-000 placeholder that macOS file
-  sharing cannot open, so on a folder shared from a Mac an archive such as a
-  Node.js release tarball failed to unpack (measured on Colima, 2026-11-25).
-  `~/.cache` and `~/.local/state` stay folders of the group directory and keep
-  that limit on a Mac. Each launch works in a folder of its own,
+  The group's `.local/state` is now mounted whole at `~/.local/state`, and
+  `~/.cache` and `/var/tmp` are the group's Docker volumes
+  `ai-containers-cache-<group>` and `ai-containers-vartmp-<group>`
+  (`$REPO_VOLUME_PREFIX-cache-<group>` and `-vartmp-<group>` with that variable
+  set), whatever `sandbox.conf` says. They are volumes on every platform, as
+  `~/.rvm` is and for the same reason: GNU tar holds back a link whose target
+  contains `..` behind a mode-000 placeholder that macOS file sharing cannot
+  open, so on a folder shared from a Mac an archive such as a Node.js release
+  tarball failed to unpack (measured on Colima, 2026-11-25). `~/.cache` is one
+  for speed as well: a cache is thousands of small files, which macOS file
+  sharing serves slowly (measured on Colima, 2026-11-26: a `uv pip install`
+  8–9× faster on the volume). `~/.local/state` stays a folder of the group
+  directory and keeps the tar limit on a Mac. The launch that makes a group's
+  cache volume copies the group's old `.cache` folder into it once, as the
+  agent's user, so qmd's index and Playwright's browsers are kept; the old
+  folder is never changed or removed, and the launch prints the `rm -rf` for it.
+  A group made `from:<group>` gets that group's qmd index out of its cache
+  volume. Each launch works in a folder of its own,
   `/var/tmp/<YYMMDD-HHMMSS-pid>`, which the container's start-up makes and
   `TMPDIR` names for the agent's shell and what it starts (Claude Code, Codex,
   Gemini, Copilot, Python and `mktemp` follow it), so nothing is configured per
@@ -38,23 +46,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `/tmp` and anything made directly in the `/workspace` umbrella are still lost
   on restart. An existing project needs `./sync-to-projects.sh` and an image
   rebuild (`./build.sh`); until the rebuild, `TMPDIR` stays `/tmp` and nothing
-  is pruned. A volume of the temp volume's name without the label a launch puts
-  on it (one a `docker run -v` of the name made before the group's first
-  launch, say) refuses the launch, naming the `docker volume rm` that clears the
-  way. For a while before this release, main mounted the group directory's
+  is pruned. A volume of the temp or cache volume's name without the label a
+  launch puts on it (one a `docker run -v` of the name made before the group's
+  first launch, say) refuses the launch, naming the `docker volume rm` that
+  clears the way. For a while before this release, main mounted the group directory's
   `.var-tmp` folder at `/var/tmp` instead: a launch that finds one names it in a
   `NOTE:`, at every launch, with the command that copies it into the volume and
   the `rm -rf` that removes it, and never removes it itself. See
   `docs/groups.md`.
 
-- **`group.sh` manages a group's temp volume beside its Ruby volume.** `list`
-  shows both (`TEMP VOLUME` beside `RVM VOLUME`), `rm` removes the group's
-  directory and both volumes, and `gc` collects this home's orphaned volumes of
-  both kinds, each judged as the Ruby volume always was: `rm` keeps another
-  home's, `gc` takes it only with `--all`, and neither removes one a running
-  container uses. A temp volume is the group's only by its label: `list` shows
-  one of the name without it as `not the group's`, and `rm` names it with its
-  `docker volume rm` and leaves it.
+- **`group.sh` manages a group's temp and cache volumes beside its Ruby
+  volume.** `list` shows the three (`TEMP VOLUME` and `CACHE VOLUME` beside
+  `RVM VOLUME`), `rm` removes the group's directory and all three volumes, and
+  `gc` collects this home's orphaned volumes of every kind, each judged as the
+  Ruby volume always was: `rm` keeps another home's, `gc` takes it only with
+  `--all`, and neither removes one a running container uses. A temp or cache
+  volume is the group's only by its label: `list` shows one of the name without
+  it as `not the group's`, and `rm` names it with its `docker volume rm` and
+  leaves it. Emptying a group's cache is removing its cache volume while no
+  container of the group runs.
 
 - **`group.sh list --sizes` shows each group directory's size** in a `GROUP DIR`
   column; where `du` cannot read all of the directory (a folder the agent made
@@ -64,9 +74,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **The nested `~/.cache/qmd`, `~/.cache/ms-playwright` and
   `~/.local/state/claude` mounts are gone**, replaced by the whole
-  `~/.cache` and `~/.local/state` mounts, which hold the same files at the same
-  paths. The launch's walk for planted launchers does not enter those two group
-  folders (the git scan already skipped group mounts). An image rebuild
+  `~/.cache` volume and `~/.local/state` mount, which hold the same files at the
+  same paths (a group's existing `.cache/qmd` and `.cache/ms-playwright` are
+  copied into the volume by its first launch). The launch's walk for planted
+  launchers does not enter the group's `.local/state` folder (the git scan
+  already skipped group mounts). An image rebuild
   (`./build.sh`) and `./sync-to-projects.sh` are needed for an existing project.
 - **CI's falsify tier runs `group.sh` in a shard of its own**, as it already
   does `repo-git-reset.sh`, `version.sh` and `project.sh`: the shard for every

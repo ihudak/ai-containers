@@ -81,11 +81,12 @@ run_agent_skill_install() {
 #     it. A fresh volume first mounted here is so already, by Docker's copy of the
 #     image's own /var/tmp (measured). The reset is for the rest: Docker copies
 #     nothing into a volume something else wrote into first, whose top folder
-#     stays root's 0755, and the copy of an old .var-tmp the launcher prints
-#     (`cp -a /src/. /dst/`) gives the top folder that folder's mode and owner,
-#     whatever they are (case 525). Either can close it to the agent. Without
-#     the variable (an older launcher, /var/tmp a host bind) nothing runs:
-#     chowning a host folder to root would lock the user out of it.
+#     stays root's 0755, and the copy of an old .var-tmp an earlier launcher
+#     printed (`cp -a /src/. /dst/`) gave the top folder that folder's mode and
+#     owner, whatever they were. Either can close it to the agent (case 525
+#     closes it so). Without the variable (an older launcher, /var/tmp a host
+#     bind) nothing runs: chowning a host folder to root would lock the user out
+#     of it.
 #  2. As the sandbox user, with `env -i` and a fixed PATH, not container.env
 #     (hence runuser here and not as_sandbox_user, which gives it back):
 #     agent-tmp.sh prunes old folders and makes this launch's own.
@@ -113,9 +114,12 @@ setup_agent_tmp() {
 
 # ~/.rvm is a docker NAMED VOLUME for named groups, and Docker creates a fresh one
 # root-owned: it only copies ownership from the image for a path the image already
-# contains, and /home/<user> is created at runtime. setup_sandbox_user's recursive
-# chown uses -xdev, which by design does not cross into mounts. Without this the
-# sandbox user cannot even open the reconcile lock. Non-recursive on purpose —
+# contains, and /home/<user> is created at runtime. Without a chown of its top
+# folder the sandbox user cannot even open the reconcile lock. setup_sandbox_user's
+# `find "$home_dir" -xdev -exec chown` gives it one already: -xdev stops find
+# descending into a mount, not visiting the mount point (measured; case
+# 630-rvm-volume-writable). This is kept as a second provider of that effect, and
+# the case asserts the effect, its mutation removing both. Non-recursive on purpose —
 # rvm creates everything beneath as that user, and a seeded volume already carries
 # the right ownership below the root.
 chown_rvm_root() {

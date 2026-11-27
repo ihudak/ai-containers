@@ -63,7 +63,7 @@ export FAKE_SECURITY_OPTIONS="$APPARMOR_DAEMON" FAKE_INFO_RC=0
 : > "$FAKE_RUN_LOG"; mkdir -p "$FAKE_VOLUMES_DIR" "$TMP/bin"
 cat > "$TMP/bin/docker" <<'FAKE'
 #!/usr/bin/env bash
-[[ "$1" == volume && "$*" == *-vartmp-* ]] && exec bash "$FAKE_VOLUME_LIB" "$FAKE_VARTMP_DIR" "$@"
+[[ "$1" == volume && ( "$*" == *-vartmp-* || "$*" == *-cache-* ) ]] && exec bash "$FAKE_VOLUME_LIB" "$FAKE_VARTMP_DIR" "$@"
 case "$1" in
   info)
     (( FAKE_INFO_RC == 0 )) || exit "$FAKE_INFO_RC"

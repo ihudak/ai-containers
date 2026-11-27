@@ -1,10 +1,16 @@
 # case: 520-agent-files-persist-across-restart
-# what: the group's .cache is never mounted over ~/.cache, so tool caches vanish with the container
+# what: the group's cache volume is never mounted over ~/.cache, so tool caches vanish with the container: the 'cache volume is mounted at ~/.cache' and the survives-into-the-next-container assertions go red
 #
 diff --git a/sandbox.sh b/sandbox.sh
+index 4a5d78e..72a0eb7 100755
 --- a/sandbox.sh
 +++ b/sandbox.sh
-@@ -8731,3 +8731,2 @@
-   install -d "$group_root/.cache" "$group_root/.local/state"
--  add_mount_if_exists config_mount_flags "$group_root/.cache" "$dev_home/.cache"
-   add_mount_if_exists config_mount_flags "$group_root/.local/state" "$dev_home/.local/state"
+@@ -8692,7 +8692,7 @@ run_container() {
+     fi
+     cache_volume_copy_old "$group_root/.cache" "$cache_vol" "$image_name" "$cache_uid" "$cache_gid" "$group"
+   fi
+-  config_mount_flags+=(-v "$cache_vol:$dev_home/.cache")
++  : # MUTATION: the cache volume is never mounted
+   # /var/tmp is mounted whole too, and each launch works in a folder of its own
+   # inside it (the container's start-up makes it, agent-tmp.sh), so two
+   # containers of one group never share scratch files and a container's

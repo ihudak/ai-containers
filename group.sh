@@ -12,23 +12,24 @@ unset CDPATH  # a relative cd follows it and prints the directory (bugs review G
 # A group used to be ONLY a directory, so `rm -rf ~/.ai-containers/<group>` was the
 # whole story. That stopped being true when the group's Ruby home (~/.rvm) moved to
 # a Docker named volume (it cannot live on a macOS bind mount — see the tar/virtiofs
-# note on rvm_volume_name in sandbox-common.sh), and again when its /var/tmp did, for
-# the same reason. A group now owns a directory and up to two volumes, Ruby and
-# temp, and deleting the directory leaves a volume orphaned with nothing pointing
-# at it. This script keeps them in step: 'rm' removes them all (keeping a volume
+# note on rvm_volume_name in sandbox-common.sh), and again when its /var/tmp and its
+# ~/.cache did, for the same reason and for speed. A group now owns a directory and
+# up to three volumes, Ruby, temp and cache, and deleting the directory leaves a
+# volume orphaned with nothing pointing at it. This script keeps them in step: 'rm' removes them all (keeping a volume
 # another home made), and 'gc' finds volumes whose group is already gone. Each
 # volume is judged on its own, by the same helpers.
 #
-# A temp volume is the group's by its ai-containers.vartmp-group label alone, which
-# the launch puts on it (sandbox-common.sh: `vartmp_volume_ensure()`), never by its
-# name: one of the name without that label was made outside a launch, and is named,
-# never removed.
+# A temp volume is the group's by its ai-containers.vartmp-group label alone, and a
+# cache volume by its ai-containers.cache-group label alone, which the launch puts
+# on each (sandbox-common.sh: `_group_volume_ensure()`), never by its name: one of
+# the name without that label was made outside a launch, and is named, never
+# removed.
 #
 # Scope: groups and their volumes ONLY. Repo volumes are a separate, global
 # resource with their own lifecycle — use repo.sh for those. They never overlap:
-# repo volumes are named "<prefix>-repo-<name>", Ruby volumes "<prefix>-rvm-<group>"
-# and temp volumes "<prefix>-vartmp-<group>", and each tool's discovery filters on
-# its own infix.
+# repo volumes are named "<prefix>-repo-<name>", Ruby volumes "<prefix>-rvm-<group>",
+# temp volumes "<prefix>-vartmp-<group>" and cache volumes "<prefix>-cache-<group>",
+# and each tool's discovery filters on its own infix.
 
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=sandbox-common.sh
@@ -39,21 +40,24 @@ groups_root="$HOME/.ai-containers"
 usage() {
   cat <<'EOF'
 Usage:
-  ./group.sh list [--sizes]          List container groups and their Ruby and temp volumes
-  ./group.sh rm <group> [--yes]      Remove a group: its directory, its Ruby volume and its temp volume
-  ./group.sh gc [--all] [--yes]      Remove this home's Ruby and temp volumes whose group directory is gone
+  ./group.sh list [--sizes]          List container groups and their Ruby, temp and cache volumes
+  ./group.sh rm <group> [--yes]      Remove a group: its directory and its Ruby, temp and cache volumes
+  ./group.sh gc [--all] [--yes]      Remove this home's Ruby, temp and cache volumes whose group directory is gone
 
 Notes:
-  - A group owns up to three things: the directory ~/.ai-containers/<group>/;
-    the Docker volume holding its containers' /var/tmp, which its first launch
-    makes; and, once you have built with a ruby= version, the Docker volume
-    holding its Ruby home. 'rm' removes all three, but keeps a volume another
-    home on this docker made; deleting the directory by hand orphans the
-    volumes ('gc' cleans those up afterwards).
-  - A temp volume is known by the label its launch puts on it. A volume of its
-    name without that label was made some other way (a `docker run -v` of it):
-    'list' shows it as not the group's, 'rm' names it with the command that
-    removes it, and neither 'rm' nor 'gc' ever removes it.
+  - A group owns up to four things: the directory ~/.ai-containers/<group>/;
+    the Docker volumes holding its containers' /var/tmp and ~/.cache, which its
+    first launch makes; and, once you have built with a ruby= version, the
+    Docker volume holding its Ruby home. 'rm' removes all four, but keeps a
+    volume another home on this docker made; deleting the directory by hand
+    orphans the volumes ('gc' cleans those up afterwards).
+  - To empty a group's cache, remove its cache volume while no container of the
+    group runs (docker volume rm <prefix>-cache-<group>); the next launch makes
+    a new one.
+  - A temp or cache volume is known by the label its launch puts on it. A volume
+    of its name without that label was made some other way (a `docker run -v`
+    of it): 'list' shows it as not the group's, 'rm' names it with the command
+    that removes it, and neither 'rm' nor 'gc' ever removes it.
   - 'rm' refuses while a running container still mounts a volume it would
     remove.
   - 'host' is not a group (it once meant "mount my real $HOME", and is no longer
@@ -150,21 +154,23 @@ _vol_busy() {
   [[ -n "$out" ]]
 }
 
-# _group_vol <kind> <group>: the name of the group's volume of that kind, ruby or
-# temp.
+# _group_vol <kind> <group>: the name of the group's volume of that kind, ruby,
+# temp or cache.
 _group_vol() {
   case "$1" in
-    ruby) rvm_volume_name "$2" ;;
-    temp) vartmp_volume_name "$2" ;;
+    ruby)  rvm_volume_name "$2" ;;
+    temp)  vartmp_volume_name "$2" ;;
+    cache) cache_volume_name "$2" ;;
   esac
 }
 
-# _group_volumes: "<kind> <volume>" for every Ruby and every temp volume, one per
+# _group_volumes: "<kind> <volume>" for every Ruby, temp and cache volume, one per
 # line. A volume name holds no blank or newline (docker allows
 # [a-zA-Z0-9][a-zA-Z0-9_.-]*), and no label value is ever put on a line.
 _group_volumes() {
   rvm_volumes | sed 's/^/ruby /'
   vartmp_volumes | sed 's/^/temp /'
+  cache_volumes | sed 's/^/cache /'
 }
 
 # _vol_group <kind> <volume>: the group the volume serves, rc 0; rc 1 when it
@@ -176,60 +182,75 @@ _group_volumes() {
 # only, and only when the volume carries that group's temp volume name: under
 # nested REPO_VOLUME_PREFIX values another prefix's volume carries a name of this
 # one's, which is how a name match took one repo's volume for another's
-# (REPO-11). One with no label was made outside a launch, and is no group's.
-# A volume that carries a temp volume's label is never a Ruby one: prefix
-# p-rvm-x's temp volume p-rvm-x-vartmp-g is listed with prefix p's Ruby volumes,
-# and with no Ruby label its name made it group x-vartmp-g's, an orphan that gc
-# removed.
+# (REPO-11). One with no label was made outside a launch, and is no group's. A
+# cache volume's the same way, by its own label. A volume that carries a temp or
+# a cache volume's label is never a Ruby one: prefix p-rvm-x's temp volume
+# p-rvm-x-vartmp-g is listed with prefix p's Ruby volumes, and with no Ruby
+# label its name made it group x-vartmp-g's, an orphan that gc removed; its
+# cache volume p-rvm-x-cache-g the same.
 _vol_group() {
-  local g tl
-  tl="$(_vol_label "$2" 'ai-containers.vartmp-group')" || return 2
+  local g tl cl
   case "$1" in
-    ruby) [[ -z "$tl" ]] || return 1
-          g="$(_vol_label "$2" 'ai-containers.rvm-group')" || return 2
-          [[ -n "$g" ]] || g="${2#"${repo_volume_prefix}"-rvm-}"
-          printf '%s\n' "$g" ;;
-    temp) [[ -n "$tl" && "$(vartmp_volume_name "$tl")" == "$2" ]] || return 1
-          printf '%s\n' "$tl" ;;
+    ruby)  tl="$(_vol_label "$2" 'ai-containers.vartmp-group')" || return 2
+           cl="$(_vol_label "$2" 'ai-containers.cache-group')" || return 2
+           [[ -z "$tl" && -z "$cl" ]] || return 1
+           g="$(_vol_label "$2" 'ai-containers.rvm-group')" || return 2
+           [[ -n "$g" ]] || g="${2#"${repo_volume_prefix}"-rvm-}"
+           printf '%s\n' "$g" ;;
+    temp)  tl="$(_vol_label "$2" 'ai-containers.vartmp-group')" || return 2
+           [[ -n "$tl" && "$(vartmp_volume_name "$tl")" == "$2" ]] || return 1
+           printf '%s\n' "$tl" ;;
+    cache) cl="$(_vol_label "$2" 'ai-containers.cache-group')" || return 2
+           [[ -n "$cl" && "$(cache_volume_name "$cl")" == "$2" ]] || return 1
+           printf '%s\n' "$cl" ;;
   esac
 }
 
-# _vol_not_ours <kind> <volume> <group>: why the volume of the group's Ruby or
-# temp volume name is not the group's, printed; nothing when it is; rc 1 when
-# docker cannot read its labels. A temp volume is the group's by its label alone
-# (see _vol_group). A Ruby volume is the group's unless it carries a temp
-# volume's label or another group's Ruby label: under nested REPO_VOLUME_PREFIX
-# values prefix p-rvm-x's temp volume p-rvm-x-vartmp-g has the Ruby volume name
-# of group x-vartmp-g under prefix p, and its Ruby volume of group g,
-# p-rvm-x-rvm-g, that of group x-rvm-g; by its name alone rm removed either. One
+# _vol_not_ours <kind> <volume> <group>: why the volume of the group's Ruby, temp
+# or cache volume name is not the group's, printed; nothing when it is; rc 1 when
+# docker cannot read its labels. A temp or cache volume is the group's by its own
+# label alone (see _vol_group). A Ruby volume is the group's unless it carries a
+# temp or cache volume's label or another group's Ruby label: under nested
+# REPO_VOLUME_PREFIX values prefix p-rvm-x's temp volume p-rvm-x-vartmp-g has the
+# Ruby volume name of group x-vartmp-g under prefix p, its cache volume
+# p-rvm-x-cache-g that of group x-cache-g, and its Ruby volume of group g,
+# p-rvm-x-rvm-g, that of group x-rvm-g; by its name alone rm removed any. One
 # with no label, made before labels, is still the group's.
 _vol_not_ours() {
-  local tl rl
-  tl="$(_vol_label "$2" 'ai-containers.vartmp-group')" || return 1
+  local tl cl rl
   case "$1" in
-    ruby) if [[ -n "$tl" ]]; then
-            printf 'it is a temp volume, its label naming group "%s"' "$(_ac_term "$tl")"; return 0
-          fi
-          rl="$(_vol_label "$2" 'ai-containers.rvm-group')" || return 1
-          [[ -z "$rl" || "$rl" == "$3" ]] || printf 'its label names group "%s"' "$(_ac_term "$rl")" ;;
-    temp) if [[ -z "$tl" ]]; then printf 'it has no temp volume label'
-          elif [[ "$tl" != "$3" ]]; then printf 'its label names group "%s"' "$(_ac_term "$tl")"; fi ;;
+    ruby)  tl="$(_vol_label "$2" 'ai-containers.vartmp-group')" || return 1
+           if [[ -n "$tl" ]]; then
+             printf 'it is a temp volume, its label naming group "%s"' "$(_ac_term "$tl")"; return 0
+           fi
+           cl="$(_vol_label "$2" 'ai-containers.cache-group')" || return 1
+           if [[ -n "$cl" ]]; then
+             printf 'it is a cache volume, its label naming group "%s"' "$(_ac_term "$cl")"; return 0
+           fi
+           rl="$(_vol_label "$2" 'ai-containers.rvm-group')" || return 1
+           [[ -z "$rl" || "$rl" == "$3" ]] || printf 'its label names group "%s"' "$(_ac_term "$rl")" ;;
+    temp)  tl="$(_vol_label "$2" 'ai-containers.vartmp-group')" || return 1
+           if [[ -z "$tl" ]]; then printf 'it has no temp volume label'
+           elif [[ "$tl" != "$3" ]]; then printf 'its label names group "%s"' "$(_ac_term "$tl")"; fi ;;
+    cache) cl="$(_vol_label "$2" 'ai-containers.cache-group')" || return 1
+           if [[ -z "$cl" ]]; then printf 'it has no cache volume label'
+           elif [[ "$cl" != "$3" ]]; then printf 'its label names group "%s"' "$(_ac_term "$cl")"; fi ;;
   esac
   return 0
 }
 
-# _foreign_say <kind> <volume> <group> <why>: a volume of the group's Ruby or
-# temp volume name that is not the group's (_vol_not_ours says why), named, and
-# never removed here. One with no label was made outside a launch (a `docker
+# _foreign_say <kind> <volume> <group> <why>: a volume of the group's Ruby, temp
+# or cache volume name that is not the group's (_vol_not_ours says why), named,
+# and never removed here. One with no label was made outside a launch (a `docker
 # run -v` of it), and a launch refuses it
-# (sandbox-common.sh: `vartmp_volume_ensure()`): whose it is cannot be told, so
+# (sandbox-common.sh: `_group_volume_ensure()`): whose it is cannot be told, so
 # it is named with the command that removes it. One whose label names another
 # group is most likely that group's under another REPO_VOLUME_PREFIX, in use
 # there: no such command.
 _foreign_say() {
-  local word="temp"
-  [[ "$1" == temp ]] || word="Ruby"
-  if [[ "$4" == "it has no temp volume label" ]]; then
+  local word
+  case "$1" in temp|cache) word="$1" ;; *) word="Ruby" ;; esac
+  if [[ "$4" == "it has no $word volume label" ]]; then
     printf '  (volume %s is kept: %s, so it is not the %s volume of group "%s".\n' "$2" "$4" "$word" "$3"
     printf '   Once nothing in it is needed: docker volume rm %s)\n' "$2"
   else
@@ -300,26 +321,28 @@ cmd_list() {
   if (( show_sizes && dk )) && [[ -n "$names" ]]; then _df_load; fi
   # With no group directory left, the orphans are all there is to name: deleting
   # the directories by hand leaves exactly that, and list returned before them.
-  # Each row: the group, its Ruby volume and state, its temp volume and state.
+  # Each row: the group, then its Ruby, temp and cache volumes, each with its state.
   local g dsize dout drc cell_unknown=0
-  local -a rc=() tc=()
+  local -a rc=() tc=() cc=()
   if [[ -z "$names" ]]; then
     printf 'No container groups yet (%s is empty or absent).\n' "$groups_root"
   else
     if (( show_sizes )); then
-      printf '%-24s  %-40s  %-16s  %-40s  %-16s  %s\n' "GROUP" "RVM VOLUME" "SIZE" "TEMP VOLUME" "SIZE" "GROUP DIR"
+      printf '%-24s  %-40s  %-16s  %-40s  %-16s  %-40s  %-16s  %s\n' "GROUP" "RVM VOLUME" "SIZE" "TEMP VOLUME" "SIZE" "CACHE VOLUME" "SIZE" "GROUP DIR"
     else
-      printf '%-24s  %-40s  %-16s  %-40s  %s\n' "GROUP" "RVM VOLUME" "STATE" "TEMP VOLUME" "STATE"
+      printf '%-24s  %-40s  %-16s  %-40s  %-16s  %-40s  %s\n' "GROUP" "RVM VOLUME" "STATE" "TEMP VOLUME" "STATE" "CACHE VOLUME" "STATE"
     fi
   fi
   [[ -z "$names" ]] || while IFS= read -r g; do
     [[ -n "$g" ]] || continue
     mapfile -t rc < <(_vol_cells ruby "$g" "$show_sizes" "$dk")
     mapfile -t tc < <(_vol_cells temp "$g" "$show_sizes" "$dk")
-    if [[ "${rc[1]-}" == unknown || "${tc[1]-}" == unknown ]]; then cell_unknown=1; fi
+    mapfile -t cc < <(_vol_cells cache "$g" "$show_sizes" "$dk")
+    if [[ "${rc[1]-}" == unknown || "${tc[1]-}" == unknown || "${cc[1]-}" == unknown ]]; then cell_unknown=1; fi
     if (( show_sizes )); then
-      # The group directory holds the persistent cache and state folders, so
-      # it grows on its own; the field before the tab is du -sh's size, GNU's
+      # The group directory holds the persistent state folder (and, for a group
+      # that had it before its cache volume, the old cache folder), so it grows
+      # on its own; the field before the tab is du -sh's size, GNU's
       # and BSD's alike (BSD's padded with blanks, which are dropped), and only
       # one that reads as a size is shown, else "?". In the C locale, since
       # another's decimal point can be neither "." nor "," (U+066B).
@@ -331,14 +354,14 @@ cmd_list() {
       dsize="${dsize#"${dsize%%[![:space:]]*}"}"
       [[ "$dsize" =~ ^[0-9][0-9.]*[A-Za-z]*$ ]] || dsize=""
       if [[ -n "$dsize" ]] && (( drc )); then dsize="at least $dsize"; fi
-      printf '%-24s  %-40s  %-16s  %-40s  %-16s  %s\n' "$g" "${rc[0]-}" "${rc[1]-}" "${tc[0]-}" "${tc[1]-}" "${dsize:-?}"
+      printf '%-24s  %-40s  %-16s  %-40s  %-16s  %-40s  %-16s  %s\n' "$g" "${rc[0]-}" "${rc[1]-}" "${tc[0]-}" "${tc[1]-}" "${cc[0]-}" "${cc[1]-}" "${dsize:-?}"
     else
-      printf '%-24s  %-40s  %-16s  %-40s  %s\n' "$g" "${rc[0]-}" "${rc[1]-}" "${tc[0]-}" "${tc[1]-}"
+      printf '%-24s  %-40s  %-16s  %-40s  %-16s  %-40s  %s\n' "$g" "${rc[0]-}" "${rc[1]-}" "${tc[0]-}" "${tc[1]-}" "${cc[0]-}" "${cc[1]-}"
     fi
   done <<< "$names"
   if (( ! dk )); then
     printf 'ERROR: docker could not list its volumes (is docker running?), so which groups have a\n' >&2
-    printf '       Ruby or temp volume, and which volumes are orphaned, cannot be told.\n' >&2
+    printf '       Ruby, temp or cache volume, and which volumes are orphaned, cannot be told.\n' >&2
     exit 1
   fi
 
@@ -355,7 +378,7 @@ cmd_list() {
     [[ -d "$groups_root/$og" ]] || orphans="${orphans:+$orphans }$v"
   done < <(_group_volumes)
   if [[ -n "$orphans" ]]; then
-    printf '\nOrphaned Ruby and temp volume(s) with no group directory — remove with ./group.sh gc:\n'
+    printf '\nOrphaned Ruby, temp and cache volume(s) with no group directory — remove with ./group.sh gc:\n'
     for v in $orphans; do
       if why="$(_vol_owner_why "$v" "$own")"; then
         case "$why" in
@@ -401,7 +424,7 @@ cmd_rm() {
   local has_dir=0
   [[ -d "$dir" ]] && has_dir=1
 
-  # Each volume on its own, Ruby then temp: its name, and what rm does with it
+  # Each volume on its own, Ruby, temp, then cache: its name, and what rm does with it
   # (act: none, remove, keep, or foreign for a volume of the name that is not
   # the group's), why it may be another home's, and why a foreign one is not
   # the group's.
@@ -410,7 +433,7 @@ cmd_rm() {
   # With no owner key, this home's own labelled volume looks like another's.
   [[ -n "$own" ]] || maker="another home on this docker, or this one before it lost its owner key,"
   local -A vol=() act=() why=() lab=()
-  for k in ruby temp; do
+  for k in ruby temp cache; do
     v="$(_group_vol "$k" "$name")"
     vol[$k]="$v"; act[$k]=none; why[$k]=""; lab[$k]=""
     # A docker that cannot answer is not one that says there is no volume: read
@@ -439,21 +462,21 @@ cmd_rm() {
   # Nothing of this home's to remove: no directory, and no volume but another
   # home's or one that is not the group's.
   local n_rm=0 n_keep=0
-  for k in ruby temp; do
+  for k in ruby temp cache; do
     case "${act[$k]}" in remove) n_rm=$(( n_rm + 1 )) ;; keep) n_keep=$(( n_keep + 1 )) ;; esac
   done
   if [[ "$has_dir" == "0" ]] && (( n_rm == 0 )); then
     if (( n_keep )); then
-      for k in ruby temp; do
+      for k in ruby temp cache; do
         [[ "${act[$k]}" == keep ]] || continue
         printf 'ERROR: %s was made by %s and its group "%s" there may use it; this home\n' "${vol[$k]}" "$maker" "$name" >&2
         printf '       has no group "%s" to remove. To remove the volume anyway: docker volume rm %s\n' "$name" "${vol[$k]}" >&2
       done
       _no_key_note "$own" >&2
     else
-      printf 'ERROR: no such group "%s" (no directory at %s, and no Ruby or temp volume of its own).\n' "$name" "$dir" >&2
+      printf 'ERROR: no such group "%s" (no directory at %s, and no Ruby, temp or cache volume of its own).\n' "$name" "$dir" >&2
     fi
-    for k in ruby temp; do
+    for k in ruby temp cache; do
       if [[ "${act[$k]}" == foreign ]]; then _foreign_say "$k" "${vol[$k]}" "$name" "${lab[$k]}" >&2; fi
     done
     exit 1
@@ -464,7 +487,7 @@ cmd_rm() {
   # volume rm would remove is checked before anything goes. A docker that cannot
   # list its containers is not read as none using it (PRJ-16).
   local brc bad=0
-  for k in ruby temp; do
+  for k in ruby temp cache; do
     [[ "${act[$k]}" == remove ]] || continue
     brc=0; _vol_busy "${vol[$k]}" || brc=$?
     if (( brc == 0 )); then
@@ -480,10 +503,11 @@ cmd_rm() {
   printf 'This will permanently remove group "%s":\n' "$name"
   [[ "$has_dir" == "1" ]] && printf '  directory  %s\n' "$dir"
   local word what wnote kept=0
-  for k in ruby temp; do
+  for k in ruby temp cache; do
     case "$k" in
-      ruby) word="rvm volume";  what="installed rubies and gems" ;;
-      temp) word="temp volume"; what="its containers' /var/tmp" ;;
+      ruby)  word="rvm volume";   what="installed rubies and gems" ;;
+      temp)  word="temp volume";  what="its containers' /var/tmp" ;;
+      cache) word="cache volume"; what="its containers' ~/.cache" ;;
     esac
     case "${act[$k]}" in
       remove)
@@ -503,7 +527,7 @@ cmd_rm() {
   # Every volume is tried; one docker would not remove keeps the directory, whose
   # removal would orphan it.
   local failed=0
-  for k in ruby temp; do
+  for k in ruby temp cache; do
     [[ "${act[$k]}" == remove ]] || continue
     if docker volume rm "${vol[$k]}" >/dev/null 2>&1; then
       printf 'Removed volume %s\n' "${vol[$k]}"
@@ -571,12 +595,12 @@ cmd_gc() {
       printf 'Nothing removed: %d volume(s) skipped (above).\n' "$skipped"
       (( ! unknown )) || exit 1
     else
-      printf 'Nothing to collect: every Ruby and temp volume of this home has a group directory.\n'
+      printf 'Nothing to collect: every Ruby, temp and cache volume of this home has a group directory.\n'
     fi
     return 0
   fi
 
-  printf 'Orphaned Ruby and temp volume(s) (group directory no longer exists):\n'
+  printf 'Orphaned Ruby, temp and cache volume(s) (group directory no longer exists):\n'
   for v in $targets; do printf '  %s%s\n' "$v" "${whose[$v]:+  ($(_whose_say "${whose[$v]}"))}"; done
   confirm "Remove them?" || { printf 'Aborted.\n'; exit 1; }
   for v in $targets; do

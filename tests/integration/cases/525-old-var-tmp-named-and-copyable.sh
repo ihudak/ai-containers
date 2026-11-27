@@ -14,10 +14,14 @@
 # not work as printed fails here):
 #   1. an old folder with a file in it, made before any launch
 #   2. launch 1 names it and prints the copy command; the folder stays on the host
-#   3. the command is run
-#   4. the volume's top folder is then made root's 0755, closed to the agent:
-#      `cp -a /src/. /dst/` carries the old folder's own mode and owner onto
-#      the volume's root, and what it carries may be anything
+#   3. the command is run. It copies as the agent's uid: as root the copy was
+#      root's, and the old 0700 folder below was then closed to the agent (on
+#      Colima, where root reads a bind's files as 0:0, `cp -a` kept that; on
+#      Linux it kept the host uid). Mutation 525-var-tmp-copy-as-root.
+#   4. the volume's top folder is then made root's 0755, closed to the agent, as
+#      one something else wrote into first is, and as the copy an earlier launch
+#      printed (`cp -a /src/. /dst/`) left it, with the old folder's own mode
+#      and owner
 #   5. launch 2: the agent reads the old file, and gets a TMPDIR of its own.
 #      That works only because the start-up resets /var/tmp to root-owned 1777
 #      before it makes the folder as the agent.
@@ -46,7 +50,7 @@ else
   fail "the launch names the old folder"
   sed 's/^/     /' "$err_1"
 fi
-copy_cmd="$(grep -m1 -E '^ +docker run --rm --pull=never .* -a /src/\. /dst/$' "$err_1")"
+copy_cmd="$(grep -m1 -E '^ +docker run --rm --pull=never .* -t /dst \{\} \+$' "$err_1")"
 if [[ -n "$copy_cmd" ]]; then
   pass "the launch prints the copy command"
 else

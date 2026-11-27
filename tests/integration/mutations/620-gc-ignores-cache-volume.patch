@@ -1,0 +1,15 @@
+# case: 620-group-gc-collects-orphan
+# what: gc skips the cache volumes: an orphaned cache volume survives, so 'assert_volume_absent <cache orphan>' goes red
+#
+diff --git a/group.sh b/group.sh
+index 06ef698..9e31b1f 100755
+--- a/group.sh
++++ b/group.sh
+@@ -559,6 +559,7 @@ cmd_gc() {
+   local -A whose=()
+   own="$(ai_containers_owner_known 2>/dev/null)" || own=""
+   while read -r kind v; do
++    [[ "$kind" == cache ]] && continue # MUTATION: gc never looks at a cache volume
+     grc=0; g="$(_vol_group "$kind" "$v")" || grc=$?
+     (( grc != 1 )) || continue                      # no group's volume — never touched
+     # Its labels, read so that a docker that cannot say is not one that says

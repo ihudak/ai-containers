@@ -1,0 +1,16 @@
+# case: 525-old-var-tmp-named-and-copyable
+# what: the printed copy of an old .var-tmp runs as root again (no --user): what it copies is root's, the old 0700 folder is closed to the agent, and 'agent reads /var/tmp/200101-000000-1/f' goes red, on Linux as on a Mac
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index f479708..0277aca 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -8725,7 +8725,7 @@ run_container() {
+     # carry the old folder's mode and owner onto the volume's top folder.
+     printf 'NOTE: %s is no longer mounted: /var/tmp is now the Docker volume %s.\n' "$(_q "$_old_vt")" "$vartmp_vol" >&2
+     printf '      To copy what it holds into the volume:\n' >&2
+-    printf '        docker run --rm --pull=never %s--user %s --entrypoint find %s %s -v %s:/dst %s /src -mindepth 1 -maxdepth 1 -exec cp -dR --preserve=mode,timestamps,links -t /dst {} +\n' \
++    printf '        docker run --rm --pull=never %s%.0s--entrypoint find %s %s -v %s:/dst %s /src -mindepth 1 -maxdepth 1 -exec cp -dR --preserve=mode,timestamps,links -t /dst {} +\n' \
+       "${selinux_opt:+$selinux_opt }" "${SANDBOX_UID:-$(id -u)}:${SANDBOX_GID:-$(id -g)}" \
+       "$_vt_f" "$(_q "$_vt_v")" "$vartmp_vol" "$(_q "$image_name")" >&2
+     printf '      Then, once nothing in it is needed and no container of group "%s" runs:\n' "$group" >&2

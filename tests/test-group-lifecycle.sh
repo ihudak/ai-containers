@@ -146,9 +146,9 @@ out="$(run_group list)"
 grep -q 'default .*ai-containers-rvm-default .*present' <<<"$out" \
   && pass "list shows a group with its rvm volume" \
   || fail "list shows a group with its rvm volume (got: $out)"
-grep -qE '^GROUP +RVM VOLUME +STATE +TEMP VOLUME +STATE$' <<<"$out" \
-  && pass "list's header names both volumes and their states" \
-  || fail "list's header names both volumes and their states (got: $out)"
+grep -qE '^GROUP +RVM VOLUME +STATE +TEMP VOLUME +STATE +CACHE VOLUME +STATE$' <<<"$out" \
+  && pass "list's header names the three volumes and their states" \
+  || fail "list's header names the three volumes and their states (got: $out)"
 grep -qE '^docs +- +none' <<<"$out" \
   && pass "list shows a group with no rvm volume as 'none'" \
   || fail "list shows a group with no rvm volume as 'none' (got: $out)"
@@ -157,7 +157,7 @@ grep -qE '^docs +- +none' <<<"$out" \
 mkdir -p "$FAKE_HOME/.ai-containers/default/.cache"
 dd if=/dev/zero of="$FAKE_HOME/.ai-containers/default/.cache/x" bs=1048576 count=2 2>/dev/null
 out="$(run_group list --sizes)"
-grep -qE '^GROUP +RVM VOLUME +SIZE +TEMP VOLUME +SIZE +GROUP DIR$' <<<"$out" \
+grep -qE '^GROUP +RVM VOLUME +SIZE +TEMP VOLUME +SIZE +CACHE VOLUME +SIZE +GROUP DIR$' <<<"$out" \
   && pass "list --sizes header names a SIZE column for each volume, then the GROUP DIR column" \
   || fail "list --sizes header names a SIZE column for each volume, then the GROUP DIR column (got: $out)"
 row="$(grep -E '^default ' <<<"$out")"
@@ -232,7 +232,7 @@ grep -q 'ai-containers-repo-app' <<<"$out" \
 # Orphan detection: a volume whose group directory is gone.
 mkvol "ai-containers-rvm-ghost" "ghost"
 out="$(run_group list)"
-grep -q 'Orphaned Ruby and temp volume' <<<"$out" && grep -q 'ai-containers-rvm-ghost' <<<"$out" \
+grep -q 'Orphaned Ruby, temp and cache volume' <<<"$out" && grep -q 'ai-containers-rvm-ghost' <<<"$out" \
   && pass "list flags an orphaned rvm volume" \
   || fail "list flags an orphaned rvm volume (got: $out)"
 
@@ -512,12 +512,12 @@ out="$(run_group rm busy2 --yes)"; rc=$?
 
 # list marks exactly the volume a running container uses as "(in use)".
 out="$(run_group list)"
-grep -qE '^busy2 +ai-containers-rvm-busy2 +present \(in use\) +- +none$' <<<"$out" \
+grep -qE '^busy2 +ai-containers-rvm-busy2 +present \(in use\) +- +none +- +none$' <<<"$out" \
   && pass "list marks an in-use rvm volume '(in use)'" \
   || fail "list marks an in-use rvm volume '(in use)' (got: $out)"
 : > "$FAKE_RUNNING_VOL"
 out="$(run_group list)"
-grep -qE '^busy2 +ai-containers-rvm-busy2 +present +- +none$' <<<"$out" \
+grep -qE '^busy2 +ai-containers-rvm-busy2 +present +- +none +- +none$' <<<"$out" \
   && pass "  … and does not mark one nothing uses" \
   || fail "  … and does not mark one nothing uses (got: $out)"
 
@@ -616,8 +616,8 @@ tvol() { [[ -f "$FAKE_VOLUMES_DIR/$1" ]]; }
 tclean() { local v; for v in "$@"; do rm -f "${FAKE_VOLUMES_DIR:?}/$v" "${FAKE_VOLUMES_DIR:?}/$v".*; done; }
 
 out="$(run_group --help)"
-[[ "$(grep -cE '^  \./group\.sh (list|rm|gc) .*temp volume' <<<"$out")" == 3 ]] \
-  && grep -qF 'Docker volume holding its containers'"'"' /var/tmp' <<<"$out" \
+[[ "$(grep -cE '^  \./group\.sh (list|rm|gc) .*temp and cache volume' <<<"$out")" == 3 ]] \
+  && grep -qF 'Docker volumes holding its containers'"'"' /var/tmp and ~/.cache' <<<"$out" \
   && pass "usage names the temp volume for list, rm and gc, and says what it holds" \
   || fail "usage names the temp volume (got: $out)"
 
@@ -626,22 +626,22 @@ out="$(run_group --help)"
 mkdir -p "$GR/tboth"; mkvol ai-containers-rvm-tboth tboth; mktmpvol ai-containers-vartmp-tboth tboth
 mkdir -p "$GR/tonly"; mktmpvol ai-containers-vartmp-tonly tonly
 out="$(run_group list)"
-grep -qE '^tboth +ai-containers-rvm-tboth +present +ai-containers-vartmp-tboth +present$' <<<"$out" \
+grep -qE '^tboth +ai-containers-rvm-tboth +present +ai-containers-vartmp-tboth +present +- +none$' <<<"$out" \
   && pass "list shows a group's Ruby and temp volumes, each present" \
   || fail "list shows a group's Ruby and temp volumes (got: $out)"
-grep -qE '^tonly +- +none +ai-containers-vartmp-tonly +present$' <<<"$out" \
+grep -qE '^tonly +- +none +ai-containers-vartmp-tonly +present +- +none$' <<<"$out" \
   && pass "list shows a group with a temp volume and no Ruby one" \
   || fail "list shows a group with a temp volume and no Ruby one (got: $out)"
 printf 'ai-containers-vartmp-tboth' > "$FAKE_RUNNING_VOL"
 out="$(run_group list)"
 : > "$FAKE_RUNNING_VOL"
-grep -qE '^tboth +ai-containers-rvm-tboth +present +ai-containers-vartmp-tboth +present \(in use\)$' <<<"$out" \
+grep -qE '^tboth +ai-containers-rvm-tboth +present +ai-containers-vartmp-tboth +present \(in use\) +- +none$' <<<"$out" \
   && pass "list marks the temp volume a running container uses '(in use)', and only it" \
   || fail "list marks an in-use temp volume (got: $out)"
 printf '1.5GB' > "$FAKE_VOLUMES_DIR/ai-containers-rvm-tboth.size"
 printf '20MB' > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-tboth.size"
 out="$(run_group list --sizes)"
-grep -qE '^tboth +ai-containers-rvm-tboth +1\.5GB +ai-containers-vartmp-tboth +20MB +[0-9?][^ ]*$' <<<"$out" \
+grep -qE '^tboth +ai-containers-rvm-tboth +1\.5GB +ai-containers-vartmp-tboth +20MB +- +none +[0-9?][^ ]*$' <<<"$out" \
   && pass "list --sizes shows each volume's size, then the group directory's" \
   || fail "list --sizes shows each volume's size (got: $out)"
 # One `docker system df -v` per list: it walks every volume on the daemon, and
@@ -667,7 +667,7 @@ dfn="$(grep -c . "$DFLOG")"
   || fail "list --sizes with no group directory asked docker system df $dfn time(s) (got: $out)"
 rmdir "$EH"
 out="$(FAKE_DOCKER_DOWN=1 run_group list)"
-grep -qE '^tboth +ai-containers-rvm-tboth +unknown +ai-containers-vartmp-tboth +unknown$' <<<"$out" \
+grep -qE '^tboth +ai-containers-rvm-tboth +unknown +ai-containers-vartmp-tboth +unknown +ai-containers-cache-tboth +unknown$' <<<"$out" \
   && pass "list with docker unreachable says both volumes are unknown" \
   || fail "list with docker unreachable, both volumes (got: $out)"
 # A volume of the temp name that is not the group's (no label, or another
@@ -675,8 +675,8 @@ grep -qE '^tboth +ai-containers-rvm-tboth +unknown +ai-containers-vartmp-tboth +
 mkdir -p "$GR/tunl"; : > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-tunl"
 mkdir -p "$GR/tmix"; mktmpvol ai-containers-vartmp-tmix tother
 out="$(run_group list)"
-grep -qE "^tunl +- +none +ai-containers-vartmp-tunl +not the group's$" <<<"$out" \
-  && grep -qE "^tmix +- +none +ai-containers-vartmp-tmix +not the group's$" <<<"$out" \
+grep -qE "^tunl +- +none +ai-containers-vartmp-tunl +not the group's +- +none$" <<<"$out" \
+  && grep -qE "^tmix +- +none +ai-containers-vartmp-tmix +not the group's +- +none$" <<<"$out" \
   && pass "list names a volume of the temp name without the group's label as not the group's" \
   || fail "list, a temp-name volume not the group's (got: $out)"
 rmdir "$GR/tunl" "$GR/tmix"; tclean ai-containers-vartmp-tunl ai-containers-vartmp-tmix
@@ -690,7 +690,7 @@ VOL_OWNER="" mktmpvol ai-containers-vartmp-told told
 : > "$FAKE_VOLUMES_DIR/ai-containers-vartmp-x"
 mktmpvol ai-containers-vartmp-a-vartmp-tnest tnest
 out="$(run_group list)"
-grep -q '^Orphaned Ruby and temp volume(s) with no group directory' <<<"$out" \
+grep -q '^Orphaned Ruby, temp and cache volume(s) with no group directory' <<<"$out" \
   && grep -qxF '  ai-containers-vartmp-tghost' <<<"$out" \
   && grep -qxF "  ai-containers-vartmp-ttheirs  (another home's: gc keeps it unless --all)" <<<"$out" \
   && grep -qxF '  ai-containers-vartmp-told  (no owner label: gc keeps it unless --all)' <<<"$out" \
@@ -737,7 +737,7 @@ out="$(run_group gc --yes)"
   || fail "gc skips an in-use temp volume (got: $out)"
 tclean ai-containers-vartmp-tbusy
 out="$(run_group gc --yes)"; rc=$?
-[[ "$rc" -eq 0 ]] && grep -qxF 'Nothing to collect: every Ruby and temp volume of this home has a group directory.' <<<"$out" \
+[[ "$rc" -eq 0 ]] && grep -qxF 'Nothing to collect: every Ruby, temp and cache volume of this home has a group directory.' <<<"$out" \
   && pass "gc has nothing to collect when every Ruby and temp volume has its group directory" \
   || fail "gc with nothing to collect, temp volumes present (rc=$rc; got: $out)"
 tclean ai-containers-vartmp-x ai-containers-vartmp-a-vartmp-tnest
@@ -898,25 +898,25 @@ out="$(FAKE_LABEL_FAIL=ai-containers-vartmp-tlf run_group rm tlf --yes)"; rc=$?
   || fail "rm with the temp volume's labels unreadable (rc=$rc; got: $out)"
 mkdir -p "$GR/tlf"; mkvol ai-containers-rvm-tlf tlf; mktmpvol ai-containers-vartmp-tlf tlf
 out="$(FAKE_LABEL_FAIL=ai-containers-vartmp-tlf run_group list)"; rc=$?
-grep -qE '^tlf +ai-containers-rvm-tlf +present +ai-containers-vartmp-tlf +unknown$' <<<"$out" \
+grep -qE '^tlf +ai-containers-rvm-tlf +present +ai-containers-vartmp-tlf +unknown +- +none$' <<<"$out" \
   && [[ "$rc" -ne 0 && "$out" == *"ERROR: docker could not say whether some volumes exist or whose they are"* ]] \
   && pass "list says a temp volume whose labels docker cannot read is unknown, not another group's, and exits 1" \
   || fail "list with the temp volume's labels unreadable (rc=$rc; got: $out)"
 # Nor is a docker that cannot say whether the volume exists one that says it
 # does not: the row's state is unknown, not none.
 out="$(FAKE_INSPECT_FAIL=ai-containers-vartmp-tlf run_group list)"; rc=$?
-grep -qE '^tlf +ai-containers-rvm-tlf +present +ai-containers-vartmp-tlf +unknown$' <<<"$out" \
+grep -qE '^tlf +ai-containers-rvm-tlf +present +ai-containers-vartmp-tlf +unknown +- +none$' <<<"$out" \
   && [[ "$rc" -ne 0 && "$out" == *"ERROR: docker could not say whether some volumes exist or whose they are"* ]] \
   && pass "list says a volume docker cannot say exists is unknown, not none, and exits 1" \
   || fail "list with the temp volume's existence unknown (rc=$rc; got: $out)"
 out="$(FAKE_INSPECT_FAIL=ai-containers-rvm-tlf run_group list)"; rc=$?
-grep -qE '^tlf +ai-containers-rvm-tlf +unknown +ai-containers-vartmp-tlf +present$' <<<"$out" \
+grep -qE '^tlf +ai-containers-rvm-tlf +unknown +ai-containers-vartmp-tlf +present +- +none$' <<<"$out" \
   && [[ "$rc" -ne 0 && "$out" == *"ERROR: docker could not say whether some volumes exist or whose they are"* ]] \
   && pass "list says a Ruby volume docker cannot say exists is unknown, and exits 1" \
   || fail "list with the Ruby volume's existence unknown (rc=$rc; got: $out)"
 # With every volume known, list exits 0 and says nothing of the kind.
 out="$(run_group list)"; rc=$?
-grep -qE '^tlf +ai-containers-rvm-tlf +present +ai-containers-vartmp-tlf +present$' <<<"$out" \
+grep -qE '^tlf +ai-containers-rvm-tlf +present +ai-containers-vartmp-tlf +present +- +none$' <<<"$out" \
   && [[ "$rc" -eq 0 && "$out" != *"ERROR:"* ]] \
   && pass "list with every volume known exits 0, with no ERROR" \
   || fail "list with every volume known (rc=$rc; got: $out)"
@@ -1067,6 +1067,184 @@ else
     && pass "rm answered 'n' on a tty aborts non-zero and removes nothing" \
     || fail "rm answered 'n' on a tty aborts non-zero and removes nothing (rc=$RC; out: $(tr -d '\r' < "$OUT" | tr '\n' ' '))"
 fi
+
+# ── The cache volume ────────────────────────────────────────────────────────────
+# A group's ~/.cache is a third volume, <prefix>-cache-<group>, known by its
+# ai-containers.cache-group label alone, as the temp volume is by its own. list,
+# rm and gc treat it as they treat the other two, each volume on its own.
+GR="$FAKE_HOME/.ai-containers"
+THEIRS="sha256:$(printf '%064d' 7)"
+tvol() { [[ -f "$FAKE_VOLUMES_DIR/$1" ]]; }
+tclean() { local v; for v in "$@"; do rm -f "${FAKE_VOLUMES_DIR:?}/$v" "${FAKE_VOLUMES_DIR:?}/$v".*; done; }
+# mkcvol <volume> <group>: a cache volume this home's launch made, labelled as
+# sandbox-common.sh: `_group_volume_ensure()` labels one; VOL_OWNER as for mkvol.
+mkcvol() {
+  : > "$FAKE_VOLUMES_DIR/$1"
+  { printf 'ai-containers.cache-group=%s\n' "$2"; [[ -z "${VOL_OWNER-$OWN}" ]] || printf 'ai-containers.owner=%s\n' "${VOL_OWNER-$OWN}"; } > "$FAKE_VOLUMES_DIR/$1.labels"
+}
+: > "$FAKE_RUNNING_VOL"
+
+out="$(run_group --help)"
+grep -qF 'docker volume rm <prefix>-cache-<group>' <<<"$out" \
+  && pass "usage says how to empty a group's cache" || fail "usage: emptying the cache (got: $out)"
+
+# list: the three volumes of a group, the cache one's state, in use, size.
+mkdir -p "$GR/call"; mkvol ai-containers-rvm-call call; mktmpvol ai-containers-vartmp-call call; mkcvol ai-containers-cache-call call
+mkdir -p "$GR/conly"; mkcvol ai-containers-cache-conly conly
+out="$(run_group list)"
+grep -qE '^call +ai-containers-rvm-call +present +ai-containers-vartmp-call +present +ai-containers-cache-call +present$' <<<"$out" \
+  && grep -qE '^conly +- +none +- +none +ai-containers-cache-conly +present$' <<<"$out" \
+  && pass "list shows a group's cache volume as the third, present" \
+  || fail "list, cache volumes (got: $out)"
+printf 'ai-containers-cache-call' > "$FAKE_RUNNING_VOL"
+out="$(run_group list)"
+grep -qE '^call +ai-containers-rvm-call +present +ai-containers-vartmp-call +present +ai-containers-cache-call +present \(in use\)$' <<<"$out" \
+  && pass "list marks an in-use cache volume, and only it" || fail "list, cache in use (got: $out)"
+: > "$FAKE_RUNNING_VOL"
+printf '3.2GB' > "$FAKE_VOLUMES_DIR/ai-containers-cache-call.size"
+out="$(run_group list --sizes)"
+grep -qE '^call +ai-containers-rvm-call +- +ai-containers-vartmp-call +- +ai-containers-cache-call +3\.2GB +[0-9?]' <<<"$out" \
+  && pass "list --sizes shows the cache volume's size" || fail "list --sizes, cache (got: $out)"
+rm -f "$FAKE_VOLUMES_DIR/ai-containers-cache-call.size"
+# One of the cache name with no label, or another group's: not the group's.
+mkdir -p "$GR/cunl"; : > "$FAKE_VOLUMES_DIR/ai-containers-cache-cunl"
+mkdir -p "$GR/cmix"; mkcvol ai-containers-cache-cmix cother
+out="$(run_group list)"
+grep -qE "^cunl +- +none +- +none +ai-containers-cache-cunl +not the group's$" <<<"$out" \
+  && grep -qE "^cmix +- +none +- +none +ai-containers-cache-cmix +not the group's$" <<<"$out" \
+  && pass "list shows a cache-named volume that is not the group's as such" \
+  || fail "list, a cache-named volume not the group's (got: $out)"
+# A cache volume docker cannot read the labels of is unknown, and list exits 1.
+out="$(FAKE_LABEL_FAIL=ai-containers-cache-call FAKE_LABEL_FAIL_KEY=ai-containers.cache-group run_group list)"; rc=$?
+grep -qE '^call +ai-containers-rvm-call +present +ai-containers-vartmp-call +present +ai-containers-cache-call +unknown$' <<<"$out" \
+  && [[ "$rc" -ne 0 ]] \
+  && pass "list says a cache volume whose labels docker cannot read is unknown, and exits 1" \
+  || fail "list, cache labels unreadable (rc=$rc; got: $out)"
+
+# rm of a group with a cache-named volume that is not its own: named, kept,
+# with the docker volume rm only for the unlabelled one; the directory goes.
+out="$(run_group rm cunl --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$GR/cunl" ]] && tvol ai-containers-cache-cunl \
+  && grep -qF '(volume ai-containers-cache-cunl is kept: it has no cache volume label, so it is not the cache volume of group "cunl".' <<<"$out" \
+  && grep -qF 'Once nothing in it is needed: docker volume rm ai-containers-cache-cunl)' <<<"$out" \
+  && pass "rm names an unlabelled cache-named volume with its docker volume rm, and keeps it" \
+  || fail "rm, an unlabelled cache-named volume (rc=$rc; got: $out)"
+out="$(run_group rm cmix --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$GR/cmix" ]] && tvol ai-containers-cache-cmix \
+  && grep -qF '(volume ai-containers-cache-cmix is kept: its label names group "cother", so it is not the cache volume of group "cmix";' <<<"$out" \
+  && [[ "$out" != *"docker volume rm ai-containers-cache-cmix"* ]] \
+  && pass "rm names another group's cache-named volume, with no docker volume rm, and keeps it" \
+  || fail "rm, another group's cache-named volume (rc=$rc; got: $out)"
+tclean ai-containers-cache-cunl ai-containers-cache-cmix
+
+# list orphans and gc: this home's orphaned cache volume, another home's, one with
+# no owner label; never an unlabelled one, nor one labelled for a group whose
+# cache volume name it does not carry (a nested prefix's).
+mkcvol ai-containers-cache-cghost cghost
+VOL_OWNER="$THEIRS" mkcvol ai-containers-cache-ctheirs ctheirs
+VOL_OWNER="" mkcvol ai-containers-cache-cold cold
+: > "$FAKE_VOLUMES_DIR/ai-containers-cache-x"
+mkcvol ai-containers-cache-a-cache-cnest cnest
+out="$(run_group list)"
+grep -q '^Orphaned Ruby, temp and cache volume(s) with no group directory' <<<"$out" \
+  && grep -qxF '  ai-containers-cache-cghost' <<<"$out" \
+  && grep -qxF "  ai-containers-cache-ctheirs  (another home's: gc keeps it unless --all)" <<<"$out" \
+  && grep -qxF '  ai-containers-cache-cold  (no owner label: gc keeps it unless --all)' <<<"$out" \
+  && [[ "$out" != *ai-containers-cache-x* && "$out" != *a-cache-cnest* ]] \
+  && pass "list names orphaned cache volumes with their owners, never an unlabelled or a nested prefix's" \
+  || fail "list, orphaned cache volumes (got: $out)"
+out="$(run_group gc --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"Removed ai-containers-cache-cghost"* ]] && ! tvol ai-containers-cache-cghost \
+  && tvol ai-containers-cache-ctheirs && tvol ai-containers-cache-cold \
+  && tvol ai-containers-cache-x && tvol ai-containers-cache-a-cache-cnest \
+  && tvol ai-containers-cache-call && tvol ai-containers-cache-conly \
+  && pass "gc removes this home's orphaned cache volume, and keeps another's, an unlabelled one and every group's" \
+  || fail "gc, cache volumes (rc=$rc; got: $out)"
+out="$(run_group gc --all --yes)"; rc=$?
+[[ "$rc" -eq 0 ]] && ! tvol ai-containers-cache-ctheirs && ! tvol ai-containers-cache-cold \
+  && tvol ai-containers-cache-x && tvol ai-containers-cache-a-cache-cnest \
+  && pass "gc --all takes the other orphaned cache volumes, and never an unlabelled or a nested prefix's" \
+  || fail "gc --all, cache volumes (rc=$rc; got: $out)"
+mkcvol ai-containers-cache-cbusy cbusy
+printf 'ai-containers-cache-cbusy' > "$FAKE_RUNNING_VOL"
+out="$(run_group gc --yes)"; rc=$?
+[[ "$out" == *"Skipping ai-containers-cache-cbusy — a running container is using it."* ]] && tvol ai-containers-cache-cbusy \
+  && pass "gc skips an orphaned cache volume a running container uses" || fail "gc, a busy cache volume (rc=$rc; got: $out)"
+: > "$FAKE_RUNNING_VOL"
+tclean ai-containers-cache-cbusy ai-containers-cache-x ai-containers-cache-a-cache-cnest
+
+# Under nested prefixes the cache volume of prefix ai-containers-rvm-x,
+# ai-containers-rvm-x-cache-cn, is listed with this prefix's Ruby volumes; it
+# carries a cache label, so it is never a Ruby volume: not an orphan of group
+# x-cache-cn, not removed by gc, and named, not removed, by rm of that group.
+mkcvol ai-containers-rvm-x-cache-cn cn
+out="$(run_group list)"
+[[ "$out" != *ai-containers-rvm-x-cache-cn* ]] \
+  && pass "list does not take a nested prefix's cache volume for an orphaned Ruby volume" \
+  || fail "list names a nested prefix's cache volume as a Ruby orphan (got: $out)"
+out="$(run_group gc --all --yes)"; rc=$?
+[[ "$rc" -eq 0 && "$out" != *ai-containers-rvm-x-cache-cn* ]] && tvol ai-containers-rvm-x-cache-cn \
+  && pass "gc --all leaves a nested prefix's cache volume named like a Ruby volume" \
+  || fail "gc --all took a nested prefix's cache volume (rc=$rc; got: $out)"
+mkdir -p "$GR/x-cache-cn"
+out="$(run_group rm x-cache-cn --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$GR/x-cache-cn" ]] && tvol ai-containers-rvm-x-cache-cn \
+  && grep -qF '(volume ai-containers-rvm-x-cache-cn is kept: it is a cache volume, its label naming group "cn", so it is not the Ruby volume of group "x-cache-cn";' <<<"$out" \
+  && pass "rm names a cache volume of its Ruby volume name, and keeps it" \
+  || fail "rm, a cache volume named like its Ruby volume (rc=$rc; got: $out)"
+# One whose cache label docker cannot read is neither: list exits 1, rm refuses.
+out="$(FAKE_LABEL_FAIL=ai-containers-rvm-x-cache-cn FAKE_LABEL_FAIL_KEY=ai-containers.cache-group run_group list)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *"ERROR: docker could not say whether some volumes exist or whose they are"* ]] \
+  && pass "list exits 1 when docker cannot read a Ruby-named volume's cache label" \
+  || fail "list, a Ruby-named volume's cache label unreadable (rc=$rc; got: $out)"
+mkdir -p "$GR/x-cache-cn"
+out="$(FAKE_LABEL_FAIL=ai-containers-rvm-x-cache-cn FAKE_LABEL_FAIL_KEY=ai-containers.cache-group run_group rm x-cache-cn --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$GR/x-cache-cn" && "$out" == *"docker could not say whose ai-containers-rvm-x-cache-cn is"* ]] \
+  && tvol ai-containers-rvm-x-cache-cn \
+  && pass "rm refuses when docker cannot read a Ruby-named volume's cache label" \
+  || fail "rm, a Ruby-named volume's cache label unreadable (rc=$rc; got: $out)"
+rmdir "$GR/x-cache-cn"; tclean ai-containers-rvm-x-cache-cn
+
+# rm: the directory and all three volumes, each checked before anything goes.
+printf 'ai-containers-cache-call' > "$FAKE_RUNNING_VOL"
+out="$(run_group rm call --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$GR/call" && "$out" == *"a running container is still using ai-containers-cache-call. Stop it first."* ]] \
+  && tvol ai-containers-rvm-call && tvol ai-containers-vartmp-call && tvol ai-containers-cache-call \
+  && pass "rm refuses while a running container uses the cache volume, removing nothing" \
+  || fail "rm, an in-use cache volume (rc=$rc; got: $out)"
+: > "$FAKE_RUNNING_VOL"
+: > "$FAKE_VOLUMES_DIR/ai-containers-cache-call.rmfail"
+out="$(run_group rm call --yes)"; rc=$?
+[[ "$rc" -ne 0 && -d "$GR/call" && "$out" == *"could not remove volume ai-containers-cache-call"* ]] \
+  && ! tvol ai-containers-rvm-call && ! tvol ai-containers-vartmp-call && tvol ai-containers-cache-call \
+  && pass "rm tries every volume, and keeps the directory when the cache volume will not go" \
+  || fail "rm, a cache volume docker will not remove (rc=$rc; got: $out)"
+rm -f "$FAKE_VOLUMES_DIR/ai-containers-cache-call.rmfail"
+mkvol ai-containers-rvm-call call; mktmpvol ai-containers-vartmp-call call
+out="$(run_group rm call --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$GR/call" ]] && ! tvol ai-containers-rvm-call && ! tvol ai-containers-vartmp-call && ! tvol ai-containers-cache-call \
+  && grep -qF "  cache volume ai-containers-cache-call (its containers' ~/.cache)" <<<"$out" \
+  && grep -qF 'Removed volume ai-containers-cache-call' <<<"$out" \
+  && pass "rm removes the directory and all three volumes, naming the cache volume and what it holds" \
+  || fail "rm of a group with three volumes (rc=$rc; got: $out)"
+# Another home's cache volume is kept and named; the directory goes.
+VOL_OWNER="$THEIRS" mkcvol ai-containers-cache-conly conly
+out="$(run_group rm conly --yes)"; rc=$?
+[[ "$rc" -eq 0 && ! -d "$GR/conly" ]] && tvol ai-containers-cache-conly \
+  && grep -qF '(cache volume ai-containers-cache-conly is kept: another home on this docker made it' <<<"$out" \
+  && pass "rm keeps another home's cache volume, and names it" \
+  || fail "rm, another home's cache volume (rc=$rc; got: $out)"
+# A group with no directory and only a cache volume of its own: rm removes it.
+mkcvol ai-containers-cache-conly conly
+out="$(run_group rm conly --yes)"; rc=$?
+[[ "$rc" -eq 0 ]] && ! tvol ai-containers-cache-conly \
+  && pass "rm of a group with no directory removes its cache volume" \
+  || fail "rm, a cache volume with no directory (rc=$rc; got: $out)"
+out="$(run_group rm cnone --yes)"; rc=$?
+[[ "$rc" -ne 0 && "$out" == *'no such group "cnone"'*"no Ruby, temp or cache volume of its own"* ]] \
+  && pass "rm of no group at all says there is no directory and no volume of any kind" \
+  || fail "rm of no group (rc=$rc; got: $out)"
+tclean ai-containers-cache-ctheirs ai-containers-cache-cold
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$fails"

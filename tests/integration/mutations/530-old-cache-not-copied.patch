@@ -1,0 +1,16 @@
+# case: 530-old-cache-copied-into-volume
+# what: the launch that makes the cache volume never copies the old host .cache into it: the agent-reads assertions go red
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index 4a5d78e..bb852c8 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -8690,7 +8690,7 @@ run_container() {
+     if [[ -n "${GROUP_INIT_FROM:-}" ]]; then
+       cache_volume_copy_qmd "$GROUP_INIT_FROM" "$cache_vol" "$image_name" "$cache_uid" "$cache_gid"
+     fi
+-    cache_volume_copy_old "$group_root/.cache" "$cache_vol" "$image_name" "$cache_uid" "$cache_gid" "$group"
++    : # MUTATION: the old host .cache is never copied
+   fi
+   config_mount_flags+=(-v "$cache_vol:$dev_home/.cache")
+   # /var/tmp is mounted whole too, and each launch works in a folder of its own

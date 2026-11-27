@@ -257,8 +257,9 @@ grep -q 'install -d "$group_root/.rvm"' "$REPO_DIR/sandbox.sh" \
   && fail "sandbox.sh must NOT create a bind-mount .rvm dir for named groups" \
   || pass "sandbox.sh no longer creates a bind-mount .rvm dir"
 
-# A fresh named volume mounts root-owned and setup_sandbox_user's chown is -xdev,
-# so without this the sandbox user cannot even open the reconcile lock.
+# A fresh named volume mounts root-owned, and without a chown of its top folder the
+# sandbox user cannot even open the reconcile lock. setup_sandbox_user's
+# `find -xdev` chowns it too (case 630-rvm-volume-writable); this one is kept.
 grep -q 'chown_rvm_root' "$REPO_DIR/entrypoint.sh" \
   && pass "entrypoint defines/calls chown_rvm_root" \
   || fail "entrypoint defines/calls chown_rvm_root"

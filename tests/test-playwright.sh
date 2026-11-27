@@ -4,7 +4,7 @@
 # The key buys ONE thing at build time — the OS packages Playwright's browsers
 # link against — and two things at run time: the allowlist entries that let
 # `npx playwright install` fetch browser binaries through the firewall, and a
-# group-scoped ~/.cache/ms-playwright so that ~500 MB download survives the
+# group-scoped ~/.cache/ms-playwright (the group's cache volume) so that ~500 MB download survives the
 # container exiting (sandbox.sh runs `docker run --rm`).
 #
 # It cannot be a runtime install. entrypoint.sh permanently drops root via
@@ -244,7 +244,7 @@ pw_run() { ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/ap
 # ON: the cache is group-scoped, so the browser download survives `--rm`.
 pw_setup 'playwright=ON'
 pw_run
-if grep -qx -- "$GROUP_ROOT/.cache:/home/dev/.cache:rw" "$CAPTURE"; then
+if grep -qx -- "ai-containers-cache-default:/home/dev/.cache" "$CAPTURE"; then
   pass "playwright=ON: browser cache mounted from the group"
 else
   fail "playwright=ON: browser cache mounted from the group"
@@ -270,7 +270,7 @@ pw_teardown
 # assertion above, applied to the mount and the shm flag.
 pw_setup 'playwright=1.58.2'
 pw_run
-if grep -qx -- "$GROUP_ROOT/.cache:/home/dev/.cache:rw" "$CAPTURE"; then
+if grep -qx -- "ai-containers-cache-default:/home/dev/.cache" "$CAPTURE"; then
   pass "playwright=<pinned>: browser cache mounted (is_active, not is_enabled)"
 else
   fail "playwright=<pinned>: browser cache mounted (is_active, not is_enabled)"

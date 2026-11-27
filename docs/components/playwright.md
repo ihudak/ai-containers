@@ -23,9 +23,9 @@ That is also why running `npx playwright install --with-deps` inside the contain
 | | Where it comes from | Where it lives |
 |---|---|---|
 | OS libraries and fonts | image build (`install-deps`) | in the image |
-| Browser binaries (~500 MB) | `npx playwright install`, at run time | `~/.cache/ms-playwright`, **group-mounted** |
+| Browser binaries (~500 MB) | `npx playwright install`, at run time | `~/.cache/ms-playwright`, in the **group's cache volume** |
 
-Run `npx playwright install` once inside the container. `sandbox.sh` group-mounts the whole of `~/.cache`, `~/.cache/ms-playwright` included, so the download is paid once per container group rather than once per container start, and survives the container exiting (`sandbox.sh` runs `docker run --rm`).
+Run `npx playwright install` once inside the container. `sandbox.sh` mounts the group's cache volume at `~/.cache`, `~/.cache/ms-playwright` included, so the download is paid once per container group rather than once per container start, and survives the container exiting (`sandbox.sh` runs `docker run --rm`).
 
 In `restricted` mode that download needs `cdn.playwright.dev`, which `allowlist-domains.d/playwright.txt` supplies automatically whenever this key is active.
 
