@@ -76,6 +76,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   target in two slices each** (`run.sh --slice`, as for `project.sh`). On a
   slow runner they had taken up to 86 and 87 minutes against their 90-minute
   cap, and each was cancelled at it once (bugs review TST-43).
+- **`verify-on-host.sh` Phase 6 runs `project.sh` as CI does**, with
+  `--select-oracles --stop-at-kill`, in a run of its own scored on its own;
+  every other target still runs without them. Without the flags each of its
+  1,175 mutants ran all four of its test files to the end. The target is the
+  workflow's `FALSIFY_PROJECT_TARGET`; with no workflow beside `tests/`, or a
+  name that is no active target, the corpus runs in one pass as before, and a
+  `NOTE:` says why. The phase's time estimates are brought up to date: hours
+  on Linux, two days or more on macOS (feature-gaps review GAP-32).
 
 ### Fixed
 

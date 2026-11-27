@@ -241,7 +241,8 @@ jobs:
       # project.sh (feature-gaps review GAP-28) has shards of its own too, by
       # the same rule: `--target` there, one more `--exclude-target` in `rest`.
       # Its oracle is four test files, and its shards alone run them with
-      # --select-oracles and --stop-at-kill: a mutant runs only the files whose
+      # --select-oracles and --stop-at-kill (verify-on-host.sh Phase 6 too, for
+      # the target named here): a mutant runs only the files whose
       # traced coverage reaches it, and stops at the first that prints FAIL:.
       # Even so its 1,175 mutants took 1,585 worker-minutes (405 min on 4
       # workers, measured 2026-11-18), so each of the N shards runs one slice.

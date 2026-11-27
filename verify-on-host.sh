@@ -38,7 +38,7 @@
 # Phases (each independent; a later phase still runs if an earlier one fails).
 # Numbers are IDENTIFIERS, not execution order — the script actually runs them
 # 0, 5, 6, 7, 4: cheap checks first, the Docker-hungry corpus last. (6 sits
-# between 5 and 7 in execution because it needs no Docker either; it is minutes
+# between 5 and 7 in execution because it needs no Docker either; it is hours
 # rather than seconds, so it is listed after 7 in the table below, where the
 # order is by cost of reading.)
 #   0  environment sanity (daemon reachable, buildx, disk; Colima status on macOS)
@@ -48,8 +48,9 @@
 #   7  lint: bash -n over every tracked script, the bash-dialect floor check, and
 #      a shellcheck run. Mirrors hermetic-checks.yml's `lint` job — same commands, same gate.
 #   6  the falsify mutation tier: the WHOLE corpus, then the survivor-ledger
-#      ratchet scored against that same fresh run. Mirrors hermetic-checks.yml's
-#      `falsify` job. Needs no Docker; costs minutes, not seconds.
+#      ratchet scored against that same fresh run, project.sh run as CI runs
+#      it (--select-oracles --stop-at-kill). Mirrors hermetic-checks.yml's
+#      `falsify` job. Needs no Docker; costs hours (days on macOS, GAP-32).
 #   4  the runtime integration corpus — delegated in full to
 #      tests/integration/run.sh. No test logic lives here.
 #
@@ -758,7 +759,7 @@ fl_timeout="${FALSIFY_TIMEOUT:-120}"
 # slowest at forking, and that is the honest number rather than a pessimistic
 # one.
 #
-# The figure below is stated as MEASURED rather than promised, because the
+# The figure below is worked out from MEASUREMENTS rather than promised, because the
 # estimate it replaced was neither. That one said "~45 MINUTES", carried a
 # comment saying it was taken "at --jobs 6", and predated the cap that made the
 # real number 1 -- so it under-promised several-fold on every run since. A 2026-
@@ -766,12 +767,11 @@ fl_timeout="${FALSIFY_TIMEOUT:-120}"
 # hung. An estimate nothing re-measures is worse than none: it is the banner
 # that decides whether a healthy run gets killed.
 #
-# It also moves with the corpus, so the banner names the mutant count it was
-# taken over. 97 min over 519 (2026-08-28, --jobs 1); the corpus is 548 today,
-# which is the same rate and about 102 min. THIRTY-SIX PER CENT OF IT IS ONE
-# TARGET -- tests/lib-verify-repo.sh, whose 55 mutants each run a three-oracle
-# set -- so anyone shortening this phase should start there rather than with
-# --jobs.
+# It also moves with the corpus, so the banner says what it was measured over.
+# The corpus was 519 mutants on 2026-08-28; it is over 4,000 now, project.sh's
+# 1,175 among them, and CI's four-worker jobs spend about 380 minutes on it
+# (2026-11-27). At the August rate a Mac takes two days or more (feature-gaps
+# review GAP-32: whether macOS still runs the tier before a release is open).
 if [[ "$(uname -s)" == "Darwin" ]]; then
   # THE `(jobs=X, timeout=Y)` SUBSTRING IS AN ASSERTED CONTRACT, not prose.
   # tests/test-verify-exit-code.sh greps for it literally, so that an operator
@@ -782,100 +782,177 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   # `tests/lib-verify-repo.sh` not being green on the pristine tree, three
   # targets deep into a two-hour corpus run. Extra detail goes on its OWN line.
   sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — 1 worker on macOS."
-  sub "  EXPECT 1.5-2 HOURS: 97 min over 519 mutants on 2026-08-28, and it grows"
-  sub "  with the corpus. It is not hung. This tier forks constantly and macOS is"
-  sub "  slow at it. More workers barely help and cost measurement: --jobs 6 ran"
-  sub "  the same corpus 1.21x faster and turned two KILLED mutants UNPROVEN"
-  sub "  (2026-08-29, recorded beside fr_fork_cost_cap). FALSIFY_JOBS overrides;"
-  sub "  raise FALSIFY_TIMEOUT with it, because the clock is what load eats first."
+  sub "  EXPECT TWO DAYS OR MORE: a Mac ran about nine times slower than CI per"
+  sub "  mutant (2026-08-28), and CI's four-worker jobs spend about 380 minutes on"
+  sub "  the corpus (2026-11-27; feature-gaps review GAP-32). It is not hung. This"
+  sub "  tier forks constantly and macOS is slow at it. More workers barely help and"
+  sub "  cost measurement: --jobs 6 ran the same corpus 1.21x faster and turned two"
+  sub "  KILLED mutants UNPROVEN (2026-08-29, recorded beside fr_fork_cost_cap)."
+  sub "  FALSIFY_JOBS overrides; raise FALSIFY_TIMEOUT with it, because the clock is"
+  sub "  what load eats first."
 else
-  sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — a few minutes"
+  sub "running the corpus (jobs=$fl_jobs, timeout=$fl_timeout) — hours, not minutes:"
+  sub "  CI's four-worker jobs spend about 380 minutes on it (2026-11-27)."
 fi
-if bash "$TESTS_DIR/falsify/run.sh" --jobs "$fl_jobs" --timeout "$fl_timeout" > "$fl_run" 2>&1; then
-  { grep -E '^falsify: --jobs auto ' "$fl_run" || true; } \
-    | sed 's/^falsify: //' | while IFS= read -r l; do sub "$l"; done
-  # BASELINE and NOTE are in this filter because leaving them out cost a day.
-  # BASELINE is each oracle's honest cost on a quiet machine — the number that
-  # tells "this oracle is slow" apart from "this machine was loaded", and the
-  # single most informative record when a control goes over its ceiling. NOTE
-  # carries the control diagnostics, including `control-clock`, which says how
-  # late the watchdog NOTICED as distinct from how long the oracle ran. Both
-  # were being computed and then discarded: the corpus log is a mktemp that is
-  # deleted whenever the run is clean, so on a green run the only copy of them
-  # went with it (backlog F47, in a place the F47 fix did not reach). Not the
-  # failline note every kill carries (bugs review TST-29): two thousand of them
-  # would bury the rest, and a red ratchet quotes the ones it needs.
-  LC_ALL=C grep -aE '^(BASELINE|TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROL|CONTROLS|NOTE)\|' "$fl_run" | LC_ALL=C grep -av '^NOTE|failline|' | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
-  # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
-  # all, so a run with many of them is measuring less than its pass suggests —
-  # and the pass is honest only if that is said out loud rather than left in
-  # stderr notes. Measured on macOS (upstream tree, same corpus): 4 unproven on
-  # Linux against 14 and then 35 on the same commit, i.e. the number moves with
-  # machine load, not with code.
-  fl_tot="$(awk -F'|' '$1=="TOTAL" {print $3; exit}' "$fl_run")"
-  fl_unp="$(awk -F'|' '$1=="TOTAL" {print $6; exit}' "$fl_run")"
-  if [[ -n "$fl_tot" && -n "$fl_unp" && "$fl_tot" -gt 0 ]]; then
-    sub "verdicts obtained for $(( fl_tot - fl_unp ))/$fl_tot mutants ($(( (fl_tot - fl_unp) * 100 / fl_tot ))%)"
-    # ADVISORY HERE, A GATE IN CI, and the asymmetry is the same one --strict
-    # already draws: ubuntu-latest is the REFERENCE environment and passes
-    # --max-unproven-pct 10 (the same 10 as below, one concept with one number),
-    # while a developer host legitimately times out and failing it here would be
-    # the everywhere-at-once mistake backlog F27 records.
-    if (( fl_unp * 100 / fl_tot >= 10 )); then
+# THE TARGET CI RUNS WITH ORACLE SELECTION, and how it runs here. CI's project-K
+# shards run FALSIFY_PROJECT_TARGET (project.sh) with --select-oracles
+# --stop-at-kill: its oracle is four test files, and without the flags every
+# mutant runs all four to the end, several times CI's cost. Every other shard
+# runs without either flag. So this phase runs the corpus without that target
+# (--exclude-target), then the target with the flags, each ratcheted on its own
+# as CI's shards are (the user's choice, 2026-11-27).
+#
+# The name is read from the workflow, not written here: this file is shared with
+# mgd-ai-containers, whose falsify rows may differ, and run.sh refuses a name
+# that matches no active row
+# (tests/falsify/run.sh: `matches no active row`). With no workflow beside
+# tests/, no such key, or a name that is no active target, the corpus runs in
+# one pass, as it did before, and a NOTE says why.
+# tests/test-falsify-shards.sh checks by effect that Phase 6 and CI's shards run
+# every target with the same flags.
+#
+# FALSIFY_SELECT and FALSIFY_STOP_AT_KILL are cleared for every run: run.sh reads
+# them as the two flags, so one exported (a measurement left in the shell) would
+# turn selection on for targets CI runs without it.
+fl_sel=()
+fl_wf="$REPO_ROOT/.github/workflows/hermetic-checks.yml"
+if [[ ! -f "$fl_wf" ]]; then
+  sub "NOTE: no .github/workflows/hermetic-checks.yml beside tests/, so no target runs with CI's oracle selection: the corpus runs in one pass."
+else
+  # The value of the key in the falsify job only (from its `  falsify:` line to
+  # the next job's), quotes and a trailing comment taken off, as YAML reads it.
+  fl_name="$(awk -v q="'" '
+    /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { injob = ($0 ~ /^  falsify:/); next }
+    /^[^ #]/ { injob = 0 }
+    injob && /^[[:space:]]+FALSIFY_PROJECT_TARGET:/ {
+      v = $0; sub(/^[^:]*:[[:space:]]*/, "", v); sub(/[[:space:]]+#.*$/, "", v); sub(/[[:space:]]+$/, "", v)
+      if (length(v) > 1 && ((v ~ /^".*"$/) || (substr(v, 1, 1) == q && substr(v, length(v), 1) == q))) v = substr(v, 2, length(v) - 2)
+      print v; exit
+    }' "$fl_wf")"
+  # Whether it is an active target is run.sh's to say, as it says for --target:
+  # a path, or a basename (mgd-ai-containers lists its targets under base/).
+  if [[ -z "$fl_name" ]]; then
+    sub "NOTE: the falsify job sets no FALSIFY_PROJECT_TARGET, so no target runs with CI's oracle selection: the corpus runs in one pass."
+  elif ! env -u FALSIFY_SELECT -u FALSIFY_STOP_AT_KILL bash "$TESTS_DIR/falsify/run.sh" --list-targets >/dev/null 2>&1; then
+    sub "NOTE: tests/falsify/run.sh could not list the falsify targets, so no target runs with CI's oracle selection: the corpus runs in one pass."
+  elif env -u FALSIFY_SELECT -u FALSIFY_STOP_AT_KILL bash "$TESTS_DIR/falsify/run.sh" --list-targets --target "$fl_name" >/dev/null 2>&1; then
+    fl_sel=("$fl_name")
+  else
+    sub "NOTE: the falsify job's FALSIFY_PROJECT_TARGET is '$(printf '%s' "$fl_name" | LC_ALL=C tr -cd '[:graph:]')', which is no active falsify target here: the corpus runs in one pass."
+  fi
+fi
+fl_excl=()
+for fl_t in "${fl_sel[@]}"; do fl_excl+=(--exclude-target "$fl_t"); done
+
+# One run of the corpus, or of one target, and its ratchet: $1 is what the
+# summary calls it ("" for the corpus, else the target), $2 its log, the rest
+# run.sh's arguments. A run that fails sets fl_keep and fails the phase, and the
+# next run still happens: each is scored on its own.
+fl_pass() {
+  local name="$1" log="$2"; shift 2
+  local tot unp al errs
+  if env -u FALSIFY_SELECT -u FALSIFY_STOP_AT_KILL bash "$TESTS_DIR/falsify/run.sh" "$@" > "$log" 2>&1; then
+    { grep -E '^falsify: --jobs auto ' "$log" || true; } \
+      | sed 's/^falsify: //' | while IFS= read -r l; do sub "$l"; done
+    # BASELINE and NOTE are in this filter because leaving them out cost a day.
+    # BASELINE is each oracle's honest cost on a quiet machine — the number that
+    # tells "this oracle is slow" apart from "this machine was loaded", and the
+    # single most informative record when a control goes over its ceiling. NOTE
+    # carries the control diagnostics, including `control-clock`, which says how
+    # late the watchdog NOTICED as distinct from how long the oracle ran. Both
+    # were being computed and then discarded: the corpus log is a mktemp that is
+    # deleted whenever the run is clean, so on a green run the only copy of them
+    # went with it (backlog F47, in a place the F47 fix did not reach). Not the
+    # notes a run writes per mutant: the failline note every kill carries (bugs
+    # review TST-29), two thousand of which would bury the rest, and a red
+    # ratchet quotes the ones it needs; nor oracle selection's per-mutant
+    # selection-miss, selection-rerun and order-rerun. The log keeps them all.
+    LC_ALL=C grep -aE '^(BASELINE|TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROL|CONTROLS|NOTE)\|' "$log" | LC_ALL=C grep -avE '^NOTE\|(failline|selection-miss|selection-rerun|order-rerun)\|' | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
+    # HOW MUCH WAS ACTUALLY MEASURED. An UNPROVEN mutant produced no verdict at
+    # all, so a run with many of them is measuring less than its pass suggests —
+    # and the pass is honest only if that is said out loud rather than left in
+    # stderr notes. Measured on macOS (upstream tree, same corpus): 4 unproven on
+    # Linux against 14 and then 35 on the same commit, i.e. the number moves with
+    # machine load, not with code.
+    tot="$(awk -F'|' '$1=="TOTAL" {print $3; exit}' "$log")"
+    unp="$(awk -F'|' '$1=="TOTAL" {print $6; exit}' "$log")"
+    if [[ -n "$tot" && -n "$unp" && "$tot" -gt 0 ]]; then
+      sub "verdicts obtained for $(( tot - unp ))/$tot mutants ($(( (tot - unp) * 100 / tot ))%)"
+      # ADVISORY HERE, A GATE IN CI, and the asymmetry is the same one --strict
+      # already draws: ubuntu-latest is the REFERENCE environment and passes
+      # --max-unproven-pct 10 (the same 10 as below, one concept with one number),
+      # while a developer host legitimately times out and failing it here would be
+      # the everywhere-at-once mistake backlog F27 records.
+      if (( unp * 100 / tot >= 10 )); then
+        fl_keep=1
+        sub "NOTE: $unp mutant(s) timed out and were not measured. FALSIFY_TIMEOUT"
+        sub "      (now $fl_timeout) raises the per-mutant clock and each test's own floor;"
+        sub "      FALSIFY_TEST_CLOCK=0 drops the tests' own clocks; FALSIFY_JOBS (now"
+        sub "      $fl_jobs) lowers the load. Not a failure HERE: an unproven mutant is"
+        sub "      machine state, not a property of the code. CI gates on it."
+      fi
+    fi
+    # KILLS WITH NO ASSERTION ATTACHED. Reported here rather than gated, but for
+    # the OPPOSITE reason to the unproven note above: that one is advisory because
+    # a timeout is machine state, while this one is a property of the oracle's
+    # code and should read the same everywhere. Which is exactly why it is worth
+    # printing on a host — a non-zero here against CI's zero means an oracle
+    # aborts on macOS and nowhere else, and that is a finding, not load.
+    al="$(awk -F'|' '$1=="ASSERTLESS" {print $2; exit}' "$log")"
+    if [[ -n "$al" && "$al" -gt 0 ]]; then
       fl_keep=1
-      sub "NOTE: $fl_unp mutant(s) timed out and were not measured. FALSIFY_TIMEOUT"
-      sub "      (now $fl_timeout) raises the per-mutant clock and each test's own floor;"
-      sub "      FALSIFY_TEST_CLOCK=0 drops the tests' own clocks; FALSIFY_JOBS (now"
-      sub "      $fl_jobs) lowers the load. Not a failure HERE: an unproven mutant is"
-      sub "      machine state, not a property of the code. CI gates on it."
+      sub "NOTE: $al kill(s) arrived with NO assertion — the oracle exited non-zero"
+      sub "      without printing a FAIL: line. CI gates this at 0, so a non-zero here"
+      sub "      is platform-specific and worth chasing. Grep the kept run log named"
+      sub "      at the end of this phase for 'KILLED WITH NO ASSERTION ATTACHED' —"
+      sub "      it names each mutant, and nothing else records which ones they were."
+    fi
+    # The ratchet is a SEPARATE step, as in CI: run.sh's stdout is the record and
+    # its exit status is an independent signal, and a pipeline would discard one.
+    if bash "$TESTS_DIR/falsify/check-ledger.sh" \
+         --run-output "$log" --ledger "$TESTS_DIR/falsify/survivors.txt"; then
+      sub "survivor ledger${name:+ ($name pass)}: OK"
+    else
+      fl_keep=1
+      phase_fail 6 "the survivor-ledger ratchet rejected tests/falsify/survivors.txt${name:+ for the $name pass}"
+    fi
+  else
+    fl_keep=1
+    sub "${name:-corpus}${name:+ pass} exit: non-zero"
+    # THE `ERROR:` LINES FIRST, AND UNCONDITIONALLY. `falsify:` is run.sh's
+    # ROUTINE progress channel — one note per timed-out mutant, and a loaded
+    # machine produces dozens — while `ERROR:` is the reason it gave up. Matching
+    # both in one grep and taking `tail -10` therefore shows ten timeout notes and
+    # DROPS the only line that says what went wrong. Not hypothetical: a macOS
+    # A Phase 6 run in mgd-ai-containers on 2026-08-17 reported "the corpus did
+    # not complete" above exactly ten TIMEOUT notes, with the cause nowhere on
+    # screen — the same shape as the `head -1` truncation this project has now
+    # fixed three times. The two channels are read separately: every ERROR line,
+    # then a tail of the notes for context.
+    errs="$(grep -E '^ERROR:' "$log" || true)"
+    if [[ -n "$errs" ]]; then
+      while IFS= read -r l; do sub "$l"; done <<< "$errs"
+    else
+      sub "(run.sh printed no ERROR: line — the notes below are all it said)"
+    fi
+    grep -E '^falsify:' "$log" | tail -6 | while IFS= read -r l; do sub "$l"; done
+    if [[ -z "$name" ]]; then
+      phase_fail 6 "the falsify corpus did not complete — the ledger was not scored"
+    else
+      phase_fail 6 "the falsify $name pass did not complete — its ledger entries were not scored"
     fi
   fi
-  # KILLS WITH NO ASSERTION ATTACHED. Reported here rather than gated, but for
-  # the OPPOSITE reason to the unproven note above: that one is advisory because
-  # a timeout is machine state, while this one is a property of the oracle's
-  # code and should read the same everywhere. Which is exactly why it is worth
-  # printing on a host — a non-zero here against CI's zero means an oracle
-  # aborts on macOS and nowhere else, and that is a finding, not load.
-  fl_al="$(awk -F'|' '$1=="ASSERTLESS" {print $2; exit}' "$fl_run")"
-  if [[ -n "$fl_al" && "$fl_al" -gt 0 ]]; then
-    fl_keep=1
-    sub "NOTE: $fl_al kill(s) arrived with NO assertion — the oracle exited non-zero"
-    sub "      without printing a FAIL: line. CI gates this at 0, so a non-zero here"
-    sub "      is platform-specific and worth chasing. Grep the kept run log named"
-    sub "      at the end of this phase for 'KILLED WITH NO ASSERTION ATTACHED' —"
-    sub "      it names each mutant, and nothing else records which ones they were."
-  fi
-  # The ratchet is a SEPARATE step, as in CI: run.sh's stdout is the record and
-  # its exit status is an independent signal, and a pipeline would discard one.
-  if bash "$TESTS_DIR/falsify/check-ledger.sh" \
-       --run-output "$fl_run" --ledger "$TESTS_DIR/falsify/survivors.txt"; then
-    sub "survivor ledger: OK"
-  else
-    fl_keep=1
-    phase_fail 6 "the survivor-ledger ratchet rejected tests/falsify/survivors.txt"
-  fi
-else
-  fl_keep=1
-  sub "corpus exit: non-zero"
-  # THE `ERROR:` LINES FIRST, AND UNCONDITIONALLY. `falsify:` is run.sh's
-  # ROUTINE progress channel — one note per timed-out mutant, and a loaded
-  # machine produces dozens — while `ERROR:` is the reason it gave up. Matching
-  # both in one grep and taking `tail -10` therefore shows ten timeout notes and
-  # DROPS the only line that says what went wrong. Not hypothetical: a macOS
-  # A Phase 6 run in mgd-ai-containers on 2026-08-17 reported "the corpus did
-  # not complete" above exactly ten TIMEOUT notes, with the cause nowhere on
-  # screen — the same shape as the `head -1` truncation this project has now
-  # fixed three times. The two channels are read separately: every ERROR line,
-  # then a tail of the notes for context.
-  fl_errs="$(grep -E '^ERROR:' "$fl_run" || true)"
-  if [[ -n "$fl_errs" ]]; then
-    while IFS= read -r l; do sub "$l"; done <<< "$fl_errs"
-  else
-    sub "(run.sh printed no ERROR: line — the notes below are all it said)"
-  fi
-  grep -E '^falsify:' "$fl_run" | tail -6 | while IFS= read -r l; do sub "$l"; done
-  phase_fail 6 "the falsify corpus did not complete — the ledger was not scored"
+}
+if [[ -n "$fl_run" ]]; then
+  fl_pass "" "$fl_run" "${fl_excl[@]}" --jobs "$fl_jobs" --timeout "$fl_timeout"
 fi
+declare -A fl_sel_log=()
+for fl_t in "${fl_sel[@]}"; do
+  sub "running $fl_t with oracle selection, as CI does (jobs=$fl_jobs, timeout=$fl_timeout): --select-oracles --stop-at-kill"
+  fl_l="$(mktemp)" || { phase_fail 6 "mktemp failed — the $fl_t pass has nowhere to write its run"; continue; }
+  fl_sel_log["$fl_t"]="$fl_l"
+  fl_pass "$fl_t" "$fl_l" --target "$fl_t" --select-oracles --stop-at-kill --jobs "$fl_jobs" --timeout "$fl_timeout"
+done
 # THE DEEP PASS (feature-gaps review GAP-4): the targets tests/falsify/deep.conf
 # names, each under only the extra operators it earned there (stmt-delete),
 # scored against the same ledger. CI runs it as the falsify job's `deep` shard;
@@ -884,7 +961,7 @@ fi
 fl_deep="$(mktemp)" || phase_fail 6 "mktemp failed — the deep pass has nowhere to write its run"
 if [[ -n "$fl_deep" ]]; then
   sub "running the deep pass (run.sh --deep, jobs=$fl_jobs, timeout=$fl_timeout)"
-  if bash "$TESTS_DIR/falsify/run.sh" --deep --jobs "$fl_jobs" --timeout "$fl_timeout" > "$fl_deep" 2>&1; then
+  if env -u FALSIFY_SELECT -u FALSIFY_STOP_AT_KILL bash "$TESTS_DIR/falsify/run.sh" --deep --jobs "$fl_jobs" --timeout "$fl_timeout" > "$fl_deep" 2>&1; then
     grep -E '^(TARGET|TOTAL|ASSERTLESS|SKIPPED|UNATTEMPTED|CONTROLS)\|' "$fl_deep" | sed 's/^/  /' | while IFS= read -r l; do sub "$l"; done
     if bash "$TESTS_DIR/falsify/check-ledger.sh" \
          --run-output "$fl_deep" --ledger "$TESTS_DIR/falsify/survivors.txt"; then
@@ -916,13 +993,16 @@ fi
 # would fill $TMPDIR with a full corpus log per run. tests/test-verify-exit-code.sh
 # asserts both directions.
 if (( fl_keep )); then
-  sub "corpus run log kept at: $fl_run"
+  [[ -n "$fl_run" ]] && sub "corpus run log kept at: $fl_run"
+  for fl_t in "${fl_sel[@]}"; do
+    [[ -n "${fl_sel_log[$fl_t]:-}" ]] && sub "$fl_t pass log kept at: ${fl_sel_log[$fl_t]}"
+  done
   [[ -n "${fl_deep:-}" ]] && sub "deep pass log kept at: $fl_deep"
   sub "  One MUTANT|<verdict>|<identity>|… record per mutant, plus every falsify:"
   sub "  note — the detail the summaries above are counts of. Nothing else will"
   sub "  remove it."
 else
-  rm -f "$fl_run" ${fl_deep:+"$fl_deep"}
+  rm -f ${fl_run:+"$fl_run"} "${fl_sel_log[@]}" ${fl_deep:+"$fl_deep"}
 fi
 fi
 

@@ -229,5 +229,122 @@ caught restdrop 's/ rest-2,//' "a matrix missing a slice of rest is caught"
 caught restcount 's/FALSIFY_REST_SLICES: [0-9]*/FALSIFY_REST_SLICES: 3/' "a rest slice count the matrix does not match is caught"
 caught restwhole 's/ --slice "${SHARD#rest-}\/$FALSIFY_REST_SLICES"//' "a rest arm that does not slice is caught"
 
+# ── Phase 6 runs each target with the flags CI runs it with ──────────────────
+# verify-on-host.sh's Phase 6 runs the corpus on a developer host, and runs each
+# target as CI's falsify job does: CI's project.sh shards add --select-oracles
+# --stop-at-kill, every other shard neither (the user's choice, 2026-11-27).
+# Both maps are taken by effect, `<target>|<flags>` per line. CI's: the step of
+# every shard but deep, run against a run.sh that lists, through the real
+# runner, what the arguments it was handed select, with which of the two flags
+# it was handed. Phase 6's: PHASES=6 run in a stub repo holding the workflow,
+# against the same run.sh, for every pass but the deep one. Each map must name
+# every target of the corpus once, and the two must be equal.
+ENGINE_DIR="$REPO_DIR"
+# mgd-ai-containers keeps the engine, verify-on-host.sh among it, in base/.
+[[ -f "$ENGINE_DIR/verify-on-host.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
+VERIFY="$ENGINE_DIR/verify-on-host.sh"
+LAYER_CHECKS_CONF="$REPO_DIR/tests/layer-checks.conf"
+# shellcheck source=tests/lib-layer-checks.sh
+source "$REPO_DIR/tests/lib-layer-checks.sh"
+# shellcheck source=tests/lib-verify-repo.sh
+source "$REPO_DIR/tests/lib-verify-repo.sh"
+cat > "$TMP/flag-run.sh" <<'EOF_FLAGRUN'
+#!/usr/bin/env bash
+# A run of the falsify tier, as a list: `--list-targets` itself goes to the real
+# runner; any other run appends `<target>|<flags>` to $FLAG_OUT for each target
+# its arguments select (the deep pass, which is not a share of the corpus, adds
+# nothing), then prints the records a clean run ends with.
+for a in "$@"; do [[ "$a" == --list-targets ]] && exec bash "$FLAG_REAL" "$@"; done
+f="" deep=0
+for a in "$@"; do
+  case "$a" in
+    --select-oracles) f="$f select" ;;
+    --stop-at-kill) f="$f stop" ;;
+    --deep) deep=1 ;;
+  esac
+done
+if (( ! deep )); then
+  bash "$FLAG_REAL" --list-targets "$@" 2>/dev/null | while IFS=' ' read -r t _; do
+    printf '%s|%s\n' "$t" "${f# }" >> "$FLAG_OUT"
+  done
+fi
+printf 'TARGET|tests/portability.sh|test-portability.sh|1|1|0|0|0|1\nTOTAL|1|1|1|0|0|0|0|1\nASSERTLESS|0|1\n'
+EOF_FLAGRUN
+# The map of the shards of workflow $1, on stdout.
+ci_flag_map() {  # $1=workflow
+  local wf="$1" sh body d envs=() out
+  mapfile -t envs < <(split_env "$wf")
+  body="$(step_run "$wf" "$STEP")"
+  d="$TMP/cimap"; rm -rf "$d"; mkdir -p "$d/tests/falsify" "$d/rt"
+  cp "$TMP/flag-run.sh" "$d/tests/falsify/run.sh"
+  printf '%s\n' "$body" > "$d/step.sh"
+  out="$TMP/cimap.out"; : > "$out"
+  while IFS= read -r sh; do
+    [[ "$sh" == deep ]] && continue
+    ( cd "$d" && env RUNNER_TEMP="$d/rt" SHARD="$sh" FLAG_REAL="$REAL_RUN" FLAG_OUT="$out" "${envs[@]}" \
+        bash --noprofile --norc -eo pipefail step.sh ) >/dev/null 2>&1
+  done < <(matrix_shards "$wf")
+  sort -u "$out"
+}
+# The map of Phase 6 of verify-on-host.sh $2, run with workflow $1, on stdout;
+# rc 1 when the phase failed.
+p6_flag_map() {  # $1=workflow  $2=verify-on-host.sh
+  local r out rc
+  r="$(mk_repo 0)"
+  cp "$2" "$r/verify-on-host.sh"
+  mkdir -p "$r/.github/workflows" && cp "$1" "$r/.github/workflows/hermetic-checks.yml"
+  cp "$TMP/flag-run.sh" "$r/tests/falsify/run.sh"
+  out="$TMP/p6map.out"; : > "$out"
+  rc="$(run_verify "$r" 6 FLAG_REAL="$REAL_RUN" FLAG_OUT="$out")"
+  sort "$out"
+  [[ "$rc" == 0 ]]
+}
+# rc 0 when Phase 6 of verify-on-host.sh $2 runs every target of the corpus once,
+# each with the flags the shards of workflow $1 run it with.
+flags_agree() {  # $1=workflow  $2=verify-on-host.sh
+  local ci p6 corpus
+  corpus="$(bash "$REAL_RUN" --list-targets 2>/dev/null | sort)"
+  [[ -n "$corpus" ]] || { echo "run.sh --list-targets listed no target"; return 1; }
+  ci="$(ci_flag_map "$1")"
+  if [[ "$(cut -d'|' -f1 <<< "$ci" | sort)" != "$corpus" ]]; then
+    echo "CI's map does not name every target once: twice: $(cut -d'|' -f1 <<< "$ci" | sort | uniq -d | tr '\n' ' ') none: $(comm -13 <(cut -d'|' -f1 <<< "$ci" | sort -u) <(printf '%s\n' "$corpus") | tr '\n' ' ')"; return 1
+  fi
+  if ! p6="$(p6_flag_map "$1" "$2")"; then
+    echo "Phase 6 failed: $(grep -E 'FAIL|ERROR' "$TMP/out.log" | head -3 | tr '\n' ' ')"; return 1
+  fi
+  if [[ "$(cut -d'|' -f1 <<< "$p6" | sort)" != "$corpus" ]]; then
+    echo "Phase 6 does not run every target once: twice: $(cut -d'|' -f1 <<< "$p6" | sort | uniq -d | tr '\n' ' ') none: $(comm -13 <(cut -d'|' -f1 <<< "$p6" | sort -u) <(printf '%s\n' "$corpus") | tr '\n' ' ')"; return 1
+  fi
+  if [[ "$p6" != "$ci" ]]; then
+    echo "the flags differ: CI $(comm -23 <(printf '%s\n' "$ci") <(printf '%s\n' "$p6") | tr '\n' ' ')/ Phase 6 $(comm -13 <(printf '%s\n' "$ci") <(printf '%s\n' "$p6") | tr '\n' ' ')"; return 1
+  fi
+  echo "$(grep -c . <<< "$p6") targets, $(grep -c '|select stop$' <<< "$p6") with oracle selection"
+}
+if msg="$(flags_agree "$WF" "$VERIFY")"; then
+  pass "Phase 6 runs every target once, with the flags CI's shards run it with ($msg)"
+else
+  fail "Phase 6 runs every target once, with the flags CI's shards run it with: $msg"
+fi
+# Seen failing, each: a workflow whose version shard gains the flags; a Phase 6
+# whose project.sh pass drops them; a Phase 6 whose first pass does not leave
+# project.sh out, which then runs twice.
+p6_caught() {  # $1=label  $2=sed program  $3=file to damage (WF or VERIFY)  $4=what must be caught
+  local label="$1" prog="$2" which="$3" what="$4" src dmg out
+  src="$WF"; [[ "$which" == VERIFY ]] && src="$VERIFY"
+  dmg="$TMP/$label.dmg"
+  sed "$prog" "$src" > "$dmg"
+  if cmp -s "$src" "$dmg"; then
+    fail "$what: the damage no longer applies ($prog)"; return
+  fi
+  if [[ "$which" == VERIFY ]]; then out="$(flags_agree "$WF" "$dmg")"; else out="$(flags_agree "$dmg" "$VERIFY")"; fi
+  if [[ $? -eq 0 ]]; then fail "$what: $out"; else pass "$what"; fi
+}
+p6_caught ciflags 's/version) select=(--target "$FALSIFY_VERSION_TARGET") ;;/version) select=(--target "$FALSIFY_VERSION_TARGET" --select-oracles --stop-at-kill) ;;/' WF \
+  "a CI shard that gains the flags Phase 6 does not give its target is caught"
+p6_caught p6noflags 's/--target "$fl_t" --select-oracles --stop-at-kill/--target "$fl_t"/' VERIFY \
+  "a Phase 6 that runs project.sh without CI's flags is caught"
+p6_caught p6twice 's/fl_excl+=(--exclude-target "$fl_t")/:/' VERIFY \
+  "a Phase 6 whose first pass does not leave project.sh out is caught"
+
 printf '\n%d failure(s)\n' "$fails"
 exit "$(( fails > 0 ))"
