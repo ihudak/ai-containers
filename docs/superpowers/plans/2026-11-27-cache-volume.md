@@ -21,7 +21,7 @@ Do not edit tracked files while `tests/run-all.sh` runs.
 ## Task 2 — the launch (`sandbox.sh`, `sandbox-common.sh`)
 
 - Mount `-v <cache volume>:<home>/.cache`; stop making and binding
-  `$group/.cache`; pass `AI_CACHE_ON_VOLUME=1` with the launcher's other `-e`s.
+  `$group/.cache`.
 - The one-time copy (`sandbox-common.sh`, beside the rvm migration): only when
   the ensure made the volume and `$group/.cache` is a non-empty directory; root
   chowns the top and makes the staging folder; `setpriv` as the sandbox uid runs
@@ -41,13 +41,11 @@ Do not edit tracked files while `tests/run-all.sh` runs.
 - Tests: `tests/test-cache-volume.sh`; `tests/test-agent-tmp.sh`'s bootstrap
   check still green.
 
-## Task 4 — the start-up (`entrypoint.sh`)
+## Task 4 — the start-up (`entrypoint.sh`): nothing
 
-- `chown_cache_root()`: with `AI_CACHE_ON_VOLUME=1` only, chown the mount point
-  `/home/<user>/.cache` (not a link) to the sandbox uid and gid; called beside
-  `chown_rvm_root` in all three modes, before the reconciles.
-- Add it to `entrypoint.sh`'s row in `tests/falsify/targets.conf` if its oracle
-  extracts it; tests in `tests/test-entrypoint-wiring.sh`.
+Built (`chown_cache_root()`, gated on a launcher variable) and dropped: the
+start-up's `find "$home_dir" -xdev -exec chown` already gives the volume's mount
+point to the sandbox user (measured on Colima).
 
 ## Task 5 — `group.sh`
 

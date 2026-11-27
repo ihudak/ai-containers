@@ -206,8 +206,6 @@ has_pair "$RUNS/1" -v "$CV:/home/dev/.cache" \
   && pass "  ~/.cache is the group's cache volume" || fail "  ~/.cache is not the cache volume ($(grep -F .cache "$RUNS/1" | tr '\n' ' '))"
 grep -qF "$G/.cache" "$RUNS/1" && fail "  the group's host .cache is bound" || pass "  the group's host .cache is not bound"
 [[ -e "$G/.cache" ]] && fail "  the launch made the group's host .cache" || pass "  the launch makes no host .cache"
-has_pair "$RUNS/1" -e AI_CACHE_ON_VOLUME=1 \
-  && pass "  AI_CACHE_ON_VOLUME=1 is passed" || fail "  AI_CACHE_ON_VOLUME=1 is not passed"
 check "  the volume carries the group label" "default" "$(grep '^ai-containers.cache-group=' "$LVOLS/$CV/labels" | cut -d= -f2-)"
 grep -qF "$G/.local/state:/home/dev/.local/state" "$RUNS/1" \
   && pass "  ~/.local/state is still the group's host folder" || fail "  ~/.local/state is no longer bound"

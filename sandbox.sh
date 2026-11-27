@@ -9056,10 +9056,6 @@ run_container() {
     # TMPDIR from this for the sandbox user's shells only.
     -e AI_AGENT_TMPDIR="/var/tmp/$agent_tmp_slot"
     -e AI_AGENT_TMP_RUNNING="$agent_tmp_running"
-    # ~/.cache is the group's volume (above), whose top folder the start-up gives
-    # the agent (entrypoint.sh: `chown_cache_root()`). An older launcher binds a
-    # host folder there, which the start-up must not chown.
-    -e AI_CACHE_ON_VOLUME=1
     -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")"
     -e AI_SERVICES="$(services_csv)"
     -e REPOS_PATH="$repos_path_ctr"

@@ -57,11 +57,13 @@ pruning:
 - **Mounted** `-v <volume>:<home>/.cache`. The launcher no longer makes
   `$group/.cache` and no longer binds it. `~/.local/state` stays a bind.
 - **Ownership.** A fresh volume at `~/.cache` comes up `root:root 0755`
-  (measured on Colima: the image has no such path to copy from). The
-  entrypoint, as root, chowns that mount point, and nothing in it, to the
-  sandbox user, as `chown_rvm_root()` does for `~/.rvm`, only when the launcher
-  passed a new variable that says `~/.cache` is the volume: under an older
-  launcher it is a host bind, which a chown must not touch.
+  (measured on Colima: the image has no such path to copy from). Nothing new is
+  needed for it: the start-up's recursive `find "$home_dir" -xdev -exec chown`
+  (`setup_sandbox_user`) already gives every mount point under the home to the
+  sandbox user without descending into it (measured on Colima for a volume at
+  `/home/x/.cache`; case 630's mutation relies on the same for `~/.rvm`). A
+  `chown_cache_root` like `chown_rvm_root` was built first and dropped as
+  redundant.
 
 What changes for the user:
 
@@ -181,7 +183,7 @@ Hermetic:
 
 - A new `tests/test-cache-volume.sh`, with the fake docker: the volume created
   with both labels and mounted at `~/.cache`; no host `.cache` made or bound;
-  the new variable passed; refusals for a volume that cannot be made, an
+  refusals for a volume that cannot be made, an
   unlabelled one, one of another group, one docker cannot judge; the copy run
   only when this launch made the volume and the old folder is a non-empty
   directory (a link followed), never otherwise; its command (uid, flags,
@@ -191,8 +193,6 @@ Hermetic:
 - `tests/test-agent-tmp.sh`, `tests/test-playwright.sh`,
   `tests/test-launcher-dir-ro.sh` (T93), `tests/test-tool-config-mounts.sh`:
   updated from the bind to the volume.
-- `tests/test-entrypoint-wiring.sh`: the chown runs only with the launcher's
-  variable, only on the top folder.
 - `tests/test-group-lifecycle.sh`: the cache volume in `list`, `rm`, `gc`, with
   the owner rules and the in-use refusal; `tests/test-rvm-volume.sh` and
   `tests/test-vartmp-volume.sh`: the three kinds never take each other's
