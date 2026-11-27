@@ -252,7 +252,24 @@ pair_in() { awk -v f="$1" -v v="$2" 'p == f && $0 == v { ok = 1 } { p = $0 } END
 check "  which binds the old folder read-only at /src through --mount" \
   pair_in --mount "type=bind,\"source=$GROUP_ROOT/.var-tmp\",\"destination=/src\",readonly" "$TMP/copy-argv.txt"
 check "  and the group's volume at /dst" pair_in -v "$VOL:/dst" "$TMP/copy-argv.txt"
-check "  and copies with cp -a /src/. /dst/" bash -c '[[ "$(tail -n 3 "$1" | tr "\n" " ")" == "-a /src/. /dst/ " ]]' _ "$TMP/copy-argv.txt"
+# As the agent: run as root the copy makes everything root's (on Colima `cp -a`
+# kept the 0:0 root reads a host bind's files as), and a 0700 folder of the old
+# one is then closed to the agent (case 525). Each entry is copied INTO /dst,
+# never /src/. onto it: that carried the old folder's mode onto the volume's top.
+check "  as the sandbox user" pair_in --user "$(id -u):$(id -g)" "$TMP/copy-argv.txt"
+check "  each entry of the old folder copied into /dst with cp -dR, no cp -a" \
+  bash -c '[[ "$(tail -n 13 "$1" | tr "\n" " ")" == "/src -mindepth 1 -maxdepth 1 -exec cp -dR --preserve=mode,timestamps,links -t /dst {} + " ]]' _ "$TMP/copy-argv.txt"
+teardown
+
+# The copy runs as the identity the launch gives the agent, an override included.
+setup
+mkdir -p "$GROUP_ROOT/.var-tmp"
+SANDBOX_UID=4242 SANDBOX_GID=4343 run_sandbox
+grep -F 'docker run ' "$ERR" > "$TMP/err-run.txt"
+line="$(sed 's/^ *//' "$TMP/err-run.txt")"
+( eval "set -- $line"; printf '%s\n' "$@" ) > "$TMP/copy-argv.txt"
+check "the copy command runs as SANDBOX_UID:SANDBOX_GID when they are set (rc=$RC)" \
+  pair_in --user 4242:4343 "$TMP/copy-argv.txt"
 teardown
 
 # ── agent-tmp.sh, run directly ──

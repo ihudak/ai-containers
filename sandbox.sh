@@ -8717,10 +8717,17 @@ run_container() {
     # the group directory, which this launch binds already, so docker can be
     # handed its name intact.
     _bind_mount_arg _vt_f _vt_v "$_old_vt" /src ro
+    # The copy runs as the agent's uid, so what it makes is the agent's: as root
+    # it was root's, and on Colima, where root reads a bind's files as 0:0,
+    # `cp -a` kept that, so an old 0700 folder was closed to the agent (case
+    # 525). Each entry goes INTO /dst, which the start-up keeps root's 1777
+    # (entrypoint.sh: `setup_agent_tmp()`), never /src/. onto it, which would
+    # carry the old folder's mode and owner onto the volume's top folder.
     printf 'NOTE: %s is no longer mounted: /var/tmp is now the Docker volume %s.\n' "$(_q "$_old_vt")" "$vartmp_vol" >&2
     printf '      To copy what it holds into the volume:\n' >&2
-    printf '        docker run --rm --pull=never %s--entrypoint cp %s %s -v %s:/dst %s -a /src/. /dst/\n' \
-      "${selinux_opt:+$selinux_opt }" "$_vt_f" "$(_q "$_vt_v")" "$vartmp_vol" "$(_q "$image_name")" >&2
+    printf '        docker run --rm --pull=never %s--user %s --entrypoint find %s %s -v %s:/dst %s /src -mindepth 1 -maxdepth 1 -exec cp -dR --preserve=mode,timestamps,links -t /dst {} +\n' \
+      "${selinux_opt:+$selinux_opt }" "${SANDBOX_UID:-$(id -u)}:${SANDBOX_GID:-$(id -g)}" \
+      "$_vt_f" "$(_q "$_vt_v")" "$vartmp_vol" "$(_q "$image_name")" >&2
     printf '      Then, once nothing in it is needed and no container of group "%s" runs:\n' "$group" >&2
     printf '        rm -rf %s\n' "$(_q "$_old_vt")" >&2
   fi
