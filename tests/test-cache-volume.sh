@@ -224,10 +224,10 @@ grep -qxF -- --pull=never "$C" && grep -qxF -- --rm "$C" \
   && pass "  the copy runs --rm --pull=never" || fail "  the copy lacks --rm or --pull=never"
 has_pair "$C" --network none && pass "  the copy has no network" || fail "  the copy has a network"
 has_pair "$C" --entrypoint bash && pass "  the copy runs bash, not the entrypoint" || fail "  the copy runs the entrypoint"
-grep -qF 'setpriv --reuid="$u" --regid="$g" --clear-groups -- cp -dR --preserve=mode,timestamps,links /src/. "$s/"' "$C" \
+grep -qF 'setpriv --reuid="$u" --regid="$g" --clear-groups -- cp -dR --preserve=mode,timestamps,links "/src/$e" "$s/"' "$C" \
   && pass "  the copy runs cp as the agent, ownership given, not preserved" || fail "  the copy's cp is not the agent's"
-check "  its last arguments: _ uid gid and a pid" "_ $(id -u) $(id -g)" "$(tail -4 "$C" | head -3 | tr '\n' ' ' | sed 's/ $//')"
-[[ "$(tail -1 "$C")" =~ ^[0-9]+$ ]] && pass "  the last is a pid" || fail "  the last is not a pid ($(tail -1 "$C"))"
+check "  its last arguments: _ uid gid, a pid, and . for all of /src" "_ $(id -u) $(id -g)|." "$(tail -5 "$C" | head -3 | tr '\n' ' ' | sed 's/ $//')|$(tail -1 "$C")"
+[[ "$(tail -2 "$C" | head -1)" =~ ^[0-9]+$ ]] && pass "  the fourth is a pid" || fail "  the fourth is not a pid ($(tail -2 "$C" | head -1))"
 has_pair "$RUNS/2" -v "$CV:/home/dev/.cache" && pass "  then the launch mounts the volume" || fail "  the launch after the copy"
 grep -qF "Copying this group's ~/.cache into the docker volume $CV" "$ERR" \
   && grep -qF 'Copied.' "$ERR" && grep -qxF "  rm -rf $G/.cache" "$ERR" \
@@ -241,7 +241,7 @@ grep -qF Copying "$ERR" && fail "  it says it copies" || pass "  nothing said ab
 # The identity the agent runs as is the one the files are given.
 rm -rf "$LVOLS"
 SANDBOX_UID=4242 SANDBOX_GID=4343 lrun
-check "SANDBOX_UID/GID: the copy gives the files that identity" "_ 4242 4343" "$(tail -4 "$RUNS/1" | head -3 | tr '\n' ' ' | sed 's/ $//')"
+check "SANDBOX_UID/GID: the copy gives the files that identity" "_ 4242 4343" "$(tail -5 "$RUNS/1" | head -3 | tr '\n' ' ' | sed 's/ $//')"
 
 # ── What is not copied ──────────────────────────────────────────────────────────
 rm -rf "$LVOLS" "$G"; mkdir -p "$G/.cache"
@@ -267,6 +267,55 @@ grep -qF "WARNING: copying $G/.cache into the docker volume $CV failed" "$ERR" \
   || fail "  the failed copy's WARNING ($(tr '\n' ' ' < "$ERR"))"
 grep -qF 'Copied.' "$ERR" && fail "  it says Copied" || pass "  it does not say Copied"
 check "  the old folder is kept" "i" "$(cat "$G/.cache/qmd/index")"
+
+# ── A group made from another gets its qmd index out of that group's volume ────
+# lvol <name> [--label k=v]...: a volume of the launch's fake docker.
+lvol() { local n="$1"; shift; bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$LVOLS" volume create "$@" "$n" >/dev/null; }
+rm -rf "$LVOLS" "$G"
+mkdir -p "$HOME/.ai-containers/src"
+lvol ai-containers-cache-src --label ai-containers.cache-group=src
+AI_CONTAINER_GROUP=newg AI_CONTAINER_GROUP_INIT=from:src lrun
+check "from:src with a cache volume: the qmd copy, then the launch" "0|2" "$RC|$(nruns)"
+Q="$RUNS/1"
+has_pair "$Q" -v "ai-containers-cache-src:/src:ro" && has_pair "$Q" -v "ai-containers-cache-newg:/dst" \
+  && pass "  from src's volume, read-only, into the new group's" || fail "  the qmd copy's volumes ($(grep -F ':/' "$Q" | tr '\n' ' '))"
+check "  only its qmd" "qmd" "$(tail -1 "$Q")"
+has_pair "$Q" --network none && pass "  with no network" || fail "  the qmd copy has a network"
+grep -qF 'Copying group "src"'"'"'s qmd index into the docker volume ai-containers-cache-newg' "$ERR" \
+  && pass "  said so" || fail "  not said ($(tr '\n' ' ' < "$ERR"))"
+# Its host .cache/qmd, which the group copy carries too, follows: the volume's first.
+rm -rf "$LVOLS" "$HOME/.ai-containers/newg"
+mkdir -p "$HOME/.ai-containers/src/.cache/qmd"; printf old > "$HOME/.ai-containers/src/.cache/qmd/index"
+lvol ai-containers-cache-src --label ai-containers.cache-group=src
+AI_CONTAINER_GROUP=newg AI_CONTAINER_GROUP_INIT=from:src lrun
+check "from:src with a volume and an old host qmd: the volume's qmd first, then the old folder, then the launch" \
+  "0|3|qmd|." "$RC|$(nruns)|$(tail -1 "$RUNS/1")|$(tail -1 "$RUNS/2")"
+has_pair "$RUNS/2" -v "$HOME/.ai-containers/newg/.cache:/src:ro" \
+  && pass "  the second from the new group's old folder" || fail "  the second copy ($(grep -F /src "$RUNS/2" | tr '\n' ' '))"
+# A source with no cache volume: its host folder, as before, carried by the old-folder copy.
+rm -rf "$LVOLS" "$HOME/.ai-containers/newg"
+AI_CONTAINER_GROUP=newg AI_CONTAINER_GROUP_INIT=from:src lrun
+check "from:src with no cache volume: no qmd copy, the old folder's copy" "0|2|." "$RC|$(nruns)|$(tail -1 "$RUNS/1")"
+check "  which the group copy filled from src's host qmd" "old" "$(cat "$HOME/.ai-containers/newg/.cache/qmd/index" 2>/dev/null)"
+# A volume of src's cache name that is not src's by its label is not read.
+rm -rf "$LVOLS" "$HOME/.ai-containers/newg" "$HOME/.ai-containers/src/.cache"
+lvol ai-containers-cache-src
+AI_CONTAINER_GROUP=newg AI_CONTAINER_GROUP_INIT=from:src lrun
+check "from:src whose cache-named volume has no label: nothing copied" "0|1" "$RC|$(nruns)"
+# Only the launch that makes the new group copies: the group there already, no qmd copy.
+rm -rf "$LVOLS"
+lvol ai-containers-cache-src --label ai-containers.cache-group=src
+AI_CONTAINER_GROUP=newg AI_CONTAINER_GROUP_INIT=from:src lrun
+check "a group that already exists is not made from src again: no qmd copy" "0|1" "$RC|$(nruns)"
+# A qmd copy that fails warns, and the launch goes on.
+rm -rf "$LVOLS" "$HOME/.ai-containers/newg"
+lvol ai-containers-cache-src --label ai-containers.cache-group=src
+AI_CONTAINER_GROUP=newg AI_CONTAINER_GROUP_INIT=from:src FAKE_COPY_RC=1 FAKE_COPY_ERR='no space left' lrun
+check "a failed qmd copy: the launch goes on" "0|2" "$RC|$(nruns)"
+grep -qF 'WARNING: copying group "src"'"'"'s qmd index from ai-containers-cache-src failed' "$ERR" \
+  && grep -qF 'It said: no space left' "$ERR" \
+  && pass "  a WARNING with what the copy said" || fail "  the qmd copy's WARNING ($(tr '\n' ' ' < "$ERR"))"
+rm -rf "$HOME/.ai-containers/newg" "$HOME/.ai-containers/src"
 
 # ── A volume of the name that is not the group's refuses the launch ─────────────
 rm -rf "$LVOLS" "$G"

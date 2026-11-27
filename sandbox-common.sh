@@ -1136,9 +1136,11 @@ cache_volume_ensure() {
   _group_volume_ensure cache "$1" "$2" "$3"
 }
 
-# The program the one-time copy runs in the project image (cache_volume_copy_old),
-# as root, with the old folder at /src (read-only) and the new volume at /dst;
-# $1 $2 the sandbox uid and gid, $3 the launcher's pid. Root gives the volume's top
+# The program the copies into a new cache volume run in the project image
+# (cache_volume_copy_old, cache_volume_copy_qmd), as root, with what to copy from
+# at /src (read-only) and the new volume at /dst; $1 $2 the sandbox uid and gid,
+# $3 the launcher's pid, $4 what to copy: "." for all of /src, or one entry of it
+# (nothing to do when it is not there). Root gives the volume's top
 # folder to the agent and makes a staging folder of the agent's; the copy itself
 # runs AS THE AGENT, so every file it makes is the agent's, ownership given rather
 # than preserved: root reads a host bind's files on Colima as 0:0, and a `cp -a` as
@@ -1149,9 +1151,10 @@ cache_volume_ensure() {
 # cache is all there or absent, never half-copied; the staging folder goes either
 # way. A launcher killed mid-copy leaves the staging folder, hidden, in the volume.
 _cache_copy_prog='set -u
-u=$1 g=$2 s=/dst/.ai-containers-copying-$3
+u=$1 g=$2 s=/dst/.ai-containers-copying-$3 e=$4
+[ -e "/src/$e" ] || [ -L "/src/$e" ] || exit 0
 chown "$u:$g" /dst && install -d -o "$u" -g "$g" -m 0700 "$s" \
-  && setpriv --reuid="$u" --regid="$g" --clear-groups -- cp -dR --preserve=mode,timestamps,links /src/. "$s/"
+  && setpriv --reuid="$u" --regid="$g" --clear-groups -- cp -dR --preserve=mode,timestamps,links "/src/$e" "$s/"
 rc=$?
 if [ "$rc" -eq 0 ]; then
   for e in "$s"/* "$s"/.[!.]* "$s"/..?*; do
@@ -1162,6 +1165,32 @@ if [ "$rc" -eq 0 ]; then
 fi
 rm -rf -- "$s"
 exit "$rc"'
+
+# cache_volume_copy_qmd <from-group> <volume> <image> <uid> <gid>: give a group
+# made from another (AI_CONTAINER_GROUP_INIT=from:<group>, or the menu) that
+# group's qmd index, which _copy_group_slice carries as a credential-sized thing
+# worth keeping, out of that group's cache volume, where it lives once that group
+# has one; its host .cache/qmd, which _copy_group_slice copies, is then at best an
+# old copy. Run before cache_volume_copy_old, whose copy then leaves the qmd the
+# volume holds as it is. Only from a volume that is that group's by its label;
+# nothing when it has none (or its labels cannot be read). Volume to volume, so no
+# host path and no SELinux option, as seed_workcopy_volume. Never refuses the
+# launch.
+cache_volume_copy_qmd() {
+  local from="$1" vol="$2" image="$3" uid="$4" gid="$5" svol err
+  svol="$(cache_volume_name "$from")"
+  [[ "$(cache_group_from_volume "$svol" 2>/dev/null)" == "$from" ]] || return 0
+  printf 'Copying group "%s"'"'"'s qmd index into the docker volume %s...\n' "$from" "$vol" >&2
+  if err="$(docker run --rm --pull=never --network none -v "$svol:/src:ro" -v "$vol:/dst" \
+       --entrypoint bash "$image" -c "$_cache_copy_prog" _ "$uid" "$gid" "$$" qmd 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  printf 'WARNING: copying group "%s"'"'"'s qmd index from %s failed: this group'"'"'s qmd builds\n' "$from" "$svol" >&2
+  printf '         its index again.\n' >&2
+  err="${err%"${err##*[!$'\n']}"}"; err="${err##*$'\n'}"; err="${err%$'\r'}"
+  [[ -z "$err" ]] || printf '         It said: %s\n' "$(_ac_term "$err")" >&2
+  return 0
+}
 
 # cache_volume_copy_old <old-folder> <volume> <image> <uid> <gid> <group>: fill the
 # group's cache volume, which this launch has just made, with what the folder the
@@ -1187,7 +1216,7 @@ cache_volume_copy_old() {
   if selinux_opt="$(selinux_security_opt)" \
      && docker_bind obind "$src" /src ro "The group's old ~/.cache" \
      && err="$(docker run --rm --pull=never --network none ${selinux_opt:+"$selinux_opt"} "${obind[@]}" -v "$vol:/dst" \
-          --entrypoint bash "$image" -c "$_cache_copy_prog" _ "$uid" "$gid" "$$" 2>&1 >/dev/null)"; then
+          --entrypoint bash "$image" -c "$_cache_copy_prog" _ "$uid" "$gid" "$$" . 2>&1 >/dev/null)"; then
     printf 'Copied. %s is no longer mounted; projects of group "%s" not yet synced to this\n' "$(_ac_term "$old")" "$group" >&2
     printf 'engine still use it. Once none does, remove it:\n  rm -rf %s\n' "$(_ac_term "$old")" >&2
     return 0
@@ -1434,8 +1463,12 @@ group_menu_choices() {
            | while IFS= read -r d; do printf '%s\0' "$d"; done)
 }
 
+# GROUP_INIT_FROM: the existing group this launch made the new group from, or
+# empty (sandbox.sh reads it, for cache_volume_copy_qmd).
+# shellcheck disable=SC2034  # GROUP_INIT_FROM is read by sandbox.sh, which sources this file
 ensure_group_exists() {
   local group="$1" root="$2"
+  GROUP_INIT_FROM=""
   if [[ -d "$root" ]]; then
     return
   fi
@@ -1458,6 +1491,7 @@ ensure_group_exists() {
         fi
         mkdir -p "$root"
         _copy_group_slice "$src_root" "$root"
+        GROUP_INIT_FROM="$src_name"
         ;;
       *)
         echo "ERROR: unknown AI_CONTAINER_GROUP_INIT value '${AI_CONTAINER_GROUP_INIT}'. Expected: clean, from:host, or from:<group>." >&2
@@ -1540,6 +1574,7 @@ ensure_group_exists() {
       fi
       mkdir -p "$root"
       _copy_group_slice "$src_root" "$root"
+      GROUP_INIT_FROM="$chosen"
       ;;
   esac
 }

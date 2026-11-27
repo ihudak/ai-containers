@@ -8681,11 +8681,16 @@ run_container() {
   # (sandbox-common.sh: `_group_volume_ensure()`). The launch that makes it fills it once
   # from the host folder the bind was (cache_volume_copy_old), which keeps qmd's index and
   # Playwright's browsers; that folder itself is never changed or removed.
+  # A group this launch made from another first gets that group's qmd index out of its
+  # cache volume (cache_volume_copy_qmd), which the copy of the old folder then leaves.
   local cache_vol cache_made
   cache_volume_ensure "$group" cache_vol cache_made || exit 1
   if [[ "$cache_made" == 1 ]]; then
-    cache_volume_copy_old "$group_root/.cache" "$cache_vol" "$image_name" \
-      "${SANDBOX_UID:-$(id -u)}" "${SANDBOX_GID:-$(id -g)}" "$group"
+    local cache_uid="${SANDBOX_UID:-$(id -u)}" cache_gid="${SANDBOX_GID:-$(id -g)}"
+    if [[ -n "${GROUP_INIT_FROM:-}" ]]; then
+      cache_volume_copy_qmd "$GROUP_INIT_FROM" "$cache_vol" "$image_name" "$cache_uid" "$cache_gid"
+    fi
+    cache_volume_copy_old "$group_root/.cache" "$cache_vol" "$image_name" "$cache_uid" "$cache_gid" "$group"
   fi
   config_mount_flags+=(-v "$cache_vol:$dev_home/.cache")
   # /var/tmp is mounted whole too, and each launch works in a folder of its own

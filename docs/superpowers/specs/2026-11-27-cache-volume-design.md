@@ -120,11 +120,13 @@ starts, printing one line before and one after:
 
 `AI_CONTAINER_GROUP_INIT=from:<group>` copies the source group's qmd index
 (`.cache/qmd`) into the new group. Once the source has a cache volume, that
-index is in the volume, not in its host folder, so it is copied from there into
-the new group's host `.cache/qmd` (one container run, as the sandbox uid), and
-the new group's first launch carries it into the new volume like any old
-`.cache`. Without a source volume, the host folder is copied as today.
-`from:host` is unchanged (it copies `~/.cache/qmd` of your real home).
+index is in the volume, not in its host folder: the launch that makes the new
+group and its volume copies the source volume's `qmd/` straight into the new
+volume (`cache_volume_copy_qmd`, one container run, as the sandbox uid, volume
+to volume), before the old-folder copy, which then leaves that `qmd` alone.
+Without a source volume, the host folder is copied as today, and the old-folder
+copy carries it in. `from:host` is unchanged (it copies `~/.cache/qmd` of your
+real home).
 
 ## `group.sh`
 
@@ -232,7 +234,8 @@ Unreleased persistent-folders entry), and the 2026-11-26 backlog's macOS item
 4. Only the launch that made the volume copies; a failed copy warns and goes on;
    a killed one leaves a hidden staging folder (a stated limit).
 5. The old folder is never removed; it is named once, at the copy.
-6. `from:<group>` keeps copying the qmd index, now from the source's volume.
+6. `from:<group>` keeps copying the qmd index, now from the source's volume,
+   volume to volume (changed while building: simpler than through the host).
 7. Clearing the cache is `docker volume rm`; no new `group.sh` command.
 8. Projects of one group with different `SANDBOX_UID`s: the top folder is
    chowned to each launch's uid, a tool's folder made by another uid stays
