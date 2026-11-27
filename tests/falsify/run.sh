@@ -86,8 +86,9 @@
 #                           mutants (feature-gaps review GAP-28: project.sh's
 #                           mutants take ~1,600 worker-minutes, ~4.5 CI jobs'
 #                           worth; bugs review TST-43: repo-git-reset.sh's and
-#                           the rest's jobs neared their 90-min cap). A target's distinct identities are dealt in
-#                           the order the generator emits them, each to the
+#                           the rest's jobs neared their 90-min cap). A
+#                           target's distinct identities are dealt in the
+#                           order the generator emits them, each to the
 #                           slice holding the fewest mutants so far, so every
 #                           mutant sharing an identity is in one slice, slices
 #                           1..N of one tree cover the target exactly once, and

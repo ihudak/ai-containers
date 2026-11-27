@@ -196,9 +196,9 @@ jobs:
     # It neared it again, so the corpus is SPLIT, as planned: on 2026-10-30 the
     # whole run took 4,639 s on its last green pass and was cancelled at the cap
     # on 5 of 12 runs, repo-git-reset.sh alone taking 2,700 s of it (325
-    # mutants). That target runs in one shard and every other one in the
-    # other, as `--target X` and `--exclude-target X` of the SAME name, so the
-    # two cover the corpus exactly once whatever is added to it later — a
+    # mutants). That target ran in one shard and every other one in the
+    # other (each split further since, below), as `--target X` and
+    # `--exclude-target X` of the SAME name, so the two cover the corpus exactly once whatever is added to it later — a
     # target list per shard would leave a new target in neither;
     # tests/test-falsify-shards.sh runs the step below once per shard to prove
     # it. Each shard scores the ledger against its own run; check-ledger.sh's
@@ -233,8 +233,9 @@ jobs:
       # 2026-11-20..27 its shard took 42-44 min on a fast runner and 81-86 on
       # a slow one, and rest 60-87; each was cancelled at the cap once. A
       # slice repeats its targets' baselines and controls, so one of
-      # repo-git-reset.sh costs about half its whole run and one of rest about
-      # 60% (37 targets, each baselined in both).
+      # repo-git-reset.sh is estimated at about half its whole run and one of
+      # rest at about 60% (37 targets, each baselined in both): estimates from
+      # the baselines' and controls' share, until sliced runs are timed.
       FALSIFY_SPLIT_SLICES: 2
       # project.sh (feature-gaps review GAP-28) has shards of its own too, by
       # the same rule: `--target` there, one more `--exclude-target` in `rest`.
@@ -258,9 +259,10 @@ jobs:
       # in two. A slice of a target with fewer distinct identities than N is
       # refused at generation, naming the target
       # (tests/falsify/run.sh: `holds no mutant`); rest's smallest target has
-      # 3 today (shared-files.sh). A third slice would buy rest little (about
-      # 45% of the whole each, the baselines again): the next split moves its
-      # costly targets out, or selects oracles, as project.sh's shards do.
+      # 3 today (shared-files.sh). A third slice would buy rest little (an
+      # estimated 45% of the whole each, the baselines again): the next split
+      # moves its costly targets out, or selects oracles, as project.sh's
+      # shards do.
       FALSIFY_REST_SLICES: 2
 
     steps:

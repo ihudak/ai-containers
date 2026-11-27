@@ -1706,9 +1706,10 @@ fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-bigslice" --jobs 1 --controls 0 --targ
 # of its own, sliced: each selected target's mutants are dealt among the N
 # slices on their own, so slices 1..N cover every target exactly once, each
 # slice runs a share of every target, and names the rest of each as
-# ELSEWHERE. A second fixture target with two identities and its own oracle,
-# in a copy of the fixture repo; fixture-slow.sh has one identity, which a
-# second slice would hold none of.
+# ELSEWHERE. A second fixture target with more than one identity and its own
+# oracle, in a copy of the fixture repo; fixture-slow.sh has one identity,
+# which a second slice would hold none of: such a slice is refused in a run
+# of several targets too, which CI's rest-K shards rely on to fail loudly.
 FXM="$TMP/repo-multi"
 cp -a "$FX" "$FXM"
 cp "$FXM/fixture-lib.sh" "$FXM/fixture-lib2.sh"
@@ -1742,6 +1743,11 @@ done
 fx_run "$RUN" "$CONF_MULTI" "$FXM" "$TMP/wit-mlist" --slice 2/2 --list-targets
 check "--list-targets with --slice names every target's slice" "fixture-lib.sh 2/2
 fixture-lib2.sh 2/2" "$(sort <<< "$FX_OUT")"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-mbig" --jobs 1 --controls 0 --slice 2/2
+[[ "$FX_RC" -ne 0 ]] && grep -qF -- '--slice 2/2 of fixture-slow.sh holds no mutant' <<< "$FX_ERR" \
+  && ! grep -q '^MUTANT|' <<< "$FX_OUT" \
+  && pass "a slice of a run of several targets that holds none of one target's mutants is refused, naming it" \
+  || fail "a slice of a run of several targets that holds none of one target's mutants is refused, naming it (rc=$FX_RC): $FX_ERR"
 
 # ── 12c. --deep: only deep.conf's targets, under only their extra operators ──
 # (GAP-4.) fixture-lib.sh has one simple statement, fx_never_called's
