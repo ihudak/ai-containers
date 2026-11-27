@@ -256,7 +256,7 @@ check "  and the group's volume at /dst" pair_in -v "$VOL:/dst" "$TMP/copy-argv.
 # kept the 0:0 root reads a host bind's files as), and a 0700 folder of the old
 # one is then closed to the agent (case 525). Each entry is copied INTO /dst,
 # never /src/. onto it: that carried the old folder's mode onto the volume's top.
-check "  as the sandbox user" pair_in --user "$(id -u):$(id -g)" "$TMP/copy-argv.txt"
+check "  as the sandbox user" pair_in --user "${SANDBOX_UID:-$(id -u)}:${SANDBOX_GID:-$(id -g)}" "$TMP/copy-argv.txt"
 check "  each entry of the old folder copied into /dst with cp -dR, no cp -a" \
   bash -c '[[ "$(tail -n 13 "$1" | tr "\n" " ")" == "/src -mindepth 1 -maxdepth 1 -exec cp -dR --preserve=mode,timestamps,links -t /dst {} + " ]]' _ "$TMP/copy-argv.txt"
 teardown
