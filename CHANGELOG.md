@@ -72,6 +72,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   does `repo-git-reset.sh`, `version.sh` and `project.sh`: the shard for every
   other target was cancelled at its 90-minute cap once `group.sh` had grown to
   219 mutants.
+- **CI's falsify tier runs `repo-git-reset.sh` and the shard for every other
+  target in two slices each** (`run.sh --slice`, as for `project.sh`). On a
+  slow runner each had taken up to 86 minutes against its 90-minute cap, and
+  each was cancelled at it once (bugs review TST-43).
 
 ### Fixed
 

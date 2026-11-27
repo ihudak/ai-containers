@@ -85,7 +85,8 @@
 #   --slice K/N             run the K-th of N slices of each selected target's
 #                           mutants (feature-gaps review GAP-28: project.sh's
 #                           mutants take ~1,600 worker-minutes, ~4.5 CI jobs'
-#                           worth). A target's distinct identities are dealt in
+#                           worth; bugs review TST-43: repo-git-reset.sh's and
+#                           the rest's jobs neared their 90-min cap). A target's distinct identities are dealt in
 #                           the order the generator emits them, each to the
 #                           slice holding the fewest mutants so far, so every
 #                           mutant sharing an identity is in one slice, slices
@@ -97,16 +98,19 @@
 #                           The identities dealt to other slices are recorded
 #                           (ELSEWHERE|), so check-ledger.sh skips their
 #                           entries as unmeasured rather than stale. A slice
-#                           that would hold no mutant is refused: N is larger
-#                           than the target. With --list-targets each target
+#                           that would hold no mutant of a target is refused,
+#                           in a run of several targets too: N is larger than
+#                           that target's distinct identities (CI's rest-K
+#                           shards: their N may not pass the smallest of
+#                           theirs). With --list-targets each target
 #                           is printed as `<target> K/N`.
 #   --exclude-target <file> every active target BUT this one: the complement of
 #                           --target <file>, so a run of each covers the corpus
 #                           exactly once whatever is added to it later. That is
 #                           how CI splits the corpus over its jobs. Given more
-#                           than once, every one named is left out (CI's `rest`
-#                           shard leaves out each target that has a shard of
-#                           its own). A name that matches no active row is
+#                           than once, every one named is left out (CI's
+#                           rest-K shards leave out each target that has a
+#                           shard of its own). A name that matches no active row is
 #                           refused, as for --target: a typo would silently run
 #                           the file twice. An empty name is refused for both
 #                           options.

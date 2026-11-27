@@ -10,15 +10,16 @@
 # target in two shards doubles the time the split exists to save.
 #
 # Checked by EFFECT, not by reading the step's text: the step itself is run,
-# once per matrix entry, with the job's FALSIFY_SPLIT_TARGET, against a
+# once per matrix entry, with the job's FALSIFY_* variables, against a
 # tests/falsify/run.sh that hands its arguments to the real runner with
 # --list-targets, so what is compared is the targets the real runner chose.
 # Their union must be the unfiltered corpus and no target may appear twice,
 # except as slices (`run.sh --slice K/N` lists `<target> K/N`): the shards
 # that run slices of one target must name one N and each K from 1 to N once.
 # The check is then run against damaged copies of the workflow (a shard
-# dropped from the matrix, a case arm that selects the same half twice) and
-# must fail on each, so it is seen failing.
+# dropped from the matrix, a case arm that selects the same half twice, a
+# slice no shard runs, an arm that runs every slice whole) and must fail on
+# each, so it is seen failing.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -185,54 +186,48 @@ else fail "the deep shard runs run.sh --deep's targets"; fi
 printf '%s\n' "$msg"
 # Seen failing: a deep arm that runs the default pass instead.
 sed 's/deep) select=(--deep) ;;/deep) select=(--target "$FALSIFY_SPLIT_TARGET") ;;/' "$WF" > "$TMP/deepwrong.yml"
-if ! cmp -s "$WF" "$TMP/deepwrong.yml" && ! msg="$(deep_shard_ok "$TMP/deepwrong.yml" deep-wrong)"; then
-  pass "a deep arm that does not run --deep is caught"
-else
+if cmp -s "$WF" "$TMP/deepwrong.yml"; then
+  fail "a deep arm that does not run --deep is caught: the damage no longer applies to the workflow"
+elif msg="$(deep_shard_ok "$TMP/deepwrong.yml" deep-wrong)"; then
   fail "a deep arm that does not run --deep is caught: $msg"
+else
+  pass "a deep arm that does not run --deep is caught"
 fi
 
-# Seen failing: a shard dropped from the matrix leaves its half unmeasured.
-sed 's/^\( *shard: *\[\)[^,]*, */\1/' "$WF" > "$TMP/drop.yml"
-if ! cmp -s "$WF" "$TMP/drop.yml" && ! msg="$(shards_cover "$TMP/drop.yml" drop)"; then
-  pass "a matrix with a shard dropped is caught"
-else
-  fail "a matrix with a shard dropped is caught: $msg"
-fi
-
-# Seen failing: an arm that selects the same half as another covers it twice
-# and the other half never.
-sed 's/select=(--exclude-target /select=(--target /' "$WF" > "$TMP/twice.yml"
-if ! cmp -s "$WF" "$TMP/twice.yml" && ! msg="$(shards_cover "$TMP/twice.yml" twice)"; then
-  pass "two shards selecting the same targets are caught"
-else
-  fail "two shards selecting the same targets are caught: $msg"
-fi
-
-# Seen failing: a slice of project.sh dropped from the matrix is never run.
-sed 's/ project-3,//' "$WF" > "$TMP/slicedrop.yml"
-if ! cmp -s "$WF" "$TMP/slicedrop.yml" && ! msg="$(shards_cover "$TMP/slicedrop.yml" slicedrop)"; then
-  pass "a matrix missing a slice of project.sh is caught"
-else
-  fail "a matrix missing a slice of project.sh is caught: $msg"
-fi
-
-# Seen failing: FALSIFY_PROJECT_SLICES raised without a shard for the new
-# slice, which no job would run.
-sed 's/FALSIFY_PROJECT_SLICES: [0-9]*/FALSIFY_PROJECT_SLICES: 7/' "$WF" > "$TMP/slicecount.yml"
-if ! cmp -s "$WF" "$TMP/slicecount.yml" && ! msg="$(shards_cover "$TMP/slicecount.yml" slicecount)"; then
-  pass "a slice count the matrix does not match is caught"
-else
-  fail "a slice count the matrix does not match is caught: $msg"
-fi
-
-# Seen failing: a rest arm that forgets one of the targets with a shard of its
-# own runs that target twice.
-sed 's/ --exclude-target "$FALSIFY_PROJECT_TARGET")/)/' "$WF" > "$TMP/forgot.yml"
-if ! cmp -s "$WF" "$TMP/forgot.yml" && ! msg="$(shards_cover "$TMP/forgot.yml" forgot)"; then
-  pass "a rest shard that does not leave out every split target is caught"
-else
-  fail "a rest shard that does not leave out every split target is caught: $msg"
-fi
+# Seen failing: each damaged copy of the workflow below must be caught. A
+# damage whose sed no longer changes the workflow tests nothing, and says so,
+# rather than passing or printing the message of the damage before it.
+caught() {  # $1=label  $2=sed program  $3=what must be caught
+  local label="$1" prog="$2" what="$3" out
+  sed "$prog" "$WF" > "$TMP/$label.yml"
+  if cmp -s "$WF" "$TMP/$label.yml"; then
+    fail "$what: the damage no longer applies to the workflow ($prog)"
+  elif out="$(shards_cover "$TMP/$label.yml" "$label")"; then
+    fail "$what: $out"
+  else
+    pass "$what"
+  fi
+}
+# A shard dropped from the matrix leaves its part unmeasured.
+caught drop 's/^\( *shard: *\[\)[^,]*, */\1/' "a matrix with a shard dropped is caught"
+# An arm that selects the same targets as another covers them twice and its
+# own never.
+caught twice 's/select=(--exclude-target /select=(--target /' "two shards selecting the same targets are caught"
+# A slice of project.sh dropped from the matrix is never run.
+caught slicedrop 's/ project-3,//' "a matrix missing a slice of project.sh is caught"
+# FALSIFY_PROJECT_SLICES raised without a shard for the new slice, which no
+# job would run.
+caught slicecount 's/FALSIFY_PROJECT_SLICES: [0-9]*/FALSIFY_PROJECT_SLICES: 7/' "a slice count the matrix does not match is caught"
+# A rest arm that forgets one of the targets with a shard of its own runs
+# that target twice.
+caught forgot 's/ --exclude-target "$FALSIFY_PROJECT_TARGET"//' "a rest shard that does not leave out every split target is caught"
+# repo-git-reset.sh and rest run in slices too (bugs review TST-43): the same
+# damages to theirs, and a rest arm that runs every slice whole.
+caught rgrdrop 's/ repo-git-reset-2,//' "a matrix missing a slice of repo-git-reset.sh is caught"
+caught rgrcount 's/FALSIFY_SPLIT_SLICES: [0-9]*/FALSIFY_SPLIT_SLICES: 3/' "a repo-git-reset.sh slice count the matrix does not match is caught"
+caught restdrop 's/ rest-2,//' "a matrix missing a slice of rest is caught"
+caught restcount 's/FALSIFY_REST_SLICES: [0-9]*/FALSIFY_REST_SLICES: 3/' "a rest slice count the matrix does not match is caught"
+caught restwhole 's/ --slice "${SHARD#rest-}\/$FALSIFY_REST_SLICES"//' "a rest arm that does not slice is caught"
 
 printf '\n%d failure(s)\n' "$fails"
 exit "$(( fails > 0 ))"
