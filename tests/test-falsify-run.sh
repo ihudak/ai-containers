@@ -1742,7 +1742,7 @@ for t in fixture-lib.sh fixture-lib2.sh; do
 done
 fx_run "$RUN" "$CONF_MULTI" "$FXM" "$TMP/wit-mlist" --slice 2/2 --list-targets
 check "--list-targets with --slice names every target's slice" "fixture-lib.sh 2/2
-fixture-lib2.sh 2/2" "$(sort <<< "$FX_OUT")"
+fixture-lib2.sh 2/2" "$(LC_ALL=C sort <<< "$FX_OUT")"
 fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-mbig" --jobs 1 --controls 0 --slice 2/2
 [[ "$FX_RC" -ne 0 ]] && grep -qF -- '--slice 2/2 of fixture-slow.sh holds no mutant' <<< "$FX_ERR" \
   && ! grep -q '^MUTANT|' <<< "$FX_OUT" \
