@@ -1074,8 +1074,6 @@ fi
 # rm and gc treat it as they treat the other two, each volume on its own.
 GR="$FAKE_HOME/.ai-containers"
 THEIRS="sha256:$(printf '%064d' 7)"
-tvol() { [[ -f "$FAKE_VOLUMES_DIR/$1" ]]; }
-tclean() { local v; for v in "$@"; do rm -f "${FAKE_VOLUMES_DIR:?}/$v" "${FAKE_VOLUMES_DIR:?}/$v".*; done; }
 # mkcvol <volume> <group>: a cache volume this home's launch made, labelled as
 # sandbox-common.sh: `_group_volume_ensure()` labels one; VOL_OWNER as for mkvol.
 mkcvol() {
@@ -1172,6 +1170,26 @@ out="$(run_group gc --yes)"; rc=$?
   && pass "gc skips an orphaned cache volume a running container uses" || fail "gc, a busy cache volume (rc=$rc; got: $out)"
 : > "$FAKE_RUNNING_VOL"
 tclean ai-containers-cache-cbusy ai-containers-cache-x ai-containers-cache-a-cache-cnest
+
+# With ~/.ai-containers itself gone, every labelled cache volume is an orphan,
+# and one of the cache name with no label, or labelled for a group whose cache
+# volume name it does not carry, is still no group's: list does not name them,
+# and gc --all, which takes every orphan whoever made it, leaves them. In a
+# volume store of its own: gc --all here takes every group's cache volume.
+EH="$TMP/empty-home-cache"; mkdir -p "$EH"
+FAKE_VOLUMES_SAVED="$FAKE_VOLUMES_DIR"; FAKE_VOLUMES_DIR="$TMP/volumes-cache-eh"; mkdir -p "$FAKE_VOLUMES_DIR"
+mkcvol ai-containers-cache-cgone cgone; : > "$FAKE_VOLUMES_DIR/ai-containers-cache-x"
+mkcvol ai-containers-cache-a-cache-cnest cnest
+out="$(HOME="$EH" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" list 2>&1)"
+[[ "$out" == *"ai-containers-cache-cgone  (another home's"* && "$out" != *ai-containers-cache-x* && "$out" != *a-cache-cnest* ]] \
+  && pass "list with no groups root names an orphaned cache volume, and not an unlabelled or a nested prefix's" \
+  || fail "list with no groups root, cache volumes (got: $out)"
+out="$(HOME="$EH" PATH="$FAKE_BIN:$PATH" FAKE_VOLUMES_DIR="$FAKE_VOLUMES_DIR" FAKE_RUNNING_VOL="$FAKE_RUNNING_VOL" bash "$REPO_DIR/group.sh" gc --all --yes 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && ! tvol ai-containers-cache-cgone && tvol ai-containers-cache-x && tvol ai-containers-cache-a-cache-cnest \
+  && [[ "$out" != *ai-containers-cache-x* && "$out" != *a-cache-cnest* ]] \
+  && pass "gc --all with no groups root takes the orphaned cache volume and leaves an unlabelled and a nested prefix's" \
+  || fail "gc --all with no groups root, cache volumes (rc=$rc; got: $out)"
+rmdir "$EH"; rm -rf "${FAKE_VOLUMES_DIR:?}"; FAKE_VOLUMES_DIR="$FAKE_VOLUMES_SAVED"
 
 # Under nested prefixes the cache volume of prefix ai-containers-rvm-x,
 # ai-containers-rvm-x-cache-cn, is listed with this prefix's Ruby volumes; it

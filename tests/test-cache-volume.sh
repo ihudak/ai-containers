@@ -162,7 +162,10 @@ check "cache_group_from_volume round-trips the label" \
 export HOME="$TMP/lhome"; mkdir -p "$HOME"
 HOME="$(p_realdir "$HOME")"; export HOME
 export AI_CONTAINER_GROUP_INIT=clean SANDBOX_USER=dev
-unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS AI_CONTAINER_GROUP SANDBOX_UID SANDBOX_GID
+unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS AI_CONTAINER_GROUP
+# The agent's identity: SANDBOX_UID/GID when set (tests/run-all.sh sets them when
+# it runs as root, which the launch refuses as the agent's), else this user's.
+LUID="${SANDBOX_UID:-$(id -u)}" LGID="${SANDBOX_GID:-$(id -g)}"
 export SANDBOX_CONF="$TMP/sandbox.conf"
 printf '# schema-version: 4\nqmd=OFF\nplaywright=OFF\nclaude-code=OFF\n' > "$SANDBOX_CONF"
 LVOLS="$TMP/lvolumes"; RUNS="$TMP/runs"
@@ -224,7 +227,7 @@ has_pair "$C" --network none && pass "  the copy has no network" || fail "  the 
 has_pair "$C" --entrypoint bash && pass "  the copy runs bash, not the entrypoint" || fail "  the copy runs the entrypoint"
 grep -qF 'setpriv --reuid="$u" --regid="$g" --clear-groups -- cp -dR --preserve=mode,timestamps,links "/src/$e" "$s/"' "$C" \
   && pass "  the copy runs cp as the agent, ownership given, not preserved" || fail "  the copy's cp is not the agent's"
-check "  its last arguments: _ uid gid, a pid, and . for all of /src" "_ $(id -u) $(id -g)|." "$(tail -5 "$C" | head -3 | tr '\n' ' ' | sed 's/ $//')|$(tail -1 "$C")"
+check "  its last arguments: _ uid gid, a pid, and . for all of /src" "_ $LUID $LGID|." "$(tail -5 "$C" | head -3 | tr '\n' ' ' | sed 's/ $//')|$(tail -1 "$C")"
 [[ "$(tail -2 "$C" | head -1)" =~ ^[0-9]+$ ]] && pass "  the fourth is a pid" || fail "  the fourth is not a pid ($(tail -2 "$C" | head -1))"
 has_pair "$RUNS/2" -v "$CV:/home/dev/.cache" && pass "  then the launch mounts the volume" || fail "  the launch after the copy"
 grep -qF "Copying this group's ~/.cache into the docker volume $CV" "$ERR" \
