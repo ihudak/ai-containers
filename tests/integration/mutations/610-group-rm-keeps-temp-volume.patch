@@ -1,16 +1,16 @@
 # case: 610-group-rm-removes-both
-# what: group.sh rm removes the directory and the Ruby volume but leaves the group's temp volume orphaned: 'assert_volume_absent <vartmp volume>' goes red
+# what: group.sh rm removes the directory and the Ruby and cache volumes but leaves the group's temp volume orphaned: 'assert_volume_absent <vartmp volume>' goes red
 #
 diff --git a/group.sh b/group.sh
-index d965535..c7e6815 100755
+index 06ef698..54b5fea 100755
 --- a/group.sh
 +++ b/group.sh
-@@ -410,7 +410,7 @@ cmd_rm() {
+@@ -527,7 +527,7 @@ cmd_rm() {
    # Every volume is tried; one docker would not remove keeps the directory, whose
    # removal would orphan it.
    local failed=0
--  for k in ruby temp; do
-+  for k in ruby; do # MUTATION: the temp volume is never removed
+-  for k in ruby temp cache; do
++  for k in ruby cache; do # MUTATION: the temp volume is never removed
      [[ "${act[$k]}" == remove ]] || continue
      if docker volume rm "${vol[$k]}" >/dev/null 2>&1; then
        printf 'Removed volume %s\n' "${vol[$k]}"

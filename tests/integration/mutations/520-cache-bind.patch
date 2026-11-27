@@ -1,0 +1,17 @@
+# case: 520-agent-files-persist-across-restart
+# what: ~/.cache is the old host bind again, not the group's volume: the 'cache volume is mounted at ~/.cache' docker-inspect assertion goes red (the ~/.cache tar check stays green on Linux, where a bind holds the links; it can go red only on a Mac)
+#
+diff --git a/sandbox.sh b/sandbox.sh
+index 4a5d78e..98be8a8 100755
+--- a/sandbox.sh
++++ b/sandbox.sh
+@@ -8692,7 +8692,8 @@ run_container() {
+     fi
+     cache_volume_copy_old "$group_root/.cache" "$cache_vol" "$image_name" "$cache_uid" "$cache_gid" "$group"
+   fi
+-  config_mount_flags+=(-v "$cache_vol:$dev_home/.cache")
++  install -d "$group_root/.cache" # MUTATION: the old host folder is mounted instead of the volume
++  config_mount_flags+=(-v "$group_root/.cache:$dev_home/.cache")
+   # /var/tmp is mounted whole too, and each launch works in a folder of its own
+   # inside it (the container's start-up makes it, agent-tmp.sh), so two
+   # containers of one group never share scratch files and a container's

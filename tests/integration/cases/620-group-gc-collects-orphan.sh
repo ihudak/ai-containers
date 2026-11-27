@@ -30,9 +30,9 @@
 # told apart (bugs review PRJ-16). Until 2026-11-17 this case made its orphan
 # unlabelled, and failed once gc kept such a volume.
 #
-# The group's temp volume (/var/tmp, <prefix>-vartmp-<g>) is collected the same
-# way, by its ai-containers.vartmp-group label and its name together: an
-# orphaned one goes, a live group's stays.
+# The group's temp and cache volumes (/var/tmp, <prefix>-vartmp-<g>; ~/.cache,
+# <prefix>-cache-<g>) are collected the same way, each by its own label and its
+# name together: an orphaned one goes, a live group's stays.
 #
 # This ran for real in the originating session: two orphaned volumes from
 # interrupted verification runs, collected correctly. The case makes that
@@ -44,6 +44,7 @@ fixture_scope_init || it_finish
 groups_root="$IT_LAUNCH_HOME/.ai-containers"
 rvm_vol() { printf 'it-%s-rvm-%s' "$IT_RUN_ID" "$1"; }
 tmp_vol() { printf 'it-%s-vartmp-%s' "$IT_RUN_ID" "$1"; }
+cache_vol() { printf 'it-%s-cache-%s' "$IT_RUN_ID" "$1"; }
 
 # This HOME's id, from the launcher's own function, as it labels a volume.
 own="$( export HOME="$IT_LAUNCH_HOME"
@@ -57,6 +58,8 @@ docker volume create --label "$IT_LABEL" --label "ai-containers.owner=$own" "$(r
 # The same for a temp volume, and for a live group's.
 docker volume create --label "$IT_LABEL" --label "ai-containers.vartmp-group=tmporphan" \
   --label "ai-containers.owner=$own" "$(tmp_vol tmporphan)" >/dev/null 2>&1
+docker volume create --label "$IT_LABEL" --label "ai-containers.cache-group=cacheorphan" \
+  --label "ai-containers.owner=$own" "$(cache_vol cacheorphan)" >/dev/null 2>&1
 # One made before owner labels, and one another home on this daemon made.
 docker volume create --label "$IT_LABEL" "$(rvm_vol old)" >/dev/null 2>&1
 docker volume create --label "$IT_LABEL" \
@@ -67,6 +70,8 @@ mkdir -p "$groups_root/live/.claude"
 docker volume create --label "$IT_LABEL" "$(rvm_vol live)" >/dev/null 2>&1
 docker volume create --label "$IT_LABEL" --label "ai-containers.vartmp-group=live" \
   --label "ai-containers.owner=$own" "$(tmp_vol live)" >/dev/null 2>&1
+docker volume create --label "$IT_LABEL" --label "ai-containers.cache-group=live" \
+  --label "ai-containers.owner=$own" "$(cache_vol live)" >/dev/null 2>&1
 
 # A repo volume.
 repo_register_volume untouchable || it_finish
@@ -78,6 +83,8 @@ assert_volume_exists "$(rvm_vol theirs)"
 assert_volume_exists "$(rvm_vol live)"
 assert_volume_exists "$(tmp_vol tmporphan)"
 assert_volume_exists "$(tmp_vol live)"
+assert_volume_exists "$(cache_vol cacheorphan)"
+assert_volume_exists "$(cache_vol live)"
 assert_volume_exists "$repo_vol"
 
 # `list` must SEE the orphan before gc is asked to remove it: if discovery is
@@ -101,6 +108,8 @@ fi
 assert_volume_absent "$(rvm_vol orphan)"
 assert_volume_absent "$(tmp_vol tmporphan)"
 assert_volume_exists "$(tmp_vol live)"
+assert_volume_absent "$(cache_vol cacheorphan)"
+assert_volume_exists "$(cache_vol live)"
 assert_volume_exists "$(rvm_vol old)"
 assert_volume_exists "$(rvm_vol theirs)"
 assert_volume_exists "$(rvm_vol live)"
@@ -125,6 +134,7 @@ fi
 assert_volume_absent "$(rvm_vol old)"
 assert_volume_absent "$(rvm_vol theirs)"
 assert_volume_exists "$(rvm_vol live)"
+assert_volume_exists "$(cache_vol live)"
 assert_volume_exists "$repo_vol"
 if [[ -d "$groups_root/live" ]]; then
   pass "the live group's directory is untouched"
