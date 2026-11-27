@@ -72,8 +72,9 @@
 #                           that `git status` does not show (a file git
 #                           ignores, an empty directory, one under .git, one
 #                           outside the tree) is not seen, and the order's
-#                           verdict stands. Opt-in, used by the project-K shards. Also
-#                           FALSIFY_STOP_AT_KILL=1.
+#                           verdict stands. Opt-in, used by the project-K
+#                           shards and verify-on-host.sh Phase 6's run of
+#                           project.sh. Also FALSIFY_STOP_AT_KILL=1.
 #   --deep                  the per-target deep pass (feature-gaps review
 #                           GAP-4): only the targets tests/falsify/deep.conf
 #                           names, each under ONLY the extra operators that

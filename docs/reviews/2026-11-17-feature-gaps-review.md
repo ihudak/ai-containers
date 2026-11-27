@@ -9,7 +9,7 @@
 
 ## Summary
 
-17 gaps, by the priority each reviewer gave (GAP-30 and GAP-31 were found while GIT-106 was fixed):
+18 gaps, by the priority each reviewer gave (GAP-30 and GAP-31 were found while GIT-106 was fixed; GAP-32 on 2026-11-27, planning Phase 6's oracle selection):
 
 | ID | Area | Priority | Gap |
 |---|---|---|---|
@@ -28,6 +28,7 @@
 | GAP-25 | TST | LOW | the code-citation lint checks one of the three spellings in use; about 350 citations are never looked at |
 | GAP-26 | TST | LOW | a handful of "nothing is named / nothing is mounted" checks pass when their launch is refused outright |
 | GAP-27 | TST | LOW | the weekly nvm bump PR is opened with `GITHUB_TOKEN`, so no `pull_request` workflow runs on it |
+| GAP-32 | TST | MEDIUM | `verify-on-host.sh` Phase 6 takes two days or more on macOS, which AGENTS.md says runs it before a release |
 | GAP-28 | DOC | LOW | project.sh was to be an active falsify target; it is DEFERRED and its spec says IMPLEMENTED |
 | GAP-29 | DOC | LOW | `REPO_HELPER_MEMORY` is documented only in AGENTS.md |
 
@@ -203,6 +204,15 @@ Checked and found sound (no finding): the registry edits (`_prj_edit()`, `_prj_r
 - **Current state:** the PR is created by `peter-evans/create-pull-request` with `token: ${{ secrets.GITHUB_TOKEN }}`. GitHub starts no workflow run for events caused by that token (other than `workflow_dispatch` and `repository_dispatch`), so `tests.yml` and `integration.yml` do not run on the one PR that changes the Dockerfile's nvm pin. Either it shows no checks and is merged unverified (the first real run is the push to main), or required checks keep it unmergeable until someone closes and reopens it. PLAUSIBLE: this is GitHub's documented behaviour; I could not look at this repository's PR history or branch protection.
 - **Value / priority:** LOW. A broken nvm release would first show on main.
 - **Suggested approach:** create the PR with a fine-grained PAT or a GitHub App token, or have the job start the two workflows on the branch by `workflow_dispatch` after opening the PR. One PR's check list would confirm which case applies.
+
+
+### GAP-32: `verify-on-host.sh` Phase 6 takes two days or more on macOS, which AGENTS.md says runs it before a release
+- Status: OPEN (logged 2026-11-27, Linux agent). Whether macOS still runs the tier before a release, and how, is the user's decision, left for later (their choice, 2026-11-27).
+- **Area:** TST (`verify-on-host.sh` Phase 6)
+- **Source:** AGENTS.md: "**macOS runs the tier in `verify-on-host.sh` Phase 6**, before a release — not per change."
+- **Current state:** the corpus was 519 mutants when a Mac last ran it whole (97 minutes at one worker, 2026-08-28: about nine times CI's wall time per mutant); it is over 4,000 now, `project.sh`'s 1,175 among them, and CI's four-worker jobs spend about 380 minutes on it (2026-11-27). At that rate Phase 6 takes two days or more on a Mac, a day of it `project.sh`'s run even with CI's `--select-oracles --stop-at-kill`, which Phase 6 now passes it. `fr_fork_cost_cap` keeps macOS at one worker, for a measured reason (six workers bought 1.21x and turned two kills UNPROVEN). `project.sh`'s oracles have not run on macOS since they were split (2026-11-18), and `confirm`'s test needs util-linux `script -qec`.
+- **Value / priority:** MEDIUM. A release check nobody can run in time is one nobody runs; the BSD-userland findings it exists for (F31's APFS band, the assertless kills of 2026-08-20) come from the hermetic suite (Phase 5) and a few targets, not from the whole corpus.
+- **Suggested approach:** decide what macOS's Phase 6 is for. Candidates: a subset of targets (those with BSD-specific code paths, or all but the largest), named and counted rather than silent; the tier as an opt-in there, CI being the reference; or more workers once fork cost is measured again on current macOS.
 
 ---
 
