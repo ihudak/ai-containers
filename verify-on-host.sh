@@ -819,11 +819,23 @@ fl_wf="$REPO_ROOT/.github/workflows/hermetic-checks.yml"
 if [[ ! -f "$fl_wf" ]]; then
   sub "NOTE: no .github/workflows/hermetic-checks.yml beside tests/, so no target runs with CI's oracle selection: the corpus runs in one pass."
 else
-  fl_name="$(awk '/^[[:space:]]+FALSIFY_PROJECT_TARGET:/ { v = $0; sub(/^[^:]*:[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v); print v; exit }' "$fl_wf")"
+  # The value of the key in the falsify job only (from its `  falsify:` line to
+  # the next job's), quotes and a trailing comment taken off, as YAML reads it.
+  fl_name="$(awk -v q="'" '
+    /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { injob = ($0 ~ /^  falsify:/); next }
+    /^[^ #]/ { injob = 0 }
+    injob && /^[[:space:]]+FALSIFY_PROJECT_TARGET:/ {
+      v = $0; sub(/^[^:]*:[[:space:]]*/, "", v); sub(/[[:space:]]+#.*$/, "", v); sub(/[[:space:]]+$/, "", v)
+      if (length(v) > 1 && ((v ~ /^".*"$/) || (substr(v, 1, 1) == q && substr(v, length(v), 1) == q))) v = substr(v, 2, length(v) - 2)
+      print v; exit
+    }' "$fl_wf")"
+  # Whether it is an active target is run.sh's to say, as it says for --target:
+  # a path, or a basename (mgd-ai-containers lists its targets under base/).
   if [[ -z "$fl_name" ]]; then
     sub "NOTE: the falsify job sets no FALSIFY_PROJECT_TARGET, so no target runs with CI's oracle selection: the corpus runs in one pass."
-  elif fl_all="$(env -u FALSIFY_SELECT -u FALSIFY_STOP_AT_KILL bash "$TESTS_DIR/falsify/run.sh" --list-targets 2>/dev/null)" \
-       && grep -qxF -- "$fl_name" <<< "$fl_all"; then
+  elif ! env -u FALSIFY_SELECT -u FALSIFY_STOP_AT_KILL bash "$TESTS_DIR/falsify/run.sh" --list-targets >/dev/null 2>&1; then
+    sub "NOTE: tests/falsify/run.sh could not list the falsify targets, so no target runs with CI's oracle selection: the corpus runs in one pass."
+  elif env -u FALSIFY_SELECT -u FALSIFY_STOP_AT_KILL bash "$TESTS_DIR/falsify/run.sh" --list-targets --target "$fl_name" >/dev/null 2>&1; then
     fl_sel=("$fl_name")
   else
     sub "NOTE: the falsify job's FALSIFY_PROJECT_TARGET is '$(printf '%s' "$fl_name" | LC_ALL=C tr -cd '[:graph:]')', which is no active falsify target here: the corpus runs in one pass."
@@ -934,11 +946,11 @@ fl_pass() {
 if [[ -n "$fl_run" ]]; then
   fl_pass "" "$fl_run" "${fl_excl[@]}" --jobs "$fl_jobs" --timeout "$fl_timeout"
 fi
-fl_sel_logs=()
+declare -A fl_sel_log=()
 for fl_t in "${fl_sel[@]}"; do
   sub "running $fl_t with oracle selection, as CI does (jobs=$fl_jobs, timeout=$fl_timeout): --select-oracles --stop-at-kill"
   fl_l="$(mktemp)" || { phase_fail 6 "mktemp failed — the $fl_t pass has nowhere to write its run"; continue; }
-  fl_sel_logs+=("$fl_l")
+  fl_sel_log["$fl_t"]="$fl_l"
   fl_pass "$fl_t" "$fl_l" --target "$fl_t" --select-oracles --stop-at-kill --jobs "$fl_jobs" --timeout "$fl_timeout"
 done
 # THE DEEP PASS (feature-gaps review GAP-4): the targets tests/falsify/deep.conf
@@ -982,13 +994,15 @@ fi
 # asserts both directions.
 if (( fl_keep )); then
   [[ -n "$fl_run" ]] && sub "corpus run log kept at: $fl_run"
-  for fl_i in "${!fl_sel_logs[@]}"; do sub "${fl_sel[fl_i]} pass log kept at: ${fl_sel_logs[fl_i]}"; done
+  for fl_t in "${fl_sel[@]}"; do
+    [[ -n "${fl_sel_log[$fl_t]:-}" ]] && sub "$fl_t pass log kept at: ${fl_sel_log[$fl_t]}"
+  done
   [[ -n "${fl_deep:-}" ]] && sub "deep pass log kept at: $fl_deep"
   sub "  One MUTANT|<verdict>|<identity>|… record per mutant, plus every falsify:"
   sub "  note — the detail the summaries above are counts of. Nothing else will"
   sub "  remove it."
 else
-  rm -f ${fl_run:+"$fl_run"} "${fl_sel_logs[@]}" ${fl_deep:+"$fl_deep"}
+  rm -f ${fl_run:+"$fl_run"} "${fl_sel_log[@]}" ${fl_deep:+"$fl_deep"}
 fi
 fi
 

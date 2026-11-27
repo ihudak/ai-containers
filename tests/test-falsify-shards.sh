@@ -240,7 +240,9 @@ caught restwhole 's/ --slice "${SHARD#rest-}\/$FALSIFY_REST_SLICES"//' "a rest a
 # against the same run.sh, for every pass but the deep one. Each map must name
 # every target of the corpus once, and the two must be equal.
 ENGINE_DIR="$REPO_DIR"
-VERIFY="$REPO_DIR/verify-on-host.sh"
+# mgd-ai-containers keeps the engine, verify-on-host.sh among it, in base/.
+[[ -f "$ENGINE_DIR/verify-on-host.sh" ]] || ENGINE_DIR="$REPO_DIR/base"
+VERIFY="$ENGINE_DIR/verify-on-host.sh"
 LAYER_CHECKS_CONF="$REPO_DIR/tests/layer-checks.conf"
 # shellcheck source=tests/lib-layer-checks.sh
 source "$REPO_DIR/tests/lib-layer-checks.sh"
@@ -302,9 +304,10 @@ p6_flag_map() {  # $1=workflow  $2=verify-on-host.sh
 flags_agree() {  # $1=workflow  $2=verify-on-host.sh
   local ci p6 corpus
   corpus="$(bash "$REAL_RUN" --list-targets 2>/dev/null | sort)"
+  [[ -n "$corpus" ]] || { echo "run.sh --list-targets listed no target"; return 1; }
   ci="$(ci_flag_map "$1")"
   if [[ "$(cut -d'|' -f1 <<< "$ci" | sort)" != "$corpus" ]]; then
-    echo "CI's map does not name every target once: $(cut -d'|' -f1 <<< "$ci" | sort | uniq -d | tr '\n' ' ')"; return 1
+    echo "CI's map does not name every target once: twice: $(cut -d'|' -f1 <<< "$ci" | sort | uniq -d | tr '\n' ' ') none: $(comm -13 <(cut -d'|' -f1 <<< "$ci" | sort -u) <(printf '%s\n' "$corpus") | tr '\n' ' ')"; return 1
   fi
   if ! p6="$(p6_flag_map "$1" "$2")"; then
     echo "Phase 6 failed: $(grep -E 'FAIL|ERROR' "$TMP/out.log" | head -3 | tr '\n' ' ')"; return 1

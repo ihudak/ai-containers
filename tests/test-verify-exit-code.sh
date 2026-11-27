@@ -875,6 +875,31 @@ else
   fail "phase 6: the failline notes (rc=$rc; control-clock $(grep -c 'NOTE|control-clock|' "$TMP/out.log"), failline $(grep -ac 'NOTE|failline|' "$TMP/out.log"), binary $(grep -ac 'binary file matches' "$TMP/out.log"))"
 fi
 
+# Nor the notes oracle selection writes per mutant (selection-miss,
+# selection-rerun, order-rerun): one each for hundreds of project.sh's mutants.
+# Its per-target notes are re-printed, and so is reseed.
+r="$(mk_repo 0)"
+cat > "$r/tests/falsify/run.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'TARGET|project.sh|test-x.sh|13|13|0|0|0|1000\n'
+printf 'NOTE|selection-miss|project.sh:cmp-flip:%s|a subset survived\n' "$(printf '%040d' 1)"
+printf 'NOTE|selection-rerun|project.sh:cmp-flip:%s|neither killed\n' "$(printf '%040d' 2)"
+printf 'NOTE|order-rerun|project.sh:cmp-flip:%s|left the tree changed\n' "$(printf '%040d' 3)"
+printf 'NOTE|reseed|project.sh:cmp-flip:%s|re-seeded\n' "$(printf '%040d' 3)"
+printf 'NOTE|selection-total|-|subsets ran 40%% of the set\n'
+printf 'NOTE|stop-at-kill|project.sh|quickest first\n'
+printf 'TOTAL|1|13|13|0|0|0|0|1000\nASSERTLESS|0|13\n'
+exit 0
+STUB
+rc="$(run_verify "$r" 6)"
+if [[ "$rc" == 0 ]] && ! grep -qE 'NOTE\|(selection-miss|selection-rerun|order-rerun)\|' "$TMP/out.log" \
+   && grep -q 'NOTE|selection-total|' "$TMP/out.log" && grep -q 'NOTE|stop-at-kill|' "$TMP/out.log" \
+   && grep -q 'NOTE|reseed|' "$TMP/out.log"; then
+  pass "phase 6: oracle selection's per-mutant notes are not re-printed; its per-target ones and reseed are"
+else
+  fail "phase 6: oracle selection's notes on screen (rc=$rc): $(grep -oE 'NOTE\|[a-z-]+' "$TMP/out.log" | tr '\n' ' ')"
+fi
+
 # ── PHASE 6'S ADVICE MUST NAME A KNOB THAT EXISTS (backlog F48) ───────────────
 # The sibling of F47, in the same twenty lines and of the same species: an
 # instruction the reader cannot act on. When more than a tenth of the corpus goes
@@ -1027,16 +1052,28 @@ done
 # workflow, or a name that is no active target, the corpus runs in one pass as
 # before, and a NOTE says why. tests/test-falsify-shards.sh checks by effect
 # that the two runs give each target the same flags.
-p6_repo() {  # [$1=the target the workflow names] → a stub repo
+p6_repo() {  # [$1=the value the workflow gives FALSIFY_PROJECT_TARGET] → a stub repo
   local r; r="$(mk_repo 0)"
   mkdir -p "$r/.github/workflows"
   printf 'jobs:\n  falsify:\n    env:\n      FALSIFY_PROJECT_TARGET: %s\n' "${1:-project.sh}" \
     > "$r/.github/workflows/hermetic-checks.yml"
-  # Records each run's arguments and the two variables run.sh reads for the
-  # flags; fails the run whose arguments hold $P6_FAIL_ON.
+  # Lists the targets of $P6_LIST as run.sh does, a --target matching a path
+  # or a basename, and fails to list at all under $P6_LIST_FAIL. Records each
+  # other run's arguments and the two variables run.sh reads for the flags;
+  # fails the run whose arguments hold $P6_FAIL_ON.
   cat > "$r/tests/falsify/run.sh" <<'STUB'
 #!/usr/bin/env bash
-for a in "$@"; do [[ "$a" == --list-targets ]] && { printf 'tests/portability.sh\nproject.sh\n'; exit 0; }; done
+for a in "$@"; do
+  [[ "$a" == --list-targets ]] || continue
+  [[ -z "${P6_LIST_FAIL:-}" ]] || exit 1
+  want="" prev="" found=0
+  for b in "$@"; do [[ "$prev" == --target ]] && want="$b"; prev="$b"; done
+  for x in ${P6_LIST:-tests/portability.sh project.sh}; do
+    if [[ -z "$want" || "$x" == "$want" || "${x##*/}" == "$want" ]]; then printf '%s\n' "$x"; found=1; fi
+  done
+  (( found )) || { printf 'ERROR: --target %s matches no active row\n' "$want" >&2; exit 2; }
+  exit 0
+done
 printf '%s | select=%s stop=%s\n' "$*" "${FALSIFY_SELECT-<unset>}" "${FALSIFY_STOP_AT_KILL-<unset>}" >> "$P6_ARGV"
 case " $* " in *" ${P6_FAIL_ON:-<none>} "*) printf 'ERROR: failing on purpose\n'; exit 1 ;; esac
 t=tests/portability.sh
@@ -1049,8 +1086,8 @@ STUB
 p6_line() { sed -n "${1}p" "$TMP/p6-argv.txt" 2>/dev/null; }
 r="$(p6_repo)"
 rm -rf "$TMP/p6-argv.txt" "$TMP/p6tmp"; mkdir -p "$TMP/p6tmp"
-# Both variables exported, as a GAP-2 measurement leaves them: they must reach
-# the project.sh pass only, which passes the flags anyway.
+# Both variables exported, as a GAP-2 measurement leaves them: every run has
+# them cleared, the project.sh pass getting the flags as arguments.
 rc="$( export FALSIFY_SELECT=1 FALSIFY_STOP_AT_KILL=1
        run_verify "$r" 6 P6_ARGV="$TMP/p6-argv.txt" TMPDIR="$TMP/p6tmp" )"
 expect_rc "phase 6: the corpus, project.sh and the deep pass all pass" 0 "$rc"
@@ -1065,8 +1102,8 @@ case "$(p6_line 1)" in
   (*) fail "phase 6: the corpus leaves project.sh out, without either flag, the variables cleared -- got '$(p6_line 1)'" ;;
 esac
 case "$(p6_line 2)" in
-  (*"--target project.sh --select-oracles --stop-at-kill"*"--jobs auto"*"--timeout 120"*)
-    pass "phase 6: project.sh runs with --select-oracles --stop-at-kill and the knobs" ;;
+  (*"--target project.sh --select-oracles --stop-at-kill"*"--jobs auto"*"--timeout 120"*"select=<unset> stop=<unset>")
+    pass "phase 6: project.sh runs with --select-oracles --stop-at-kill and the knobs, the variables cleared" ;;
   (*) fail "phase 6: project.sh runs with --select-oracles --stop-at-kill and the knobs -- got '$(p6_line 2)'" ;;
 esac
 case "$(p6_line 3)" in
@@ -1142,7 +1179,42 @@ grep -q 'the survivor-ledger ratchet rejected tests/falsify/survivors.txt for th
   && grep -q 'survivor ledger: OK' "$TMP/out.log" \
   && pass "phase 6: … naming the project.sh pass, the corpus's ledger OK" \
   || fail "phase 6: … naming the project.sh pass, the corpus's ledger OK -- got: $(grep -E 'ratchet|survivor ledger' "$TMP/out.log" | tr '\n' ' ')"
-for k in $(sed -n 's/^.*log kept at: //p' "$TMP/out.log"); do rm -f "$k"; done
+while IFS= read -r k; do rm -f "$k"; done < <(sed -n 's/^.*log kept at: //p' "$TMP/out.log")
+
+# run.sh, not this phase, says whether the name is a target: mgd-ai-containers
+# lists its targets under base/, and run.sh takes a basename for --target.
+r="$(p6_repo)"
+rm -f "$TMP/p6-argv.txt"
+rc="$(run_verify "$r" 6 P6_ARGV="$TMP/p6-argv.txt" P6_LIST="base/tests/portability.sh base/project.sh")"
+[[ "$rc" == 0 && "$(grep -c . "$TMP/p6-argv.txt" 2>/dev/null)" == 3 ]] && [[ "$(p6_line 2)" == *"--target project.sh --select-oracles"* ]] \
+  && pass "phase 6: a target run.sh lists under base/ runs with oracle selection too" \
+  || fail "phase 6: a target run.sh lists under base/ runs with oracle selection too -- rc=$rc runs: $(tr '\n' ';' < "$TMP/p6-argv.txt" 2>/dev/null)"
+# The value is the falsify job's, read as YAML reads it: quoted, with a comment
+# after it, beside the same key in other jobs.
+r="$(p6_repo)"
+printf 'jobs:\n  other:\n    env:\n      FALSIFY_PROJECT_TARGET: tests/portability.sh\n  falsify:\n    env:\n      FALSIFY_PROJECT_TARGET: "project.sh"  # its slices below\n  later:\n    env:\n      FALSIFY_PROJECT_TARGET: nosuch.sh\n' \
+  > "$r/.github/workflows/hermetic-checks.yml"
+rm -f "$TMP/p6-argv.txt"
+rc="$(run_verify "$r" 6 P6_ARGV="$TMP/p6-argv.txt")"
+[[ "$rc" == 0 && "$(p6_line 2)" == *"--target project.sh --select-oracles"* ]] \
+  && pass "phase 6: the falsify job's value is read, quoted and commented, not another job's" \
+  || fail "phase 6: the falsify job's value is read, quoted and commented, not another job's -- rc=$rc runs: $(tr '\n' ';' < "$TMP/p6-argv.txt" 2>/dev/null)"
+printf 'jobs:\n  other:\n    env:\n      FALSIFY_PROJECT_TARGET: project.sh\n  falsify:\n    env:\n      FALSIFY_SPLIT_TARGET: x.sh\n' \
+  > "$r/.github/workflows/hermetic-checks.yml"
+rm -f "$TMP/p6-argv.txt"
+rc="$(run_verify "$r" 6 P6_ARGV="$TMP/p6-argv.txt")"
+[[ "$rc" == 0 && "$(grep -c . "$TMP/p6-argv.txt" 2>/dev/null)" == 2 ]] \
+  && grep -q 'the falsify job sets no FALSIFY_PROJECT_TARGET' "$TMP/out.log" \
+  && pass "phase 6: a key in another job only is not the falsify job's: one pass, saying why" \
+  || fail "phase 6: a key in another job only is not the falsify job's: one pass, saying why -- rc=$rc runs: $(tr '\n' ';' < "$TMP/p6-argv.txt" 2>/dev/null)"
+# A run.sh that cannot list its targets is said to be that, not a missing target.
+r="$(p6_repo)"
+rm -f "$TMP/p6-argv.txt"
+rc="$(run_verify "$r" 6 P6_ARGV="$TMP/p6-argv.txt" P6_LIST_FAIL=1)"
+grep -q 'tests/falsify/run.sh could not list the falsify targets' "$TMP/out.log" \
+  && ! grep -q 'no active falsify target here' "$TMP/out.log" \
+  && pass "phase 6: a run.sh that cannot list its targets is named as such" \
+  || fail "phase 6: a run.sh that cannot list its targets is named as such -- got: $(grep -m1 'NOTE' "$TMP/out.log")"
 
 # Where the workflow names no active target, the corpus runs in one pass, and a
 # NOTE says why; so it does where there is no workflow (every stub repo above).
