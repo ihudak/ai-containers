@@ -302,12 +302,12 @@ add_file_mount_if_exists() {
   fi
 }
 
-# _group_scratch_mount <physical-src> <dst>: whether a writable bind is one of the
-# two group folders the container keeps across restarts — the group's .cache or
-# .local/state, by their physical paths under the group directory
-# (_git_skip_root) — mounted outside /workspace. (/var/tmp, the third, is the
-# group's Docker volume, no host folder to walk.) launcher_ro_overlay does not
-# walk those for launchers or for directories you cannot list. One mounted into
+# _group_scratch_mount <physical-src> <dst>: whether a writable bind is the
+# group folder the container keeps across restarts on the host — the group's
+# .local/state, by its physical path under the group directory (_git_skip_root)
+# — mounted outside /workspace. (~/.cache and /var/tmp, the other two, are the
+# group's Docker volumes, no host folder to walk.) launcher_ro_overlay does not
+# walk it for launchers or for directories you cannot list. One mounted into
 # /workspace (through EXTRA_MOUNTS, say) is the agent's like any mount and is
 # walked (G92), and so is a group folder that is a link out of the group: its
 # source is the directory the link leads to, which this does not match. Fails
@@ -315,10 +315,7 @@ add_file_mount_if_exists() {
 _group_scratch_mount() {
   [[ -n "${_git_skip_root:-}" ]] || return 1
   [[ "$2" != /workspace && "$2" != /workspace/* ]] || return 1
-  case "$1" in
-    "$_git_skip_root/.cache"|"$_git_skip_root/.local/state") return 0 ;;
-  esac
-  return 1
+  [[ "$1" == "$_git_skip_root/.local/state" ]]
 }
 
 # Launcher directories must not be writable from inside the container.
@@ -569,17 +566,17 @@ launcher_ro_overlay() {
     src="${bsrc[i]}"; dst="${bdst[i]}"
     found=(); unreadable=()
     if [[ "$self" == "$src" || "$self" == "$src"/* ]]; then found+=("$self"); fi
-    # The group's ~/.cache and ~/.local/state are not walked. The git
-    # scan below rests on the same premise: the host never runs git or a
-    # launcher from inside a group folder. Walked, they cost every launch a pass
-    # over pip's and uv's deep trees, locked read-only any copy of ai-containers
-    # an agent cloned there, and refused the launch past SANDBOX_LAUNCHER_MAX
-    # such copies or for a folder there the agent made unlistable. The launcher
-    # that is running is still overlaid in them, since finding it costs no walk
-    # (security review of the skip); a launcher another mount's walk finds in
-    # them is still overlaid in their view, by the loop after this one; and the
-    # hard-link check (_fs_linked_in) still lists them, since a second name of a
-    # file git reads can lie there.
+    # The group's ~/.local/state is not walked. The git scan below rests on
+    # the same premise: the host never runs git or a launcher from inside a
+    # group folder. Walked, it cost every launch a pass over its trees (and
+    # ~/.cache, a host folder then too, over pip's and uv's), locked read-only
+    # any copy of ai-containers an agent cloned there, and refused the launch
+    # past SANDBOX_LAUNCHER_MAX such copies or for a folder there the agent made
+    # unlistable. The launcher that is running is still overlaid in it, since
+    # finding it costs no walk (security review of the skip); a launcher another
+    # mount's walk finds in it is still overlaid in its view, by the loop after
+    # this one; and the hard-link check (_fs_linked_in) still lists it, since a
+    # second name of a file git reads can lie there.
     if ! _group_scratch_mount "$src" "$dst"; then
       launcher_dirs_in found unreadable "$src" "$uid" "$gid" "$you"
     fi
@@ -600,10 +597,10 @@ launcher_ro_overlay() {
   # outer mount's scan does not reach what lies past six levels or under a
   # pruned node_modules, and a launcher only the inner mount's scan found stayed
   # writable in the outer mount's view (GIT-51; T74). Another mount of the very
-  # source it was found in counts too: the group's ~/.cache and
-  # ~/.local/state are not walked (_group_scratch_mount), and one of them also
-  # mounted into /workspace, where it is walked, left the launcher found there
-  # writable through the group's own mount (T93).
+  # source it was found in counts too: the group's ~/.local/state is not
+  # walked (_group_scratch_mount), and it also mounted into /workspace, where it
+  # is walked, left the launcher found there writable through the group's own
+  # mount (T93).
   local -A chave=()
   local nc=${#cl[@]}
   for (( k = 0; k < nc; k++ )); do chave[${cat[k]}]=1; done
@@ -8674,9 +8671,23 @@ run_container() {
   # OS libraries are baked) are the costly case: without this every container start
   # re-downloads them. The cost is paid once per group, not once per project and not once
   # per run.
-  install -d "$group_root/.cache" "$group_root/.local/state"
-  add_mount_if_exists config_mount_flags "$group_root/.cache" "$dev_home/.cache"
+  install -d "$group_root/.local/state"
   add_mount_if_exists config_mount_flags "$group_root/.local/state" "$dev_home/.local/state"
+  # ~/.cache is the group's Docker volume, never a bind of a host folder: a cache is
+  # thousands of small files, which a Mac's virtiofs serves one slow request at a time
+  # (measured on Colima: a uv install 8-9x slower, creating, reading and deleting small
+  # files 40-60x), and GNU tar's `..` placeholder fails there, as on /var/tmp's bind. It
+  # is made, and refused when of the name but not the group's, as the temp volume is
+  # (sandbox-common.sh: `_group_volume_ensure()`). The launch that makes it fills it once
+  # from the host folder the bind was (cache_volume_copy_old), which keeps qmd's index and
+  # Playwright's browsers; that folder itself is never changed or removed.
+  local cache_vol cache_made
+  cache_volume_ensure "$group" cache_vol cache_made || exit 1
+  if [[ "$cache_made" == 1 ]]; then
+    cache_volume_copy_old "$group_root/.cache" "$cache_vol" "$image_name" \
+      "${SANDBOX_UID:-$(id -u)}" "${SANDBOX_GID:-$(id -g)}" "$group"
+  fi
+  config_mount_flags+=(-v "$cache_vol:$dev_home/.cache")
   # /var/tmp is mounted whole too, and each launch works in a folder of its own
   # inside it (the container's start-up makes it, agent-tmp.sh), so two
   # containers of one group never share scratch files and a container's
@@ -9040,6 +9051,10 @@ run_container() {
     # TMPDIR from this for the sandbox user's shells only.
     -e AI_AGENT_TMPDIR="/var/tmp/$agent_tmp_slot"
     -e AI_AGENT_TMP_RUNNING="$agent_tmp_running"
+    # ~/.cache is the group's volume (above), whose top folder the start-up gives
+    # the agent (entrypoint.sh: `chown_cache_root()`). An older launcher binds a
+    # host folder there, which the start-up must not chown.
+    -e AI_CACHE_ON_VOLUME=1
     -e RUBY_VERSIONS="$(versions_to_space "$(version_list ruby)")"
     -e AI_SERVICES="$(services_csv)"
     -e REPOS_PATH="$repos_path_ctr"

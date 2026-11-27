@@ -28,6 +28,8 @@ unset REPO_VOLUME_PREFIX REPO_BACKEND
 
 # shellcheck disable=SC1091
 source "$REPO_DIR/sandbox-common.sh"
+# shellcheck source=portability.sh
+source "$REPO_DIR/tests/portability.sh"
 
 # ── Fake docker ─────────────────────────────────────────────────────────────────
 # FAKE_CREATE_FAIL: `docker volume create` fails.
@@ -146,5 +148,132 @@ check "cache_group_from_volume prints nothing for an unlabelled volume (no name 
 reset_volumes; fake_volume create --label ai-containers.cache-group=docs ai-containers-cache-docs
 check "cache_group_from_volume round-trips the label" \
   "docs" "$(cache_group_from_volume ai-containers-cache-docs)"
+
+# ════════════════════════════════════════════════════════════════════════════════
+# The launch (sandbox.sh): ~/.cache is the group's volume, filled once from the
+# host folder the bind was.
+#
+# A fake docker on PATH records every `docker run` (one file per run, one
+# argument a line, in order) and runs nothing: the copy's run is answered with
+# FAKE_COPY_RC and FAKE_COPY_ERR on stderr, the launch's with 0. `volume` calls go
+# to tests/lib-fake-docker-volume.sh; `ps` answers nothing; anything else fails,
+# as in tests/test-agent-tmp.sh.
+# ════════════════════════════════════════════════════════════════════════════════
+export HOME="$TMP/lhome"; mkdir -p "$HOME"
+HOME="$(p_realdir "$HOME")"; export HOME
+export AI_CONTAINER_GROUP_INIT=clean SANDBOX_USER=dev
+unset VAULT_PATH SPECS_PATH DOCS_PATH ARCHITECTURE_REPO_PATH EXTRA_MOUNTS REPOS AI_CONTAINER_GROUP SANDBOX_UID SANDBOX_GID
+export SANDBOX_CONF="$TMP/sandbox.conf"
+printf '# schema-version: 4\nqmd=OFF\nplaywright=OFF\nclaude-code=OFF\n' > "$SANDBOX_CONF"
+LVOLS="$TMP/lvolumes"; RUNS="$TMP/runs"
+mkdir -p "$TMP/lbin" "$TMP/app" "$TMP/launch"
+cat > "$TMP/lbin/docker" <<DOCKER
+#!/usr/bin/env bash
+[[ "\$1" == volume ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$LVOLS" "\$@"
+if [[ "\$1" == run ]]; then
+  shift; mkdir -p "$RUNS"; n=\$(ls "$RUNS" | wc -l); n=\$((n + 1))
+  printf '%s\n' "\$@" > "$RUNS/\$n"
+  for a in "\$@"; do
+    if [[ "\$a" == *:/dst ]]; then
+      [[ -z "\${FAKE_COPY_ERR:-}" ]] || printf '%s\n' "\$FAKE_COPY_ERR" >&2
+      exit "\${FAKE_COPY_RC:-0}"
+    fi
+  done
+  exit 0
+fi
+[[ "\$1" == ps ]] && exit 0
+exit 1
+DOCKER
+chmod +x "$TMP/lbin/docker"
+PATH="$TMP/lbin:$PATH"
+G="$HOME/.ai-containers/default"
+CV=ai-containers-cache-default
+# lrun: one launch; sets RC and ERR (stderr's file); RUNS holds its docker runs.
+lrun() {
+  rm -rf "$RUNS"; ERR="$TMP/lerr"
+  ( cd "$TMP/launch" && bash "$REPO_DIR/sandbox.sh" restricted "$TMP/app" ) >/dev/null 2>"$ERR" </dev/null; RC=$?
+}
+nruns() { ls "$RUNS" 2>/dev/null | wc -l | tr -d ' '; }
+last_run() { cat "$RUNS/$(nruns)"; }
+# has_pair <file> <a> <b>: <a> is followed at once by <b> in that run's arguments.
+has_pair() { awk -v a="$2" -v b="$3" 'p && $0 == b { f = 1 } { p = ($0 == a) } END { exit !f }' "$1"; }
+
+# ── A new group: the volume, no host folder, no copy ────────────────────────────
+lrun
+check "a launch of a new group exits 0" "0" "$RC"
+check "  one docker run: the launch, no copy" "1" "$(nruns)"
+has_pair "$RUNS/1" -v "$CV:/home/dev/.cache" \
+  && pass "  ~/.cache is the group's cache volume" || fail "  ~/.cache is not the cache volume ($(grep -F .cache "$RUNS/1" | tr '\n' ' '))"
+grep -qF "$G/.cache" "$RUNS/1" && fail "  the group's host .cache is bound" || pass "  the group's host .cache is not bound"
+[[ -e "$G/.cache" ]] && fail "  the launch made the group's host .cache" || pass "  the launch makes no host .cache"
+has_pair "$RUNS/1" -e AI_CACHE_ON_VOLUME=1 \
+  && pass "  AI_CACHE_ON_VOLUME=1 is passed" || fail "  AI_CACHE_ON_VOLUME=1 is not passed"
+check "  the volume carries the group label" "default" "$(grep '^ai-containers.cache-group=' "$LVOLS/$CV/labels" | cut -d= -f2-)"
+grep -qF "$G/.local/state:/home/dev/.local/state" "$RUNS/1" \
+  && pass "  ~/.local/state is still the group's host folder" || fail "  ~/.local/state is no longer bound"
+
+# ── A group with an old host .cache: copied once, by the launch that makes the volume
+rm -rf "$LVOLS" "$G"; mkdir -p "$G/.cache/qmd"; printf i > "$G/.cache/qmd/index"
+lrun
+check "a launch with an old .cache exits 0" "0" "$RC"
+check "  two docker runs: the copy, then the launch" "2" "$(nruns)"
+C="$RUNS/1"
+has_pair "$C" -v "$CV:/dst" && pass "  the copy mounts the new volume at /dst" || fail "  the copy does not mount the volume at /dst"
+has_pair "$C" -v "$G/.cache:/src:ro" && pass "  the copy binds the old folder read-only at /src" || fail "  the copy's /src ($(grep -F /src "$C" | tr '\n' ' '))"
+grep -qxF -- --pull=never "$C" && grep -qxF -- --rm "$C" \
+  && pass "  the copy runs --rm --pull=never" || fail "  the copy lacks --rm or --pull=never"
+has_pair "$C" --network none && pass "  the copy has no network" || fail "  the copy has a network"
+has_pair "$C" --entrypoint bash && pass "  the copy runs bash, not the entrypoint" || fail "  the copy runs the entrypoint"
+grep -qF 'setpriv --reuid="$u" --regid="$g" --clear-groups -- cp -dR --preserve=mode,timestamps,links /src/. "$s/"' "$C" \
+  && pass "  the copy runs cp as the agent, ownership given, not preserved" || fail "  the copy's cp is not the agent's"
+check "  its last arguments: _ uid gid and a pid" "_ $(id -u) $(id -g)" "$(tail -4 "$C" | head -3 | tr '\n' ' ' | sed 's/ $//')"
+[[ "$(tail -1 "$C")" =~ ^[0-9]+$ ]] && pass "  the last is a pid" || fail "  the last is not a pid ($(tail -1 "$C"))"
+has_pair "$RUNS/2" -v "$CV:/home/dev/.cache" && pass "  then the launch mounts the volume" || fail "  the launch after the copy"
+grep -qF "Copying this group's ~/.cache into the docker volume $CV" "$ERR" \
+  && grep -qF 'Copied.' "$ERR" && grep -qxF "  rm -rf $G/.cache" "$ERR" \
+  && pass "  the launch says so before and after, with the rm -rf for the old folder" \
+  || fail "  the copy's lines ($(tr '\n' ' ' < "$ERR"))"
+check "  the old folder is untouched" "i" "$(cat "$G/.cache/qmd/index")"
+lrun
+check "the next launch, the volume there: no copy, though the old folder is" "0|1" "$RC|$(nruns)"
+grep -qF Copying "$ERR" && fail "  it says it copies" || pass "  nothing said about a copy"
+
+# The identity the agent runs as is the one the files are given.
+rm -rf "$LVOLS"
+SANDBOX_UID=4242 SANDBOX_GID=4343 lrun
+check "SANDBOX_UID/GID: the copy gives the files that identity" "_ 4242 4343" "$(tail -4 "$RUNS/1" | head -3 | tr '\n' ' ' | sed 's/ $//')"
+
+# ── What is not copied ──────────────────────────────────────────────────────────
+rm -rf "$LVOLS" "$G"; mkdir -p "$G/.cache"
+lrun
+check "an empty old .cache: no copy" "0|1" "$RC|$(nruns)"
+rm -rf "$LVOLS" "$G"; mkdir -p "$G"; printf x > "$G/.cache"
+lrun
+check "an old .cache that is a file: no copy" "0|1" "$RC|$(nruns)"
+rm -rf "$LVOLS" "$G"; mkdir -p "$G" "$TMP/away/qmd"; printf j > "$TMP/away/qmd/index"; ln -s "$TMP/away" "$G/.cache"
+lrun
+check "an old .cache that is a link: copied" "0|2" "$RC|$(nruns)"
+has_pair "$RUNS/1" -v "$(p_realdir "$TMP/away"):/src:ro" \
+  && pass "  from where the link leads, as the bind followed it" || fail "  the link's copy ($(grep -F /src "$RUNS/1" | tr '\n' ' '))"
+rm -f "$G/.cache"; rm -rf "$TMP/away"
+
+# ── A copy that fails warns, and the launch goes on ─────────────────────────────
+rm -rf "$LVOLS" "$G"; mkdir -p "$G/.cache/qmd"; printf i > "$G/.cache/qmd/index"
+FAKE_COPY_RC=1 FAKE_COPY_ERR=$'cp: cannot open \'/src/qmd/x\' for reading: Permission denied\n\e]0;t\a' lrun
+check "a failed copy: the launch goes on" "0|2" "$RC|$(nruns)"
+grep -qF "WARNING: copying $G/.cache into the docker volume $CV failed" "$ERR" \
+  && grep -qF "It said: ?]0;t?" "$ERR" \
+  && pass "  a WARNING, with the copy's last line made safe for the terminal" \
+  || fail "  the failed copy's WARNING ($(tr '\n' ' ' < "$ERR"))"
+grep -qF 'Copied.' "$ERR" && fail "  it says Copied" || pass "  it does not say Copied"
+check "  the old folder is kept" "i" "$(cat "$G/.cache/qmd/index")"
+
+# ── A volume of the name that is not the group's refuses the launch ─────────────
+rm -rf "$LVOLS" "$G"
+bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$LVOLS" volume create "$CV" >/dev/null
+lrun
+[[ "$RC" != 0 && "$(nruns)" == 0 ]] && grep -qF "docker volume rm $CV" "$ERR" \
+  && pass "an unlabelled cache volume of the name refuses the launch, naming the docker volume rm" \
+  || fail "an unlabelled cache volume (rc=$RC; runs=$(nruns); $(grep -F ERROR "$ERR" | head -1))"
 
 if [[ "$fails" -eq 0 ]]; then printf 'ALL PASS\n'; else printf '%d FAILED\n' "$fails"; exit 1; fi

@@ -2627,72 +2627,73 @@ EXTRA_MOUNTS="$W92/data" launch "$L92" "$TMP/app"
   || fail "T92 the control overlay (rc=$LAUNCH_RC; $(grep -F ERROR "$ERR" | head -1))"
 rm -rf "$W92" "$TMP/l92"
 
-# ── T93: the group's ~/.cache and ~/.local/state are not walked for launchers ─
-# The container keeps these two group folders across restarts, mounted outside
-# /workspace (/var/tmp, the third, is the group's Docker volume, no host
-# folder). The host never runs a launcher or git from inside a group folder
-# (the git scan already skips the group's mounts), and walking them cost every
-# launch a pass over pip's and uv's trees, locked read-only any copy of
+# ── T93: the group's ~/.local/state is not walked for launchers ─────────────────
+# The container keeps this group folder across restarts, mounted outside
+# /workspace (~/.cache and /var/tmp, the other two, are the group's Docker
+# volumes, no host folder). The host never runs a launcher or git from inside a
+# group folder (the git scan already skips the group's mounts), and walking it
+# cost every launch a pass over its trees, locked read-only any copy of
 # ai-containers an agent cloned there, and refused the launch past
 # SANDBOX_LAUNCHER_MAX such copies or for a folder there the agent made
 # unlistable. Mounted into /workspace (G92) the group's folder is the agent's
 # like any mount and is walked; one that is a link out of the group is another
-# directory, and is walked too.
+# directory, and is walked too. The group's old host .cache, the bind ~/.cache
+# was before its volume, is not mounted at all.
 G93="$HOME/.ai-containers/default"
 mk_launcher "$G93/.cache/pip/p"; mk_launcher "$G93/.local/state/p"
 launch "$LAUNCHER" "$TMP/app"
 m93="$(mounts)"
 if [[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] \
-   && ! grep -aqF -e "$G93/.cache/pip" -e "$G93/.local/state/p" <<<"$m93"; then
-  pass "T93 a launcher in the group's ~/.cache or ~/.local/state is not overlaid"
+   && ! grep -aqF -e "$G93/.cache" -e "$G93/.local/state/p" <<<"$m93"; then
+  pass "T93 a launcher in the group's ~/.local/state is not overlaid, and its old .cache is not mounted"
 else
-  fail "T93 launchers in the group's scratch folders (rc=$LAUNCH_RC; mounts: $(grep -aF -e '/.cache/' -e '/.local/state/' <<<"$m93" | tr '\n' ' '))"
+  fail "T93 launchers in the group's scratch folders (rc=$LAUNCH_RC; mounts: $(grep -aF -e '/.cache' -e '/.local/state/' <<<"$m93" | tr '\n' ' '))"
 fi
 rm -rf "$G93/.cache/pip" "$G93/.local/state/p"
 # Unlistable two ways: 000 (you cannot search it either) and 100 (you can
 # search it, so a launch that walked it refused: what is inside can be opened
 # by name and cannot be checked).
-mkdir -p "$G93/.cache/locked" "$G93/.cache/sealed"
-chmod 000 "$G93/.cache/locked"; chmod 100 "$G93/.cache/sealed"
-if ls "$G93/.cache/locked" >/dev/null 2>&1; then
+mkdir -p "$G93/.local/state/locked" "$G93/.local/state/sealed"
+chmod 000 "$G93/.local/state/locked"; chmod 100 "$G93/.local/state/sealed"
+if ls "$G93/.local/state/locked" >/dev/null 2>&1; then
   # Root lists both, so nothing here is unlistable, and each check below would
   # pass whether the group's cache is walked or not (CI's floor job runs as root).
   printf "NOTE: T93's unlistable folders not run: a mode-000 folder can be listed here (root)\n"
 else
   launch "$LAUNCHER" "$TMP/app"
   m93="$(mounts)"
-  if [[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] && ! err_names "$G93/.cache/locked" && ! err_names "$G93/.cache/sealed" \
-     && ! grep -aqF -e "$G93/.cache/locked" -e "$G93/.cache/sealed" <<<"$m93"; then
-    pass "T93 a folder the agent made unlistable in the group's cache does not refuse the launch"
+  if [[ "$LAUNCH_RC" == 0 && -s "$CAPTURE" ]] && ! err_names "$G93/.local/state/locked" && ! err_names "$G93/.local/state/sealed" \
+     && ! grep -aqF -e "$G93/.local/state/locked" -e "$G93/.local/state/sealed" <<<"$m93"; then
+    pass "T93 a folder the agent made unlistable in the group's ~/.local/state does not refuse the launch"
   else
-    fail "T93 unlistable folders in the group's cache (rc=$LAUNCH_RC; $(grep -aF -e ERROR -e WARNING "$ERR" | head -2 | tr '\n' ' '))"
+    fail "T93 unlistable folders in the group's ~/.local/state (rc=$LAUNCH_RC; $(grep -aF -e ERROR -e WARNING "$ERR" | head -2 | tr '\n' ' '))"
   fi
-  # The group's cache mounted into /workspace too (G92) is walked there like any
-  # mount: a folder you can search but not list refuses the launch, and one you
-  # cannot search either is read-only in both views, /workspace's and
-  # ~/.cache's, each named. Left writable through ~/.cache, it would be a
-  # folder of the mount the agent could fill unchecked.
-  EXTRA_MOUNTS="$G93/.cache" launch "$LAUNCHER" "$TMP/app"
-  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$G93/.cache/sealed can be searched but not listed by you" \
-    && pass "T93 the group's cache also in EXTRA_MOUNTS: a folder you can search but not list refuses the launch" \
-    || fail "T93 a searchable unlistable folder in the group's cache in EXTRA_MOUNTS (rc=$LAUNCH_RC; $(grep -aF ERROR "$ERR" | head -1))"
-  chmod 700 "$G93/.cache/sealed"; rm -rf "$G93/.cache/sealed"
-  EXTRA_MOUNTS="$G93/.cache" launch "$LAUNCHER" "$TMP/app"
+  # The group's ~/.local/state mounted into /workspace too (G92) is walked there
+  # like any mount: a folder you can search but not list refuses the launch, and
+  # one you cannot search either is read-only in both views, /workspace's and
+  # ~/.local/state's, each named. Left writable through ~/.local/state, it would
+  # be a folder of the mount the agent could fill unchecked.
+  EXTRA_MOUNTS="$G93/.local/state" launch "$LAUNCHER" "$TMP/app"
+  [[ "$LAUNCH_RC" != 0 && ! -s "$CAPTURE" ]] && err_names "$G93/.local/state/sealed can be searched but not listed by you" \
+    && pass "T93 the group's ~/.local/state also in EXTRA_MOUNTS: a folder you can search but not list refuses the launch" \
+    || fail "T93 a searchable unlistable folder in the group's ~/.local/state in EXTRA_MOUNTS (rc=$LAUNCH_RC; $(grep -aF ERROR "$ERR" | head -1))"
+  chmod 700 "$G93/.local/state/sealed"; rm -rf "$G93/.local/state/sealed"
+  EXTRA_MOUNTS="$G93/.local/state" launch "$LAUNCHER" "$TMP/app"
   m93="$(mounts)"
-  [[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.cache/locked:/workspace/.cache/locked:ro" <<<"$m93" \
-    && grep -aqxF "$G93/.cache/locked:/home/tester/.cache/locked:ro" <<<"$m93" \
-    && grep -aqF "launchers; it is mounted read-only at /workspace/.cache/locked." "$ERR" \
-    && grep -aqF "launchers; it is mounted read-only at /home/tester/.cache/locked." "$ERR" \
-    && pass "T93 the group's cache also in EXTRA_MOUNTS: an unsearchable folder is read-only in both views, each named" \
-    || fail "T93 an unsearchable folder in the group's cache in EXTRA_MOUNTS (rc=$LAUNCH_RC; mounts: $(grep -aF locked <<<"$m93" | tr '\n' ' '); $(grep -aF -e ERROR -e 'read-only at' "$ERR" | head -3 | tr '\n' ' '))"
+  [[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.local/state/locked:/workspace/state/locked:ro" <<<"$m93" \
+    && grep -aqxF "$G93/.local/state/locked:/home/tester/.local/state/locked:ro" <<<"$m93" \
+    && grep -aqF "launchers; it is mounted read-only at /workspace/state/locked." "$ERR" \
+    && grep -aqF "launchers; it is mounted read-only at /home/tester/.local/state/locked." "$ERR" \
+    && pass "T93 the group's ~/.local/state also in EXTRA_MOUNTS: an unsearchable folder is read-only in both views, each named" \
+    || fail "T93 an unsearchable folder in the group's ~/.local/state in EXTRA_MOUNTS (rc=$LAUNCH_RC; mounts: $(grep -aF locked <<<"$m93" | tr '\n' ' '); $(grep -aF -e ERROR -e 'read-only at' "$ERR" | head -3 | tr '\n' ' '))"
 fi
-chmod 700 "$G93/.cache/locked" "$G93/.cache/sealed" 2>/dev/null; rm -rf "$G93/.cache/locked" "$G93/.cache/sealed"
+chmod 700 "$G93/.local/state/locked" "$G93/.local/state/sealed" 2>/dev/null; rm -rf "$G93/.local/state/locked" "$G93/.local/state/sealed"
 # The control, scope: the rest of the group is walked as before.
 printf 'claude-code=ON\n' > "$TMP/conf93"
 mk_launcher "$G93/.claude/p"
 SANDBOX_CONF="$TMP/conf93" launch "$LAUNCHER" "$TMP/app"
 [[ "$LAUNCH_RC" == 0 ]] && grep -aqxF "$G93/.claude/p/.ai-containers:/home/tester/.claude/p/.ai-containers:ro" <<<"$(mounts)" \
-  && pass "T93 the skip covers only ~/.cache and ~/.local/state, not the rest of the group" \
+  && pass "T93 the skip covers only ~/.local/state, not the rest of the group" \
   || fail "T93 a launcher in the group's ~/.claude (rc=$LAUNCH_RC; mounts: $(mounts | grep -aF '/.claude' | tr '\n' ' '))"
 rm -rf "$G93/.claude/p" "$TMP/conf93"
 # The control, G92: the group's ~/.local/state mounted into /workspace is the
@@ -2706,17 +2707,17 @@ m93="$(mounts)"
   && pass "T93 the group's ~/.local/state mounted into /workspace is walked like any mount" \
   || fail "T93 G92 control (rc=$LAUNCH_RC; $(grep -aF ERROR "$ERR" | head -1); mounts: $(grep -aF '/.local/state/p' <<<"$m93" | tr '\n' ' '))"
 rm -rf "$G93/.local/state/p"
-# A group cache that is a link out of the group mounts another directory: the
-# skip, which matches the group's own folder by its physical path, does not
-# reach it.
+# A group ~/.local/state that is a link out of the group mounts another
+# directory: the skip, which matches the group's own folder by its physical
+# path, does not reach it.
 mkdir -p "$TMP/elsewhere93"; mk_launcher "$TMP/elsewhere93/p"
-rm -rf "$G93/.cache" && ln -s "$TMP/elsewhere93" "$G93/.cache" || { printf 'SCAFFOLD-FAILED: T93 link\n'; exit 1; }
+rm -rf "$G93/.local/state" && ln -s "$TMP/elsewhere93" "$G93/.local/state" || { printf 'SCAFFOLD-FAILED: T93 link\n'; exit 1; }
 launch "$LAUNCHER" "$TMP/app"
-[[ "$LAUNCH_RC" == 0 ]] && grep -aqF "WARNING: $G93/.cache is a link out of the group" "$ERR" \
-  && grep -aqxF "$TMP/elsewhere93/p/.ai-containers:/home/tester/.cache/p/.ai-containers:ro" <<<"$(mounts)" \
-  && pass "T93 a group cache that links out of the group is walked" \
-  || fail "T93 a group cache linked out (rc=$LAUNCH_RC; $(grep -aF -e ERROR -e 'link out' "$ERR" | head -2 | tr '\n' ' '); mounts: $(mounts | grep -aF elsewhere93 | tr '\n' ' '))"
-rm -f "$G93/.cache" && mkdir "$G93/.cache"; rm -rf "$TMP/elsewhere93"
+[[ "$LAUNCH_RC" == 0 ]] && grep -aqF "WARNING: $G93/.local/state is a link out of the group" "$ERR" \
+  && grep -aqxF "$TMP/elsewhere93/p/.ai-containers:/home/tester/.local/state/p/.ai-containers:ro" <<<"$(mounts)" \
+  && pass "T93 a group ~/.local/state that links out of the group is walked" \
+  || fail "T93 a group ~/.local/state linked out (rc=$LAUNCH_RC; $(grep -aF -e ERROR -e 'link out' "$ERR" | head -2 | tr '\n' ' '); mounts: $(mounts | grep -aF elsewhere93 | tr '\n' ' '))"
+rm -f "$G93/.local/state" && mkdir "$G93/.local/state"; rm -rf "$TMP/elsewhere93"
 # The launcher that is running is overlaid wherever it lies, the group's
 # ~/.local/state included: finding it costs no walk (security review of the skip).
 mkdir -p "$G93/.local/state/run93" && cp -R "$LAUNCHER" "$G93/.local/state/run93/.ai-containers" \

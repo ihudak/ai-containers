@@ -2,11 +2,13 @@
 # Tests for the scratch places an agent's work survives a container restart in.
 #
 # Containers run with --rm, so only a group directory or a group's Docker
-# volume outlives one. ~/.cache and ~/.local/state are mounted WHOLE from the
-# group whatever sandbox.conf says: a nested mount per tool (qmd, Playwright,
-# Claude Code) left every other tool's cache and state to vanish with the
-# container. /var/tmp is the group's Docker volume, never a host folder (GNU
-# tar's `..` placeholder fails on a macOS virtiofs bind), and each launch names
+# volume outlives one. ~/.cache and ~/.local/state are mounted WHOLE whatever
+# sandbox.conf says, ~/.cache as the group's Docker volume and ~/.local/state
+# from the group's folder: a nested mount per tool (qmd, Playwright, Claude
+# Code) left every other tool's cache and state to vanish with the container
+# (the cache volume itself is tests/test-cache-volume.sh's). /var/tmp is the
+# group's Docker volume, never a host folder (GNU tar's `..` placeholder fails
+# on a macOS virtiofs bind), and each launch names
 # its own folder in it, which the container's start-up makes after pruning old
 # ones: agent-tmp.sh, run directly in the last section.
 #
@@ -99,12 +101,12 @@ arg_after() { awk -v f="$1" -v v="$2" 'p == f && $0 == v { ok = 1 } { p = $0 } E
 setup
 run_sandbox
 check "sandbox.sh exits 0 (rc=$RC)" test "$RC" -eq 0
-check "cache: ~/.cache mounted whole from the group, whatever sandbox.conf says" \
-  mounted "$GROUP_ROOT/.cache" "/home/dev/.cache"
+check "cache: ~/.cache is the group's volume, whatever sandbox.conf says" \
+  arg_after -v "ai-containers-cache-default:/home/dev/.cache"
 check "state: ~/.local/state mounted whole" \
   mounted "$GROUP_ROOT/.local/state" "/home/dev/.local/state"
-check "both made in the group" \
-  test -d "$GROUP_ROOT/.cache" -a -d "$GROUP_ROOT/.local/state"
+check "the state folder made in the group, no cache folder" \
+  bash -c '[[ -d "$1/.local/state" && ! -e "$1/.cache" ]]' _ "$GROUP_ROOT"
 teardown
 
 # A nested mount under either would shadow part of the whole one.
@@ -115,7 +117,7 @@ run_sandbox
 check "no nested mount under ~/.cache or ~/.local/state" \
   bash -c '! grep -qE ":/home/dev/\.(cache|local/state)/" "$1"' _ "$CAPTURE"
 check "whole ~/.cache and ~/.local/state still mounted" \
-  bash -c 'grep -qxF -- "$2:/home/dev/.cache:rw" "$1" && grep -qxF -- "$3:/home/dev/.local/state:rw" "$1"' _ "$CAPTURE" "$GROUP_ROOT/.cache" "$GROUP_ROOT/.local/state"
+  bash -c 'grep -qxF -- "$2:/home/dev/.cache" "$1" && grep -qxF -- "$3:/home/dev/.local/state:rw" "$1"' _ "$CAPTURE" ai-containers-cache-default "$GROUP_ROOT/.local/state"
 check "claude-code still gets its own share dir" \
   mounted "$GROUP_ROOT/.local/share/claude" "/home/dev/.local/share/claude"
 teardown
@@ -159,7 +161,7 @@ slot2="$(sed -n 's|^AI_AGENT_TMPDIR=/var/tmp/||p' "$CAPTURE")"
 check "each launch gets its own folder" test -n "$slot2" -a "$slot2" != "$slot"
 check "docker ps is asked again on the next launch, with no old folder anywhere" test "$(ps_asked)" = 2
 check "the next launch uses the same volume, and makes no other (rc=$RC)" \
-  bash -c '[[ "$2" -eq 0 && "$(ls "$1")" == "$3" ]]' _ "$TMP/volumes" "$RC" "$VOL"
+  bash -c '[[ "$2" -eq 0 && "$(ls "$1" | tr "\n" " ")" == "$3 " ]]' _ "$TMP/volumes" "$RC" "ai-containers-cache-default $VOL"
 teardown
 
 # Only label values of the folder-name form are passed: another tool's label, a

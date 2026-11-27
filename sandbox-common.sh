@@ -1136,6 +1136,71 @@ cache_volume_ensure() {
   _group_volume_ensure cache "$1" "$2" "$3"
 }
 
+# The program the one-time copy runs in the project image (cache_volume_copy_old),
+# as root, with the old folder at /src (read-only) and the new volume at /dst;
+# $1 $2 the sandbox uid and gid, $3 the launcher's pid. Root gives the volume's top
+# folder to the agent and makes a staging folder of the agent's; the copy itself
+# runs AS THE AGENT, so every file it makes is the agent's, ownership given rather
+# than preserved: root reads a host bind's files on Colima as 0:0, and a `cp -a` as
+# root put root-owned folders in a volume the agent could not enter (case 525). A
+# `0700` folder stays readable (the agent owns it); links stay links (-d); modes and
+# times are kept. Each top-level entry then moves up with one rename, a name already
+# there left alone (two first launches of the group copying at once), so a tool's
+# cache is all there or absent, never half-copied; the staging folder goes either
+# way. A launcher killed mid-copy leaves the staging folder, hidden, in the volume.
+_cache_copy_prog='set -u
+u=$1 g=$2 s=/dst/.ai-containers-copying-$3
+chown "$u:$g" /dst && install -d -o "$u" -g "$g" -m 0700 "$s" \
+  && setpriv --reuid="$u" --regid="$g" --clear-groups -- cp -dR --preserve=mode,timestamps,links /src/. "$s/"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  for e in "$s"/* "$s"/.[!.]* "$s"/..?*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    n=${e##*/}
+    [ -e "/dst/$n" ] || [ -L "/dst/$n" ] || mv -- "$e" "/dst/$n" || rc=1
+  done
+fi
+rm -rf -- "$s"
+exit "$rc"'
+
+# cache_volume_copy_old <old-folder> <volume> <image> <uid> <gid> <group>: fill the
+# group's cache volume, which this launch has just made, with what the folder the
+# group's ~/.cache was a bind of holds: qmd's index and Playwright's browsers
+# (~500 MB) among it, which are slow to rebuild. Once, by the launch that made
+# the volume, and only from a folder that holds something (followed when it is a
+# link, as the bind followed it). Never refuses the launch: a copy that fails
+# warns and the group starts with an empty cache. The old folder is never changed
+# or removed: projects of the group on an older engine (not yet synced) still
+# mount it.
+cache_volume_copy_old() {
+  local old="$1" vol="$2" image="$3" uid="$4" gid="$5" group="$6" entries src selinux_opt err
+  local -a obind=()
+  [[ -d "$old" ]] || return 0
+  if ! entries="$(ls -A -- "$old" 2>/dev/null)"; then
+    printf 'WARNING: cannot read %s, the folder this group'"'"'s ~/.cache was before it became the\n' "$(_ac_term "$old")" >&2
+    printf '         docker volume %s: nothing is copied from it, and the cache starts empty.\n' "$vol" >&2
+    return 0
+  fi
+  [[ -n "$entries" ]] || return 0
+  src="$(resolve_path "$old")"
+  printf 'Copying this group'"'"'s ~/.cache into the docker volume %s (one time; a large cache takes a while)...\n' "$vol" >&2
+  if selinux_opt="$(selinux_security_opt)" \
+     && docker_bind obind "$src" /src ro "The group's old ~/.cache" \
+     && err="$(docker run --rm --pull=never --network none ${selinux_opt:+"$selinux_opt"} "${obind[@]}" -v "$vol:/dst" \
+          --entrypoint bash "$image" -c "$_cache_copy_prog" _ "$uid" "$gid" "$$" 2>&1 >/dev/null)"; then
+    printf 'Copied. %s is no longer mounted; projects of group "%s" not yet synced to this\n' "$(_ac_term "$old")" "$group" >&2
+    printf 'engine still use it. Once none does, remove it:\n  rm -rf %s\n' "$(_ac_term "$old")" >&2
+    return 0
+  fi
+  printf 'WARNING: copying %s into the docker volume %s failed: this group'"'"'s cache\n' "$(_ac_term "$old")" "$vol" >&2
+  printf '         starts empty, and its tools fill it again. The old folder is kept as it was.\n' >&2
+  # What went wrong, in the copy's words: its last line that holds anything, made
+  # safe for the terminal.
+  err="${err%"${err##*[!$'\n']}"}"; err="${err##*$'\n'}"; err="${err%$'\r'}"
+  [[ -z "$err" ]] || printf '         It said: %s\n' "$(_ac_term "$err")" >&2
+  return 0
+}
+
 # Returns 0 if any running container currently mounts docker volume $1.
 # docker_volume_mounted_rw <volume>: a running container mounts it read-write —
 # so an agent there can rewrite it while the host works on it.

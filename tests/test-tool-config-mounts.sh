@@ -242,21 +242,22 @@ if ! grep -qx -- "$HOME/.gitignore_global:/home/dev/.gitignore_global:ro" "$CAPT
 teardown
 
 # ── Case 10: every BUILT-IN config dir is group-scoped, one assertion each ─────
-# The tools.d descriptors above go through one code path; these twelve are
+# The tools.d descriptors above go through one code path; these eleven are
 # hardcoded in run_container, each with its own `if [[ "$group" != "host" ]];
 # then install -d …` guard, and the mount that follows is OUTSIDE the guard. So
 # inverting a guard does not redirect the mount — it stops the directory being
 # created, `add_mount_if_exists` then finds nothing, and that tool's credentials
 # silently stop reaching the container. One assertion per directory, because one
-# aggregate would kill all twelve mutants without saying which line moved.
+# aggregate would kill all eleven mutants without saying which line moved.
 #
 # The last four — .aws/.azure/.kube/.yarn — were mounted straight from $HOME
 # until they joined the group, which is why the host copies below matter: with
 # no $HOME/.aws on disk, the "not mounted from the bare host home" assertion
 # cannot fail even when the mount source IS the host home, because
 # add_mount_if_exists skips a source that does not exist. Creating them makes
-# that assertion load-bearing for all twelve rather than vacuous.
-BUILTIN_DIRS=(.config/gh .copilot .kiro .claude .codex .gemini .cache .ai-tools
+# that assertion load-bearing for all eleven rather than vacuous. (~/.cache, a
+# twelfth once, is the group's Docker volume now: tests/test-cache-volume.sh.)
+BUILTIN_DIRS=(.config/gh .copilot .kiro .claude .codex .gemini .ai-tools
               .aws .azure .kube .yarn)
 setup
 printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nyarn=ON\n' > "$SANDBOX_CONF"
@@ -272,9 +273,12 @@ for _d in "${BUILTIN_DIRS[@]}"; do
 done
 if [[ -z "$_leaked" ]]; then
   pass "named group: no built-in config dir is mounted from the bare host home"; else fail "named group: no built-in config dir is mounted from the bare host home —$_leaked"; fi
+mkdir -p "$HOME/.cache"; : > "$CAPTURE"; run_sandbox "$TMP/app"
+if ! grep -q -- ":/home/dev/.cache:rw$" "$CAPTURE" && grep -qx -- "ai-containers-cache-default:/home/dev/.cache" "$CAPTURE"; then
+  pass "named group: ~/.cache is the group's volume, never a host folder"; else fail "named group: ~/.cache is a host folder ($(grep -F /home/dev/.cache "$CAPTURE" | tr '\n' ' '))"; fi
 teardown
 
-# ── Case 10b: `host` no longer mounts the twelve straight from $HOME ────────
+# ── Case 10b: `host` no longer mounts the eleven straight from $HOME ────────
 setup
 printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\ngithub-cli=ON\ncopilot=ON\nkiro=ON\nclaude-code=ON\ncodex=ON\ngemini=ON\nqmd=ON\naws-cli=ON\nazure-cli=ON\nkubectl=ON\nyarn=ON\n' > "$SANDBOX_CONF"
 for _d in "${BUILTIN_DIRS[@]}"; do mkdir -p "$HOME/$_d"; done
@@ -544,7 +548,7 @@ printf '# schema-version: 3\nalpha=OFF\nbeta=OFF\ngamma=OFF\nruby=3.3.6\n' > "$S
 cat > "$TMP/bin/docker" <<DOCKER
 #!/usr/bin/env bash
 if [[ "\$1" == "run" ]]; then shift; printf '%s\n' "\$@" > "$CAPTURE"; exit 0; fi
-[[ "\$1" == volume && "\$*" == *-vartmp-* ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
+[[ "\$1" == volume && ( "\$*" == *-vartmp-* || "\$*" == *-cache-* ) ]] && exec bash "$REPO_DIR/tests/lib-fake-docker-volume.sh" "$TMP/volumes" "\$@"
 [[ "\$1 \$2" == "volume inspect" ]] && exit 0
 exit 1
 DOCKER
