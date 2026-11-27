@@ -198,8 +198,9 @@ jobs:
     # on 5 of 12 runs, repo-git-reset.sh alone taking 2,700 s of it (325
     # mutants). That target ran in one shard and every other one in the
     # other (each split further since, below), as `--target X` and
-    # `--exclude-target X` of the SAME name, so the two cover the corpus exactly once whatever is added to it later — a
-    # target list per shard would leave a new target in neither;
+    # `--exclude-target X` of the SAME name, so the two cover the corpus
+    # exactly once whatever is added to it later — a target list per shard
+    # would leave a new target in neither;
     # tests/test-falsify-shards.sh runs the step below once per shard to prove
     # it. Each shard scores the ledger against its own run; check-ledger.sh's
     # scope rule skips (and says it skips) every entry for a file its run did
