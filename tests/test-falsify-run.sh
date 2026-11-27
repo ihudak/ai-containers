@@ -1701,6 +1701,54 @@ fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-bigslice" --jobs 1 --controls 0 --targ
   && pass "a slice past the target's identities is refused, naming why, not run empty" \
   || fail "a slice past the target's identities is refused, naming why, not run empty (rc=$FX_RC): $FX_ERR"
 
+# ── 12b''. --slice K/N of a run of several targets: each target is sliced ──
+# (Bugs review TST-43.) CI's rest-K shards run every target without a shard
+# of its own, sliced: each selected target's mutants are dealt among the N
+# slices on their own, so slices 1..N cover every target exactly once, each
+# slice runs a share of every target, and names the rest of each as
+# ELSEWHERE. A second fixture target with more than one identity and its own
+# oracle, in a copy of the fixture repo; fixture-slow.sh has one identity,
+# which a second slice would hold none of: such a slice is refused in a run
+# of several targets too, which CI's rest-K shards rely on to fail loudly.
+FXM="$TMP/repo-multi"
+cp -a "$FX" "$FXM"
+cp "$FXM/fixture-lib.sh" "$FXM/fixture-lib2.sh"
+sed 's|fixture-lib\.sh|fixture-lib2.sh|g' "$FXM/tests/test-fx-a.sh" > "$FXM/tests/test-fx-a2.sh"
+( cd "$FXM" && git add -A && git -c user.email=t@example -c user.name=t commit -qm multi ) >/dev/null 2>&1
+CONF_MULTI="$(conf multi 'fixture-lib.sh|EXECUTED-WHOLE|test-fx-a.sh
+fixture-lib2.sh|EXECUTED-WHOLE|test-fx-a2.sh')"
+fx_run "$RUN" "$CONF_MULTI" "$FXM" "$TMP/wit-mwhole" --jobs 2 --controls 0
+mwhole="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $NF }' <<< "$FX_OUT" | sort)"
+mslice_all="" mslice_rc=0 mslice_out=()
+for k in 1 2; do
+  fx_run "$RUN" "$CONF_MULTI" "$FXM" "$TMP/wit-mslice$k" --jobs 2 --controls 0 --slice "$k/2"
+  (( FX_RC == 0 )) || mslice_rc="$FX_RC"
+  mslice_all+="$(awk -F'|' '$1 == "MUTANT" { print $3 "|" $NF }' <<< "$FX_OUT")"$'\n'
+  mslice_out[k]="$FX_OUT"
+done
+check "--slice 1/2 and 2/2 of a two-target run both run (exit 0)" "0" "$mslice_rc"
+for t in fixture-lib.sh fixture-lib2.sh; do
+  check "  … $t: together they run every mutant of its whole run, each once" \
+    "$(grep -F "$t:" <<< "$mwhole")" "$(grep -F "$t:" <<< "$mslice_all" | sort)"
+  for k in 1 2; do
+    o=$(( 3 - k ))
+    mids="$(awk -F'|' -v t="$t:" '$1 == "MUTANT" && index($3, t) == 1 { print $3 }' <<< "${mslice_out[k]}" | sort -u)"
+    [[ -n "$mids" ]] && pass "  … $t: slice $k/2 runs a share of it" || fail "  … $t: slice $k/2 runs a share of it (none)"
+    check "  … $t: slice $k/2 names slice $o/2's identities as ELSEWHERE" \
+      "$(awk -F'|' -v t="$t:" '$1 == "MUTANT" && index($3, t) == 1 { print $3 }' <<< "${mslice_out[o]}" | sort -u)" \
+      "$(awk -F'|' -v t="$t:" -v s="$o/2" '$1 == "ELSEWHERE" && index($2, t) == 1 && $3 == s { print $2 }' <<< "${mslice_out[k]}" | sort)"
+    check "  … $t: slice $k/2 records one SLICE line" "1" "$(grep -c "^SLICE|$t|$k/2|" <<< "${mslice_out[k]}")"
+  done
+done
+fx_run "$RUN" "$CONF_MULTI" "$FXM" "$TMP/wit-mlist" --slice 2/2 --list-targets
+check "--list-targets with --slice names every target's slice" "fixture-lib.sh 2/2
+fixture-lib2.sh 2/2" "$(sort <<< "$FX_OUT")"
+fx_run "$RUN" "$CONF_TWO" "$FX" "$TMP/wit-mbig" --jobs 1 --controls 0 --slice 2/2
+[[ "$FX_RC" -ne 0 ]] && grep -qF -- '--slice 2/2 of fixture-slow.sh holds no mutant' <<< "$FX_ERR" \
+  && ! grep -q '^MUTANT|' <<< "$FX_OUT" \
+  && pass "a slice of a run of several targets that holds none of one target's mutants is refused, naming it" \
+  || fail "a slice of a run of several targets that holds none of one target's mutants is refused, naming it (rc=$FX_RC): $FX_ERR"
+
 # ── 12c. --deep: only deep.conf's targets, under only their extra operators ──
 # (GAP-4.) fixture-lib.sh has one simple statement, fx_never_called's
 # `return 0`, so stmt-delete gives it exactly one mutant; fixture-slow.sh is
@@ -2484,8 +2532,8 @@ out="$(bash "$RUN" --list-targets --exclude-target postgres.sh 2>/dev/null)"; rc
 check "--list-targets exits 0" "0" "$rc"
 check "  … and --exclude-target postgres.sh drops services.d/postgres.sh" "0" "$(grep -c '^services.d/postgres.sh$' <<< "$out")"
 check "  … keeping its neighbour services.d/redis.sh" "1" "$(grep -c '^services.d/redis.sh$' <<< "$out")"
-# Given twice, each name is left out (CI's rest shard leaves out every target
-# with a shard of its own), and each must match an active row.
+# Given twice, each name is left out (CI's rest-K shards leave out every
+# target with a shard of its own), and each must match an active row.
 out="$(bash "$RUN" --list-targets --exclude-target postgres.sh --exclude-target redis.sh 2>/dev/null)"; rc=$?
 check "--exclude-target given twice leaves out both (exit 0)" "0:0:0:1" \
   "$rc:$(grep -c '^services.d/postgres.sh$' <<< "$out"):$(grep -c '^services.d/redis.sh$' <<< "$out"):$(grep -c '^version.sh$' <<< "$out")"

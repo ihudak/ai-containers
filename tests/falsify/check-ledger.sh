@@ -90,10 +90,11 @@
 # `TARGET|` line at all is refused (exit 2) rather than reported clean: a gate
 # fed nothing must not pass.
 #
-# A SLICE of a target (`run.sh --slice K/N`, CI's project-K shards) measures
-# only the identities dealt to it. The run records every identity it dealt to
-# another slice (ELSEWHERE|), and an entry for one of those is skipped, saying
-# so, like an entry for a file the run did not measure. An entry for an
+# A SLICE of a target (`run.sh --slice K/N`, CI's project-K, repo-git-reset-K
+# and rest-K shards) measures only the identities dealt to it. The run records
+# every identity it dealt to another slice (ELSEWHERE|), and an entry for one
+# of those is skipped, saying so, like an entry for a file the run did not
+# measure. An entry for an
 # identity the run neither measured nor dealt elsewhere is stale, as in a whole
 # run: the generator did not produce it at all.
 #

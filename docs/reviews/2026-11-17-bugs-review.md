@@ -950,7 +950,7 @@ No TODO, FIXME, "follow-up" or "deferred" marker added to code since bec1c57 pro
 - **The product's cut:** `repo.sh` shows the same 200 characters (`STALE: its recorded remote could not be cloned (…)`), so a recorded URL of more than about 150 characters loses the end of git's error, which says why. A remote's URL is rarely that long, and this is not changed.
 
 ### TST-43: CI's falsify jobs `repo-git-reset` and `rest` run up to their 90-minute limit on a slow runner
-- **Status: OPEN** (logged 2026-11-27, Linux agent). To be split, as the workflow's comment says, the user's choice: `repo-git-reset` in two slices, as `project.sh` is, and `rest` in two.
+- **Status: FIXED** (2026-11-27, Linux agent). Split as the workflow's comment says, the user's choice: `repo-git-reset` runs as two slices (`repo-git-reset-1`, `repo-git-reset-2`), as `project.sh` does, and `rest` as two (`rest-1`, `rest-2`), each of its targets dealt on its own; `tests/test-falsify-shards.sh` checks that every slice runs once. A slice repeats its targets' baselines and controls, so one of `rest` is estimated to cost about 60% of the whole run (from their share, until sliced runs are timed), and a third would buy little: the next split of it moves its costly targets out, or selects oracles. No runner change: a slice of a target with fewer distinct identities than slices is still refused, naming the target, and `rest`'s smallest has 3.
 - **Severity:** LOW (CI only: a cancelled job fails the run, and a rerun usually passes)
 - **Confidence:** CONFIRMED
 - **Location:** `.github/workflows/hermetic-checks.yml`: `timeout-minutes: 90`, the falsify job's limit, and the matrix of its jobs

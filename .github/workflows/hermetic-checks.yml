@@ -196,10 +196,11 @@ jobs:
     # It neared it again, so the corpus is SPLIT, as planned: on 2026-10-30 the
     # whole run took 4,639 s on its last green pass and was cancelled at the cap
     # on 5 of 12 runs, repo-git-reset.sh alone taking 2,700 s of it (325
-    # mutants). That target runs in one shard and every other one in the
-    # other, as `--target X` and `--exclude-target X` of the SAME name, so the
-    # two cover the corpus exactly once whatever is added to it later — a
-    # target list per shard would leave a new target in neither;
+    # mutants). That target ran in one shard and every other one in the
+    # other (each split further since, below), as `--target X` and
+    # `--exclude-target X` of the SAME name, so the two cover the corpus
+    # exactly once whatever is added to it later — a target list per shard
+    # would leave a new target in neither;
     # tests/test-falsify-shards.sh runs the step below once per shard to prove
     # it. Each shard scores the ledger against its own run; check-ledger.sh's
     # scope rule skips (and says it skips) every entry for a file its run did
@@ -215,18 +216,28 @@ jobs:
         # `deep` is not a slice of the corpus: it is the per-target deep pass
         # (GAP-4), `run.sh --deep`, which runs only the targets
         # tests/falsify/deep.conf names and only under the extra operators
-        # each earned there (stmt-delete). The other two shards cover the
-        # corpus once under the default operators; check-ledger.sh scopes each
-        # run by the operators it used, so all three score the one ledger.
+        # each earned there (stmt-delete). The other shards cover the corpus
+        # once under the default operators; check-ledger.sh scopes each run by
+        # the operators it used, so all of them score the one ledger.
         #
         # project-1 .. project-N are the N slices of project.sh's mutants
         # (`run.sh --slice K/N`, feature-gaps review GAP-28): its whole run
         # took 405 min on 4 workers, so it is split by mutant, not by target.
-        # The list here and FALSIFY_PROJECT_SLICES below must agree;
+        # repo-git-reset-K and rest-K are slices too (bugs review TST-43). Each
+        # list here and its FALSIFY_*_SLICES below must agree;
         # tests/test-falsify-shards.sh checks that slices 1..N each run once.
-        shard: [repo-git-reset, version, group, project-1, project-2, project-3, project-4, project-5, project-6, rest, deep]
+        shard: [repo-git-reset-1, repo-git-reset-2, version, group, project-1, project-2, project-3, project-4, project-5, project-6, rest-1, rest-2, deep]
     env:
       FALSIFY_SPLIT_TARGET: repo-git-reset.sh
+      # repo-git-reset.sh, and rest below, run as two slices each (bugs review
+      # TST-43): GitHub's runners differ about 2x, and in the 12 runs of
+      # 2026-11-20..27 its shard took 42-44 min on a fast runner and 81-86 on
+      # a slow one, and rest 60-87; each was cancelled at the cap once. A
+      # slice repeats its targets' baselines and controls, so one of
+      # repo-git-reset.sh is estimated at about half its whole run and one of
+      # rest at about 60% (37 targets, each baselined in both): estimates from
+      # the baselines' and controls' share, until sliced runs are timed.
+      FALSIFY_SPLIT_SLICES: 2
       # project.sh (feature-gaps review GAP-28) has shards of its own too, by
       # the same rule: `--target` there, one more `--exclude-target` in `rest`.
       # Its oracle is four test files, and its shards alone run them with
@@ -245,6 +256,15 @@ jobs:
       # cancelled at the cap later that day, with group.sh at 219 mutants and,
       # by the run's timestamps, about twice the time.
       FALSIFY_GROUP_TARGET: group.sh
+      # rest's slices: every target that has no shard of its own, each dealt
+      # in two. A slice of a target with fewer distinct identities than N is
+      # refused at generation, naming the target
+      # (tests/falsify/run.sh: `holds no mutant`); rest's smallest target has
+      # 3 today (shared-files.sh). A third slice would buy rest little (an
+      # estimated 45% of the whole each, the baselines again): the next split
+      # moves its costly targets out, or selects oracles, as project.sh's
+      # shards do.
+      FALSIFY_REST_SLICES: 2
 
     steps:
       - uses: actions/checkout@v7
@@ -290,13 +310,13 @@ jobs:
         run: |
           rc=0
           case "$SHARD" in
-            repo-git-reset) select=(--target "$FALSIFY_SPLIT_TARGET") ;;
+            repo-git-reset-*) select=(--target "$FALSIFY_SPLIT_TARGET" --slice "${SHARD#repo-git-reset-}/$FALSIFY_SPLIT_SLICES") ;;
             project-*) select=(--target "$FALSIFY_PROJECT_TARGET" --slice "${SHARD#project-}/$FALSIFY_PROJECT_SLICES"
                                --select-oracles --stop-at-kill) ;;
             version) select=(--target "$FALSIFY_VERSION_TARGET") ;;
             group) select=(--target "$FALSIFY_GROUP_TARGET") ;;
-            rest) select=(--exclude-target "$FALSIFY_SPLIT_TARGET" --exclude-target "$FALSIFY_VERSION_TARGET" --exclude-target "$FALSIFY_GROUP_TARGET"
-                          --exclude-target "$FALSIFY_PROJECT_TARGET") ;;
+            rest-*) select=(--exclude-target "$FALSIFY_SPLIT_TARGET" --exclude-target "$FALSIFY_VERSION_TARGET" --exclude-target "$FALSIFY_GROUP_TARGET"
+                            --exclude-target "$FALSIFY_PROJECT_TARGET" --slice "${SHARD#rest-}/$FALSIFY_REST_SLICES") ;;
             deep) select=(--deep) ;;
             *) echo "unknown falsify shard: $SHARD" >&2; exit 2 ;;
           esac
