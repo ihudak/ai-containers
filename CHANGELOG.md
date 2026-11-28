@@ -97,6 +97,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `NOTE:` says why. The phase's time estimates are brought up to date: hours
   on Linux, two days or more on macOS (feature-gaps review GAP-32).
 
+- **A falsify kill names the test that made it.** `tests/falsify/run.sh`'s
+  `NOTE|failline` record now reads `L<line> seq <n> by <test>: <FAIL: line>`,
+  `<test>` being the member of the oracle set that printed the line, read from
+  `tests/run-all.sh`'s header for it. The record named none, so a run could not
+  say which tests of a target's set its mutants needed, and measuring
+  `sandbox-common.sh` for GAP-2 meant reading each name out of its `FAIL:` line.
+  The record is otherwise unchanged; ` by <test>` is left out where no header
+  names a member.
+
 ### Fixed
 
 - **`group.sh rm` refuses when docker cannot say whose a volume is.** A label

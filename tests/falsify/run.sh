@@ -193,10 +193,12 @@
 #   BASELINE|<target>|<oracle>|PASS|<ms>
 #   MUTANT|<verdict>|<identity>|<oracle>|<seq>|<lineno>|<signal>|<ms>|<mutated-line>
 #   NOTE|<what>|<identity>|<detail>
-#   NOTE|failline|<identity>|L<lineno> seq <seq>: <the oracle's first FAIL: line
-#              and up to six non-blank lines it printed under it, joined with
-#              ` // `, cut to 600 bytes (falsify_fail_note)>   after each KILLED
-#              mutant that printed one.
+#   NOTE|failline|<identity>|L<lineno> seq <seq>[ by <test>]: <the oracle's
+#              first FAIL: line and up to six non-blank lines it printed under
+#              it, joined with ` // `, cut to 600 bytes (falsify_fail_note)>
+#              after each KILLED mutant that printed one. ` by <test>` names the
+#              member of the oracle set that printed it (falsify_fail_test), and
+#              is left out where run-all.sh's header for it cannot be found.
 #   TARGET|<target>|<oracle>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<ms>
 #   TOTAL|<targets>|<total>|<killed>|<survived>|<unproven>|<timeouts>|<unresolved-pct>|<ms>
 #   ASSERTLESS|<kills-with-no-failline>|<killed>
@@ -706,6 +708,26 @@ falsify_fail_note() {
       if (d) exit
     }
     END { printf "%s", substr(o, 1, 600) }'
+}
+
+# falsify_fail_test <oracle output file> <oracle set, comma-separated>: the test
+# that printed the first FAIL: line, which is the one that killed the mutant
+# (with --stop-at-kill, the test the run stopped at, unless run-all.sh could not
+# read that test's output to its end and went on). A NOTE|failline named none,
+# so the tests a target's mutants never needed could not be told from the ones
+# that killed them (the GAP-2 measurement of sandbox-common.sh, 2026-11-27,
+# had to read each test's name out of its FAIL: line). It is the last header
+# tests/run-all.sh printed before that line (`── <name>`) that names a member of
+# the set: a line a test prints can look like a header, and then names no test
+# outside the set, though it can name another member. Nothing when no header
+# before the line names one. The line is found as falsify_fail_note finds it.
+falsify_fail_test() {
+  LC_ALL=C tr -d '\000' < "$1" 2>/dev/null | LC_ALL=C awk -v set=",$2," '
+    /^FAIL:/ || /[[:space:]]FAIL:/ { printf "%s", h; exit }
+    /^── / {
+      n = $0; sub(/^── /, "", n)
+      if (n != "" && n !~ /,/ && index(set, "," n ",")) h = n
+    }'
 }
 
 # THE ORACLE'S OWN SCAFFOLDING BROKE, which is not the same event as an
@@ -1666,10 +1688,11 @@ fr_run_mutant() {   # <slot> <target> <oracle> <seq> <lineno> <op> <sha> <text> 
   # owner is applied without complaint (rc=1)" could not say why the helper had
   # exited 1.
   if (( ! write_failed )) && [[ "$FALSIFY_VERDICT" == KILLED && "$FALSIFY_SIGNAL" == *failline* ]]; then
-    local fl
+    local fl by
     fl="$(falsify_fail_note "$out")"
+    by="$(falsify_fail_test "$out" "$oracle")"
     if [[ -n "$fl" ]]; then
-      printf 'NOTE|failline|%s|L%s seq %s: %s\n' "$ident" "$lineno" "$seq" "$fl" >> "$res"
+      printf 'NOTE|failline|%s|L%s seq %s%s: %s\n' "$ident" "$lineno" "$seq" "${by:+ by $by}" "$fl" >> "$res"
     fi
   fi
   if [[ -n "$pre_note" ]]; then printf '%s\n' "$pre_note" >> "$res"; fi
