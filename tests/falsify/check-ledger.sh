@@ -332,7 +332,7 @@ cl_read_run() {   # <run output file or ->
         [[ -n "$ident" && "$rest" == *'|'* ]] && CL_ELSEWHERE["$ident"]="${rest#*|}"
         ;;
       'NOTE|failline|'*)
-        # NOTE|failline|<identity>|L<line> seq <n>: <first FAIL: line // …> — what
+        # NOTE|failline|<identity>|L<line> seq <n>[ by <test>]: <first FAIL: line // …> — what
         # killed a mutant, quoted by check D so an unexpected kill can be traced
         # to its assertion after the runner is gone (TST-29).
         rest="${line#NOTE|failline|}"

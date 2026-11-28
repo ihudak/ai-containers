@@ -758,8 +758,8 @@ check "a real test kills through BOTH signals at once" "exit+failline" "$(fx_sig
 # without complaint (rc=1)" could not say why the helper had exited 1. Blank
 # lines are skipped, indentation dropped.
 kid="$(fx_ident "$FX_OUT" "$KILLABLE")"; kseq="$(fx_field "$FX_OUT" "$KILLABLE" 5)"; kln="$(fx_field "$FX_OUT" "$KILLABLE" 6)"
-check "a kill's first FAIL: line is recorded after it, with what the test printed under it" "1" \
-  "$(grep -cxF "NOTE|failline|$kid|L$kln seq $kseq: FAIL: 5 beats 3 // fx_bigger said: no" <<< "$FX_OUT")"
+check "a kill's first FAIL: line is recorded after it, with the test that printed it and what it printed under it" "1" \
+  "$(grep -cxF "NOTE|failline|$kid|L$kln seq $kseq by test-fx-a.sh: FAIL: 5 beats 3 // fx_bigger said: no" <<< "$FX_OUT")"
 check "every kill with a FAIL: line has its note" \
   "$(grep -c '^MUTANT|KILLED|.*failline' <<< "$FX_OUT")" "$(grep -c '^NOTE|failline|' <<< "$FX_OUT")"
 check "a survivor has none" "0" "$(grep -c "^NOTE|failline|$(fx_ident "$FX_OUT" "$SURVIVOR")|" <<< "$FX_OUT")"
@@ -786,6 +786,27 @@ check "a FAIL: after a CR is quoted, the CRs dropped" \
 check "the note is cut at 600 bytes" "600" \
   "$(fail_note "FAIL: a\n$(printf 'x%.0s' $(seq 1 700))\n" | LC_ALL=C wc -c | tr -d ' ')"
 check "no FAIL: line, no note" "" "$(fail_note 'PASS: a\nFAILED: b\n')"
+# Which test printed it (run.sh: falsify_fail_test()): the last header
+# tests/run-all.sh printed before the first FAIL: line that names a member of the
+# set. A line a test prints that looks like a header can name no test outside
+# the set; one naming a member still can, and the note would blame that member.
+fail_test() {   # <printf format> <oracle set>; prints the test's name
+  printf "$1" > "$TMP/ftest.out"
+  ( set +u
+    # shellcheck source=/dev/null
+    source "$RUN" >/dev/null 2>&1
+    falsify_fail_test "$TMP/ftest.out" "$2" )
+}
+check "the killing test is the one whose header came last before the first FAIL: line" "test-b.sh" \
+  "$(fail_test '── test-a.sh\nPASS: x\n   PASS\n── test-b.sh\nsetup\n  got FAIL: y\n── test-c.sh\nFAIL: z\n' 'test-a.sh,test-b.sh,test-c.sh')"
+check "a FAIL: after a CR counts, as it does for the kill" "test-a.sh" \
+  "$(fail_test '── test-a.sh\nprogress\rFAIL: y\n' 'test-a.sh')"
+check "a line that looks like a header but names no member leaves the test that printed it" "test-a.sh" \
+  "$(fail_test '── test-a.sh\n── test-x.sh\nFAIL: y\n' 'test-a.sh')"
+check "a header naming two members at once names neither" "" \
+  "$(fail_test '── test-a.sh,test-b.sh\nFAIL: y\n' 'test-a.sh,test-b.sh')"
+check "no header, no test" "" "$(fail_test 'FAIL: y\n' 'test-a.sh')"
+check "no FAIL: line, no test" "" "$(fail_test '── test-a.sh\nPASS: y\nFAILED: z\n' 'test-a.sh')"
 
 # ── 5. The oracle is `run-all.sh <name>`, not the test file ───────────────────
 # test-fx-silent.sh exits 0 having asserted nothing. Run directly that is a pass;
@@ -3167,6 +3188,14 @@ check "  … and the first oracle still kills what the second is blind to" \
 # the ledger blaming an oracle that never had the chance to notice.
 check "the MUTANT record reports the oracle field verbatim" \
   "test-fx-blind.sh,test-fx-a.sh" "$(fx_field "$FX_OUT" "$KILLABLE" 4)"
+# And which member made each kill: the record's oracle field names the set, so
+# only the note can say. run-all.sh runs test-fx-a.sh first, and the kill
+# test-fx-blind.sh makes after it is not put down to the header that came first.
+check "each kill's note names the member that made it" "test-fx-a.sh test-fx-blind.sh" \
+  "$(for m in "$KILLABLE" "$SURVIVOR"; do
+       grep -F "NOTE|failline|$(fx_ident "$FX_OUT" "$m")|" <<< "$FX_OUT" \
+         | sed -nE 's/^NOTE\|failline\|[^|]*\|L[0-9]+ seq [0-9]+ by ([^:]+): .*/\1/p'
+     done | tr '\n' ' ' | sed 's/ $//')"
 # And the baseline is the SET's baseline: run.sh refuses a target whose oracle
 # is not green on the pristine tree, so a second member that was red there must
 # stop the target rather than be quietly dropped.
